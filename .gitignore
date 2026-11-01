@@ -26,6 +26,10 @@ fails.json
 *.service
 *.log
 
+# atomic writes and rotated logs (the code creates these next to their target)
+*.tmp
+*.log.[0-9]
+
 # ---- local artifacts --------------------------------------------------------
 __pycache__/
 *.pyc

@@ -4,10 +4,12 @@ HOME points at a temp dir before the module is imported: every path in server.py
 resolved from Path.home() at import time, so the real ~/.pi/eink is never touched.
 """
 
+import atexit
 import importlib.util
 import json
 import os
 import pathlib
+import shutil
 import sys
 import tempfile
 import time
@@ -15,6 +17,7 @@ import types
 import unittest
 
 HOME = pathlib.Path(tempfile.mkdtemp(prefix="pi-eink-viewer-test-"))
+atexit.register(shutil.rmtree, HOME, True)
 EINK = HOME / ".pi/eink"
 EINK.mkdir(parents=True)
 os.environ["HOME"] = str(HOME)
@@ -116,6 +119,132 @@ class Capabilities(unittest.TestCase):
         self.assertEqual(server.READONLY_ACTIONS, {"stop", "status", "unlock", "readonly"})
         for dangerous in ("say", "execute", "review", "approve", "deny", "continue"):
             self.assertNotIn(dangerous, server.READONLY_ACTIONS)
+
+
+def fake_handler(cookie=None, ua="Kindle Build/4.0-rc2", ip="127.0.0.1", local="192.168.3.45"):
+    """A Handler with only the attributes _authorized() touches."""
+    handler = server.Handler.__new__(server.Handler)
+    headers = {"User-Agent": ua}
+    if cookie is not None:
+        headers["Cookie"] = cookie
+    handler.headers = headers
+    handler.client_address = (ip, 51234)
+    handler.request = types.SimpleNamespace(getsockname=lambda: (local, 8000))
+    return handler
+
+
+class Authorized(unittest.TestCase):
+    """_authorized() is the only enforcement point for the identity gates, and it
+    had no test at all: the claims in README's Security model were unchecked."""
+
+    def setUp(self):
+        server._FAILS.clear()
+        server._BLOCKED.clear()
+        os.environ.pop("EINK_UA_STRICT", None)
+
+    def tearDown(self):
+        server._FAILS.clear()
+        server._BLOCKED.clear()
+        os.environ.pop("EINK_UA_STRICT", None)
+
+    def test_good_cookie_passes(self):
+        # extra may carry a rolling cookie refresh, never an error
+        ok, extra, reason = fake_handler(cookie="pieink=" + "a" * 32)._authorized({})
+        self.assertTrue(ok, reason)
+        for name, value in extra:
+            self.assertEqual(name, "Set-Cookie")
+            self.assertIn("Max-Age=%d" % server.COOKIE_MAX_AGE, value)
+
+    def test_no_credential_is_refused_and_does_not_lock_out(self):
+        for _ in range(10):
+            ok, _extra, reason = fake_handler()._authorized({})
+            self.assertFalse(ok)
+        self.assertEqual(server._BLOCKED, {})   # anonymous probes are not guesses
+
+    def test_query_token_seeds_the_cookie(self):
+        ok, extra, _reason = fake_handler()._authorized({"k": ["a" * 32]})
+        self.assertTrue(ok)
+        self.assertEqual(len(extra), 1)
+        self.assertIn("Set-Cookie", extra[0][0])
+        self.assertIn("Max-Age=%d" % server.COOKIE_MAX_AGE, extra[0][1])
+
+    def test_pin_also_seeds_the_cookie(self):
+        ok, extra, _reason = fake_handler()._authorized({"k": ["123456"]})
+        self.assertTrue(ok)
+        self.assertIn("Set-Cookie", extra[0][0])
+
+    def test_wrong_cookie_counts_toward_the_lockout(self):
+        # a wrong cookie is as much a guess as a wrong ?k=; it used to be free
+        for _ in range(4):
+            fake_handler(cookie="pieink=wrong")._authorized({})
+        self.assertNotIn("127.0.0.1", server._BLOCKED)
+        fake_handler(cookie="pieink=wrong")._authorized({})
+        self.assertIn("127.0.0.1", server._BLOCKED)
+
+    def test_blocked_peer_is_refused_before_anything_else(self):
+        server._BLOCKED["127.0.0.1"] = time.time() + 600
+        ok, _extra, reason = fake_handler(cookie="pieink=" + "a" * 32)._authorized({})
+        self.assertFalse(ok)
+        self.assertIn("错误次数过多", reason)
+
+    def test_missing_token_file_is_closed(self):
+        token_file = server.TOKEN_FILE
+        backup = token_file.read_text() if token_file.exists() else None
+        try:
+            token_file.write_text("")
+            ok, _extra, reason = fake_handler(cookie="pieink=x")._authorized({})
+            self.assertFalse(ok)
+            self.assertIn("token file missing", reason)
+        finally:
+            if backup is not None:
+                token_file.write_text(backup)
+
+    def test_ua_gate_stops_unknown_browsers_from_the_lan(self):
+        ok, _extra, reason = fake_handler(ua="curl/8", ip="192.168.3.99")._authorized({})
+        self.assertFalse(ok)
+        self.assertIn("ua not allowed", reason)
+        ok, _extra, reason = fake_handler(cookie="pieink=" + "a" * 32, ua="curl/8",
+                                          ip="127.0.0.1")._authorized({})
+        self.assertTrue(ok, reason)   # loopback is exempt unless EINK_UA_STRICT=1
+
+
+class PendingOwnership(unittest.TestCase):
+    def test_only_the_session_that_parked_it_shows_the_block(self):
+        parked = {"pid": os.getpid()}
+        server.live_bridges.__globals__["_LIVE_CACHE"][:2] = [time.time(), {
+            "mine": {"pid": os.getpid(), "port": 8010},
+            "other": {"pid": os.getpid() + 1, "port": 8011},
+        }]
+        try:
+            self.assertTrue(server.pending_owned_by(8010, parked))
+            self.assertFalse(server.pending_owned_by(8011, parked))
+            self.assertFalse(server.pending_owned_by(0, parked))
+        finally:
+            server.live_bridges.__globals__["_LIVE_CACHE"][:2] = [0.0, {}]
+
+
+class UsageTolerance(unittest.TestCase):
+    def test_garbage_usage_does_not_break_the_page(self):
+        rows = [{"type": "message", "message": {"role": "assistant",
+                                               "usage": {"input": "12abc", "cost": {"total": "x"}}}}]
+        total = server.usage_totals(rows)
+        self.assertEqual(total["input"], 0)
+        self.assertEqual(total["cost"], 0.0)
+
+    def test_usage_that_is_not_a_dict_is_skipped(self):
+        rows = [{"type": "message", "message": {"role": "assistant", "usage": "broken"}}]
+        self.assertEqual(server.usage_totals(rows)["input"], 0)
+
+
+class UaComments(unittest.TestCase):
+    def test_commented_out_ua_is_not_allowed(self):
+        ua_file = server.UA_FILE
+        ua_file.write_text("#mozilla/5.0\nkindle build/\n")
+        try:
+            entries = server.ua_allow_list()
+            self.assertEqual(entries, ["kindle build/"])
+        finally:
+            ua_file.write_text("kindle build/\n")
 
 
 class ActionGate(unittest.TestCase):

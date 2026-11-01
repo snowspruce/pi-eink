@@ -3,6 +3,7 @@
 #
 #   ./install.sh                     # state dir, secrets, pi package, service unit
 #   ./install.sh --port 8080         # different viewer port
+#   ./install.sh --port 8080 --label com.me.eink   # custom port and launchd label
 #   ./install.sh --no-service        # everything except the service unit
 #   ./install.sh --no-pi             # skip `pi install` (loose-file setups)
 #   ./install.sh --ua-strict         # also require a whitelisted UA on loopback
@@ -23,23 +24,23 @@ KEEP_PI=0
 UNINSTALL=0
 UA_STRICT=""   # kept from an existing unit unless --ua-strict/--no-ua-strict
 
+say() { printf '%s\n' "$*"; }
+die() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--port) PORT="$2"; shift 2 ;;
-		--label) LABEL="$2"; shift 2 ;;
+		--port) [ $# -ge 2 ] || die "--port needs a value"; PORT="$2"; shift 2 ;;
+		--label) [ $# -ge 2 ] || die "--label needs a value"; LABEL="$2"; shift 2 ;;
 		--no-pi) DO_PI=0; shift ;;
 		--keep-pi) KEEP_PI=1; shift ;;
 		--no-service) DO_SERVICE=0; shift ;;
 		--uninstall) UNINSTALL=1; shift ;;
 		--ua-strict) UA_STRICT=1; shift ;;
 		--no-ua-strict) UA_STRICT=0; shift ;;
-		-h|--help) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+		-h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
 		*) echo "unknown option: $1" >&2; exit 2 ;;
 	esac
 done
-
-say() { printf '%s\n' "$*"; }
-die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # Both land in a service unit verbatim: a bad value would only show up as a
 # restart loop later.
@@ -61,6 +62,19 @@ case "$OS" in
 	*) die "unsupported OS: $OS (macOS and Linux only)" ;;
 esac
 
+# An install records the label it used: `--uninstall` must not need the operator to
+# remember it, and a custom label was silently left running before.
+META="$STATE/install-meta"
+if [ -f "$META" ]; then
+	# shellcheck disable=SC1090
+	. "$META"
+	[ "$UNINSTALL" = 1 ] && { [ -n "${META_LABEL:-}" ] && LABEL="$META_LABEL"; }
+	[ -n "${META_PORT:-}" ] && [ "$PORT" = 8000 ] && PORT="$META_PORT"
+	case "$OS" in
+		Darwin) PLIST="$HOME/Library/LaunchAgents/$LABEL.plist" ;;
+	esac
+fi
+
 # --- uninstall -----------------------------------------------------------------
 if [ "$UNINSTALL" = 1 ]; then
 	case "$OS" in
@@ -75,6 +89,12 @@ if [ "$UNINSTALL" = 1 ]; then
 		say "unregistering pi package $REPO (use --keep-pi to keep it)"
 		pi remove "$REPO" >/dev/null 2>&1 || say "warning: pi remove did not match; check 'pi list'"
 	fi
+	# put a hand-maintained extension back where it was
+	if [ -f "$HOME/.pi/agent/extensions/eink-bridge.ts.off" ]; then
+		mv "$HOME/.pi/agent/extensions/eink-bridge.ts.off" "$HOME/.pi/agent/extensions/eink-bridge.ts"
+		say "restored the loose extension copy at ~/.pi/agent/extensions/eink-bridge.ts"
+	fi
+	rm -f "$META"
 	say "service removed."
 	say "state kept in $STATE (delete it to revoke the token: rm -rf $STATE)."
 	exit 0
@@ -201,6 +221,18 @@ sys.stdout.write(t)
 PYRENDER
 }
 
+# An existing unit may carry EINK_* variables the operator added (EINK_BIND,
+# EINK_UA_STRICT, ...). Re-rendering the unit from the template would silently drop
+# them, so they are collected first and re-applied afterwards.
+KEEP_ENV=""
+case "$OS" in
+	Darwin) existing_unit="$PLIST" ;;
+	Linux) existing_unit="$UNIT" ;;
+esac
+if [ -f "$existing_unit" ]; then
+	KEEP_ENV="$(grep -o 'EINK_[A-Z_]*=[^<>"]*' "$existing_unit" 2>/dev/null | grep -v '^EINK_PORT=' | sort -u || true)"
+fi
+
 # An existing unit may carry EINK_UA_STRICT (loopback is UA-gated too). Reinstalling
 # must not silently relax a security setting the operator turned on.
 if [ -z "$UA_STRICT" ]; then
@@ -220,6 +252,25 @@ if [ "$DO_SERVICE" = 1 ]; then
 		Darwin)
 			mkdir -p "$(dirname "$PLIST")"
 			render "$REPO/service/com.example.pi-eink.plist.example" launchd "$UA_STRICT" > "$PLIST"
+			if [ -n "$KEEP_ENV" ]; then
+				say "keeping from the previous unit: $(printf '%s' "$KEEP_ENV" | tr '\n' ' ')"
+				# plist: insert <key>/<string> pairs before the closing </dict>
+				"$PY" - "$PLIST" "$KEEP_ENV" <<'PYENV'
+import pathlib, sys
+path, env = pathlib.Path(sys.argv[1]), sys.argv[2].split()
+text = path.read_text()
+extra = "".join("  <key>%s</key>\n  <string>%s</string>\n" % tuple(e.split("=", 1)) for e in env if "=" in e)
+marker = "</dict>\n</plist>"
+if extra and marker in text:
+    text = text.replace(marker, extra + marker, 1)
+path.write_text(text)
+PYENV
+			fi
+			plutil -lint "$PLIST" >/dev/null || die "generated unit is not a valid plist: $PLIST"
+			if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+				say "warning: port $PORT is already in use by:"
+				lsof -nP -iTCP:"$PORT" -sTCP:LISTEN | sed -n '2,3p'
+			fi
 			launchctl bootout "gui/$(id -u)" "$PLIST" 2>/dev/null || true
 			launchctl bootstrap "gui/$(id -u)" "$PLIST"
 			say "launchd unit installed: $PLIST" ;;
@@ -242,6 +293,8 @@ if [ "$DO_SERVICE" = 1 ]; then
 		*) say "warning: viewer answered $code; check $STATE/server.log (UA gate?)" ;;
 	esac
 fi
+
+printf 'META_LABEL=%s\nMETA_PORT=%s\nMETA_OS=%s\n' "$LABEL" "$PORT" "$OS" > "$META"
 
 LAN="$("$PY" - <<'PY' 2>/dev/null || true
 import socket

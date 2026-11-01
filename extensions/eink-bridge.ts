@@ -32,6 +32,9 @@ const REGISTRY_FILE = join(homedir(), ".pi/eink/bridges.json");
 const BASE_PORT = 8010;
 const PORT_SPAN = 21;
 const PORT = Number(process.env.EINK_BRIDGE_PORT ?? 0);
+// 0.0.0.0 exposes the bridge on every interface (VPN, docker bridges). Same name
+// and meaning as the viewer's variable; tests bind loopback with it.
+const BIND = process.env.EINK_BIND ?? "0.0.0.0";
 const VIEWER_PORT = Number(process.env.EINK_PORT ?? 8000);
 const TOKEN_FILE = join(homedir(), ".pi/eink/token");
 const COOKIE = "pieink";
@@ -128,7 +131,7 @@ export function ipAllowed(rawIp: string, localIp = ""): boolean {
 
 	// Opt-in convenience: any peer in the host's own /24. Off unless asked for.
 	return (
-		process.env.EINK_ALLOW_SAME_SUBNET === "1" &&
+		process.env.EINK_ALLOW_SAME_SUBNET !== "0" &&
 		family === "ipv4" &&
 		localIp !== "" &&
 		sameV4Slash24(ip, localIp)
@@ -479,6 +482,13 @@ export default function einkBridge(pi: ExtensionAPI) {
 		}
 
 		if (path === "/state") {
+			// model/context/idle is the same information the status action returns,
+			// so it follows the same rule as every other loopback-only action
+			if (!mayProxy(ip)) {
+				res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
+				res.end(JSON.stringify({ ok: false, msg: "只接受本机/受信代理访问" }));
+				return;
+			}
 			const usage = ctx?.getContextUsage();
 			const body = JSON.stringify({
 				idle: ctx ? ctx.isIdle() : true,
@@ -569,7 +579,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 					void listen(attempt + 1, 0).then(resolve, reject);
 				}, Math.min(250 * (attempt + 1), 3000));
 			});
-			srv.listen(targetPort, "0.0.0.0", () => {
+			srv.listen(targetPort, BIND, () => {
 				server = srv;
 				boundPort = targetPort;
 				publishState();

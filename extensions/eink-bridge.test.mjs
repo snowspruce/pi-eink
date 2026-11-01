@@ -9,12 +9,15 @@
 import { after, before, describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const HOME = mkdtempSync(join(tmpdir(), "pi-eink-test-"));
 const EINK = join(HOME, ".pi/eink");
-const TOKEN = "test-token";
+// random per run: a fixed weak token plus a LAN-bound port made the bridge
+// reachable by anyone on the same network while the tests ran
+const TOKEN = randomUUID();
 // fixed port: the per-session hash would land in the 8010+ range real bridges use
 const TEST_PORT = 18019;
 
@@ -34,6 +37,7 @@ async function load() {
 	writeFileSync(join(EINK, "uas"), "kindle build/\n");
 	process.env.HOME = HOME;
 	process.env.EINK_BRIDGE_PORT = String(TEST_PORT);
+	process.env.EINK_BIND = "127.0.0.1";
 	mod = await import("../extensions/eink-bridge.ts");
 }
 
@@ -203,12 +207,17 @@ describe("ipAllowed", () => {
 		assert.equal(mod.ipAllowed("::ffff:192.168.3.25"), true);
 	});
 
-	it("only allows the host's own /24 when EINK_ALLOW_SAME_SUBNET is set", () => {
-		assert.equal(mod.ipAllowed("10.1.2.3", "10.1.2.99"), false);
-		process.env.EINK_ALLOW_SAME_SUBNET = "1";
+	it("allows the host's own /24 by default, like the viewer", () => {
+		// the two sides disagreeing here is what makes the page work while every
+		// button returns 403, so the default is pinned on both
+		assert.equal(mod.ipAllowed("10.1.2.3", "10.1.2.99"), true);
+		assert.equal(mod.ipAllowed("10.2.2.3", "10.1.2.99"), false);
+	});
+
+	it("can be turned off with EINK_ALLOW_SAME_SUBNET=0", () => {
+		process.env.EINK_ALLOW_SAME_SUBNET = "0";
 		try {
-			assert.equal(mod.ipAllowed("10.1.2.3", "10.1.2.99"), true);
-			assert.equal(mod.ipAllowed("10.2.2.3", "10.1.2.99"), false);
+			assert.equal(mod.ipAllowed("10.1.2.3", "10.1.2.99"), false);
 		} finally {
 			delete process.env.EINK_ALLOW_SAME_SUBNET;
 		}

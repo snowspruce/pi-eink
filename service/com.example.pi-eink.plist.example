@@ -33,6 +33,9 @@
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <!-- without a throttle, a crash loop respawns instantly and floods server.log -->
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
   <key>ProcessType</key>
   <string>Background</string>
   <key>StandardOutPath</key>

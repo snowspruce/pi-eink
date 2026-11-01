@@ -153,7 +153,7 @@ to `~/Library/LaunchAgents/`, replace every `/path/to/pi-eink` and the python pa
 then:
 
 ```sh
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pi-eink.plist
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.$(whoami).pi-eink.plist
 ```
 
 On Linux there is `service/pi-eink.service.example` (`systemctl --user enable --now
@@ -161,7 +161,7 @@ pi-eink`). Either way: `git pull` does **not** restart the viewer — the unit k
 running process alive, it does not reload code. After an update:
 
 ```sh
-launchctl kickstart -k gui/$(id -u)/com.example.pi-eink   # macOS
+launchctl kickstart -k "gui/$(id -u)/com.$(whoami).pi-eink"   # macOS, as install.sh labels it
 systemctl --user restart pi-eink                          # Linux
 ```
 
@@ -184,7 +184,9 @@ another subnet, and the 只读 switch.
 
 ## Configuration
 
-Environment (set them in the service unit; both processes read them):
+Environment. Viewer variables go in the service unit; bridge variables must be in
+the environment that starts `pi` (the bridge is an in-process extension and never
+sees the unit's environment):
 
 | Variable | Default | Meaning |
 |---|---|---|
@@ -195,9 +197,9 @@ Environment (set them in the service unit; both processes read them):
 | `EINK_ALLOW_UA` | `Kindle Build/` | fallback User-Agent allowlist |
 | `EINK_UA_STRICT` | off | `1` also enforces the UA check for loopback |
 | `EINK_VIEWER_IPS` | unset | (bridge) comma-separated viewer hosts allowed to proxy free text/approvals when the viewer runs on another machine; empty = loopback only |
-| `EINK_ALLOW_SAME_SUBNET` | on | peers in the host's own /24 are allowed; `0` disables (then only `allow_ips` counts) |
-| `EINK_LOG_UA` | off | `1` logs every User-Agent to `ua_seen.log` |
-| `PI_SESSION_FILE` | unset | pin the page to one session file instead of following live bridges |
+| `EINK_ALLOW_SAME_SUBNET` | on | peers in the host's own /24 are allowed; `0` disables (then only `allow_ips` counts). Both the viewer and the bridge read it, with the same default |
+| `EINK_LOG_UA` | off | `1` logs each (peer, User-Agent) pair once to `server.log`; `ua_seen.log` is written only for UAs the gate rejected |
+| `PI_SESSION_FILE` | unset | last-resort fallback: only used when no live bridge and no `bridge.json` name a session |
 
 State files under `~/.pi/eink/` (all ignored by git):
 
@@ -212,11 +214,14 @@ State files under `~/.pi/eink/` (all ignored by git):
 | `bridges.json` | bridge | session id → `{port, pid, cwd, sessionFile, updatedAt}`, heartbeat 60 s, entries older than 10 min ignored |
 | `pending.json`, `answer.json` | safety-gate ↔ bridge | a parked risky command and the page's verdict |
 | `bridge.log` | bridge | why a session is not serving the page (busy port, etc.) |
-| `server.log`, `diag.log`, `ua_seen.log` | viewer | service log, one-shot geometry beacon, unknown User-Agents |
+| `diag.log`, `ua_seen.log` | viewer | page beacons and rejected UAs; both rotate to `.1` at 256 KB |
+| `server.log` | service unit | stdout/stderr (POST lines, errors, tracebacks); not rotated by the code — `: > ~/.pi/eink/server.log` when it grows |
 
 ## Endpoints
 
-Viewer (`:8000`): `/` page shell · `/data` JSON fragment · `/static` no-JS fallback ·
+Viewer (`:8000`): `/` page shell · `/data` JSON fragment · `/static` no-JS fallback
+(a form POST from a browser without JS lands here, since `/` needs script to fill
+the message list) ·
 `/sessions` picker · `/theme?d=0|1` day/night cookie · `/diag` · `/glyphs` ·
 `/favicon.png` · `POST /act/<action>` proxied to the session's bridge, plus two
 viewer-local ones: `/act/unlock` (enter the pin to unlock this network) and
@@ -305,8 +310,12 @@ pid. Never remove that check.
 
 ## Uninstall
 
-- remove the `file:` entry from `~/.pi/agent/settings.json` (or delete the copied
-  `eink-bridge.ts`)
-- `launchctl unload ~/Library/LaunchAgents/com.example.pi-eink.plist` and delete it
-- `rm -rf ~/.pi/eink` (this deletes the token — revoke nothing else, it never left
-  the machine)
+```sh
+./install.sh --uninstall            # stop and remove the unit, unregister the package
+./install.sh --uninstall --keep-pi  # ... but leave the package registered with pi
+```
+
+It reads the label and port recorded in `~/.pi/eink/install-meta`, so a custom
+`--label` needs no repetition, and it puts back a loose `eink-bridge.ts` that the
+installer had moved aside. State is kept; `rm -rf ~/.pi/eink` deletes the token and
+the history config. Nothing else to revoke — it never left the machine.

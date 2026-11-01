@@ -18,6 +18,7 @@ import re
 import socket
 import subprocess
 import struct
+import threading
 import time
 import urllib.error
 import zlib
@@ -62,7 +63,10 @@ _COOKIE_REFRESH = {}  # ip -> unix time the cookie was last re-issued
 
 def ua_allow_list() -> list:
     try:
-        items = [l.strip().lower() for l in UA_FILE.read_text().splitlines() if l.strip()]
+        # same rule as the bridge: '#' starts a comment, so a commented-out UA is
+        # not silently treated as an allowed substring
+        text = "\n".join(l.split("#", 1)[0] for l in UA_FILE.read_text().splitlines())
+        items = [l.strip().lower() for l in text.splitlines() if l.strip()]
         if items:
             return items
     except Exception:
@@ -71,13 +75,26 @@ def ua_allow_list() -> list:
             os.environ.get("EINK_ALLOW_UA", "Kindle Build/").split(",") if u.strip()]
 
 
+def append_bounded(path: Path, line: str, limit: int = 256 * 1024) -> None:
+    """Append one line, rotating to .1 past `limit`: some of these paths are
+    reachable unauthenticated, and an unbounded log is a disk-fill primitive."""
+    try:
+        with _WRITE_LOCK:
+            if path.exists() and path.stat().st_size > limit:
+                os.replace(path, str(path) + ".1")
+            with path.open("a") as fh:
+                fh.write(line + "\n")
+    except Exception:
+        pass
+
+
 def note_unknown_ua(ip: str, ua: str) -> None:
     """Record a rejected UA so it can be added to ~/.pi/eink/uas deliberately."""
     try:
         seen = UA_SEEN.read_text(errors="replace") if UA_SEEN.exists() else ""
         if ua not in seen:
-            with UA_SEEN.open("a") as fh:
-                fh.write("%s\t%s\t%s\n" % (time.strftime("%Y-%m-%d %H:%M:%S"), ip, ua))
+            append_bounded(UA_SEEN, "%s\t%s\t%s" % (time.strftime("%Y-%m-%d %H:%M:%S"),
+                                                      ip, _diag_clean(ua, 200)))
     except Exception:
         pass
 
@@ -219,7 +236,7 @@ def sessions_html() -> str:
         cwd = info.get("cwd") or ""
         rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
                     '<div class="mono dim">%s 运行中 :%s</div></div>'
-                    % (esc(sid), esc(short_path(cwd) or sid[:8]),
+                    % (quote(str(sid), safe=""), esc(short_path(cwd) or sid[:8]),
                        esc(short_path(cwd)), esc(str(info.get("port", "")))))
 
     files = sorted(SESSIONS.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -233,7 +250,7 @@ def sessions_html() -> str:
         rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
                     '<div class="mono dim">%s · %s</div>'
                     '<div class="body">%s</div></div>'
-                    % (esc(sid), esc(when + "  " + (short_path(meta.get("cwd")) or "?")),
+                    % (quote(str(sid), safe=""), esc(when + "  " + (short_path(meta.get("cwd")) or "?")),
                        esc(short_path(meta.get("cwd"))), esc(when), esc(meta.get("first") or "(空)")))
         shown += 1
         if shown >= 25:
@@ -245,7 +262,10 @@ def bridge_state():
     """Session + port of the pi process that owns the action bridge, if it is alive."""
     try:
         state = json.loads(STATE_FILE.read_text())
-        os.kill(int(state.get("pid", 0)), 0)
+        pid = int(state.get("pid") or 0)
+        if pid <= 0:
+            return None   # os.kill(0, 0) succeeds and would fake a live bridge
+        os.kill(pid, 0)
     except Exception:
         return None
     if not state.get("sessionFile"):
@@ -327,6 +347,16 @@ def action_allowed(caps: str, action: str) -> bool:
 
 
 _TRUST_CACHE = [None, {}]
+_WRITE_LOCK = threading.Lock()
+
+
+def atomic_write(path: Path, text: str) -> None:
+    """tmp+rename with a unique tmp name: a fixed `.tmp` is shared by every
+    handler thread, and two concurrent writers leave a broken file behind."""
+    tmp = "%s.%d.tmp" % (path, threading.get_ident())
+    with open(tmp, "w") as fh:
+        fh.write(text)
+    os.replace(tmp, path)
 
 
 def trust_state() -> dict:
@@ -355,10 +385,8 @@ def trust_state() -> dict:
 
 def save_trust(state: dict) -> None:
     try:
-        tmp = str(TRUST_FILE) + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(state, fh, indent=2)
-        os.replace(tmp, TRUST_FILE)
+        with _WRITE_LOCK:
+            atomic_write(TRUST_FILE, json.dumps(state, indent=2))
         _TRUST_CACHE[0] = None   # a same-size write within one mtime tick must not stick
     except Exception:
         pass
@@ -492,17 +520,15 @@ def load_fails() -> None:
 
 def save_fails() -> None:
     now = time.time()
-    payload = {
-        "fails": {ip: [f, s] for ip, (f, s) in _FAILS.items() if now - s <= 600},
-        "blocked": {ip: until for ip, until in _BLOCKED.items() if until > now},
-    }
-    try:
-        tmp = str(FAILS_FILE) + ".tmp"
-        with open(tmp, "w") as fh:
-            json.dump(payload, fh)
-        os.replace(tmp, FAILS_FILE)
-    except Exception:
-        pass
+    with _WRITE_LOCK:
+        payload = {
+            "fails": {ip: [f, s] for ip, (f, s) in _FAILS.items() if now - s <= 600},
+            "blocked": {ip: until for ip, until in _BLOCKED.items() if until > now},
+        }
+        try:
+            atomic_write(FAILS_FILE, json.dumps(payload))
+        except Exception:
+            pass
 
 
 BRANCH_CACHE = {}
@@ -558,6 +584,20 @@ def git_branch(cwd: str) -> str:
     return branch
 
 
+def as_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def as_float(value) -> float:
+    try:
+        return float(value or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def usage_totals(rows: list) -> dict:
     total = {"input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "cost": 0.0}
     for row in rows:
@@ -567,13 +607,15 @@ def usage_totals(rows: list) -> dict:
         if msg.get("role") != "assistant":
             continue
         u = msg.get("usage") or {}
+        if not isinstance(u, dict):
+            continue
         for key in ("input", "output", "cacheRead", "cacheWrite"):
-            total[key] += int(u.get(key) or 0)
+            total[key] += as_int(u.get(key))
         cost = u.get("cost")
         if isinstance(cost, dict):
-            total["cost"] += float(cost.get("total") or 0)
-        elif isinstance(cost, (int, float)):
-            total["cost"] += float(cost)
+            total["cost"] += as_float(cost.get("total"))
+        else:
+            total["cost"] += as_float(cost)
     return total
 
 
@@ -629,9 +671,28 @@ def pending_approval():
         return None
 
 
-def pending_html(sid: str = "") -> str:
+def pending_owned_by(port: int, data: dict) -> bool:
+    """True when the parked command belongs to the session this page renders.
+
+    pending.json is shared by every pi process; without this check the command
+    text of another session's risky tool call shows up on this page, where the
+    buttons cannot answer it.
+    """
+    if not port:
+        return False
+    parked = data.get("pid")
+    for info in live_bridges().values():
+        if info.get("pid") == parked:
+            try:
+                return int(info.get("port") or 0) == port
+            except Exception:
+                return False
+    return False
+
+
+def pending_html(sid: str = "", port: int = 0) -> str:
     data = pending_approval()
-    if not data:
+    if not data or not pending_owned_by(port, data):
         return ""
     suffix = ("?s=" + quote(sid, safe="")) if sid else ""
     reason = esc(str(data.get("reason") or ""))
@@ -752,19 +813,18 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
   white-space: nowrap; overflow: hidden;
 }
 #acts form { display: inline-block; vertical-align: top; margin: 0 8px 0 0; line-height: 1; }
-#acts #sayform {
-  display: flex; align-items: stretch; gap: 8px;
-  margin-top: 6px; white-space: normal;
-}
+/* Block layout on purpose: an older WebView drops `display:flex`, and under
+   #acts{white-space:nowrap} the send button then landed off-screen. */
+#acts #sayform { display: block; margin-top: 6px; white-space: normal; }
 #acts #sayform textarea {
-  flex: 1; min-width: 0;
+  display: block; width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
   font-family: inherit; font-size: 14px; line-height: 1.3;
-  border: 2px solid #000; padding: 3px 8px; margin: 0;
+  border: 2px solid #000; padding: 4px 8px; margin: 0;
   background: #fff; color: #000; resize: none;
 }
-#acts #sayform button { flex: 0 0 auto; padding-top: 0; padding-bottom: 0; }
+#acts #sayform button { display: block; width: 100%; margin-top: 6px; padding: 8px 12px; }
 #acts button, .btn {
-  font-family: inherit; font-size: 12px;
+  font-family: inherit; font-size: 12px; min-height: 30px;
   background: #fff; color: #000; border: 2px solid #000;
   padding: 2px 10px; margin: 0;
 }
@@ -871,13 +931,15 @@ window.onerror = function (m, src, line) {
 };
 // Only follow the tail while the reader is already at the bottom. While the agent
 // works the spinner changes every poll; scrolling unconditionally yanked the page
-// back down 1.2s after every attempt to scroll up.
+// back down 1.2s after every attempt to scroll up. The threshold stays small: at
+// 140px on a 573px-tall viewport a short flick up still counted as "at the
+// bottom" and the next repaint dragged the reader back down.
 var STICK = true;
 function atBottom() {
   var y = window.pageYOffset || document.documentElement.scrollTop || 0;
   var h = document.documentElement.scrollHeight || document.body.scrollHeight;
   var vh = window.innerHeight || document.documentElement.clientHeight;
-  return (y + vh) >= (h - 140);
+  return (y + vh) >= (h - 40);
 }
 window.addEventListener("scroll", function () { STICK = atBottom(); }, false);
 function paint(j) {
@@ -992,6 +1054,12 @@ document.addEventListener("submit", function (e) {
     if (ok) {
       var ta = form.querySelector("textarea");
       if (ta) { ta.value = ""; }
+    }
+    if (ok && /\/act\/(unlock|readonly)/.test(action)) {
+      // #acts comes from the shell, not from /data: without a reload the reader
+      // keeps seeing the PIN box, and typing a command into it counts as a bad PIN
+      location.reload();
+      return;
     }
     if (ok && /\/act\/(approve|deny)/.test(action)) {
       var pend = document.getElementById("pending");
@@ -1294,16 +1362,18 @@ def load_rows(path: Path):
                 rows.append(json.loads(line))
             except Exception:
                 continue
-    ROWS_CACHE[0] = key
-    ROWS_CACHE[1] = rows
-    ROWS_CACHE[2] = usage_totals(rows)
-    return rows, ROWS_CACHE[2]
+    totals = usage_totals(rows)
+    # one slice assignment, not three writes: a reader in another thread must not
+    # see key of X with the rows of Y
+    ROWS_CACHE[:] = [key, rows, totals]
+    return rows, totals
 
 
 def row_html(path_key: str, row: dict, index: int, show_thinking: bool, show_tools: bool):
     """(key, html) for one row, or False when the row renders nothing.
     Cached per row: rows are append-only, so only the tail is new on each poll."""
-    ck = (path_key, row.get("id"), row.get("timestamp"), show_thinking, show_tools)
+    # the index is part of the key: rows without an id would otherwise collide
+    ck = (path_key, row.get("id") or index, row.get("timestamp"), show_thinking, show_tools)
     if ck in ROW_HTML:
         return ROW_HTML[ck]
     if len(ROW_HTML) > 20000:
@@ -1417,7 +1487,7 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
             # agent has not produced anything yet this turn: show a fresh card
             out.append(("working", '<div class="msg"><span class="role assistant">agent %s</span></div>'
                         % esc(frame)))
-    pend = pending_html(sid)
+    pend = pending_html(sid, port)
     if pend:
         # end of the list: the page auto-scrolls to the bottom
         out.append(("pending", pend))
@@ -1550,7 +1620,10 @@ class Handler(BaseHTTPRequestHandler):
         for k, v in extra:
             self.send_header(k, v)
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
 
     def _authorized(self, q) -> tuple[bool, list, str]:
         """Return (ok, headers-to-set, reason). Cookie, or ?k=<token> which sets the cookie."""
@@ -1580,21 +1653,50 @@ class Handler(BaseHTTPRequestHandler):
             extra.append(("Set-Cookie", cookie_value()))
             return True, extra, ""
 
-        now = time.time()
-        fails, since = _FAILS.get(ip, (0, now))
-        if now - since > 600:
-            fails, since = 0, now
-        fails += 1 if given else 0
-        _FAILS[ip] = (fails, since)
-        if fails >= 5:
-            _FAILS[ip] = (0, now)
-            _BLOCKED[ip] = now + 600
+        # Count every *presented but wrong* credential: a wrong cookie is just as
+        # much a guess as a wrong ?k=. A request carrying nothing is an anonymous
+        # probe, not a guess, and must not be able to lock out the real device.
+        presented = bool(given) or COOKIE in parse_cookies(self.headers.get("Cookie", ""))
+        if presented:
+            now = time.time()
+            fails, since = _FAILS.get(ip, (0, now))
+            if now - since > 600:
+                fails, since = 0, now
+            _FAILS[ip] = (fails + 1, since)
+            if fails + 1 >= 5:
+                _FAILS[ip] = (0, now)
+                _BLOCKED[ip] = now + 600
             save_fails()
-            return False, extra, "错误次数过多，等 10 分钟再试"
-        save_fails()
+            if ip in _BLOCKED:
+                return False, extra, "错误次数过多，等 10 分钟后再试"
         return False, extra, "bad or missing token"
 
     def do_POST(self):
+        try:
+            self._do_post()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as err:  # never leave a client without a response
+            self._fail(err)
+
+    def do_GET(self):
+        try:
+            self._do_get()
+        except (BrokenPipeError, ConnectionResetError):
+            self.close_connection = True
+        except Exception as err:
+            self._fail(err)
+
+    def _fail(self, err: Exception) -> None:
+        try:
+            print("%s ERROR %s %s: %s" % (time.strftime("%H:%M:%S"), self.path,
+                                          type(err).__name__, err), flush=True)
+            self._send(("error: %s" % type(err).__name__).encode("utf-8"),
+                       "text/plain; charset=utf-8", 500)
+        except Exception:
+            self.close_connection = True
+
+    def _do_post(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if not u.path.startswith("/act/"):
@@ -1613,7 +1715,8 @@ class Handler(BaseHTTPRequestHandler):
                        "text/html; charset=utf-8", 403)
             return
 
-        length = int(self.headers.get("Content-Length") or 0)
+        raw_len = (self.headers.get("Content-Length") or "").strip()
+        length = int(raw_len) if raw_len.isdigit() else 0
         body = self.rfile.read(length) if 0 < length <= 8192 else b""
 
         ip = client_ip(self)
@@ -1631,8 +1734,9 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(json.dumps({"ok": status < 400, "msg": msg}, ensure_ascii=False).encode("utf-8"),
                            "application/json; charset=utf-8", status if status >= 400 else 200, extra=extra)
                 return
+            # no JS: `/?msg=` is a shell whose message list is filled in by script
             self._send(b"", "text/html; charset=utf-8", 303,
-                       extra=extra + [("Location", "/?" + urlencode(keep + [("msg", msg[:60])]))])
+                       extra=extra + [("Location", "/static?" + urlencode(keep + [("msg", msg[:60])]))])
 
         # Both of these belong to the viewer, not to the bridge: they change what
         # this network is allowed to do, they do not touch the agent.
@@ -1664,7 +1768,7 @@ class Handler(BaseHTTPRequestHandler):
             back("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c", 403)
             return
 
-        post_sid = (q.get("s") or [""])[0]
+        post_sid = "" if caps != "full" else sid_hint
         if not post_sid:
             # approval requests belong to whichever session parked them: match its pid
             try:
@@ -1731,7 +1835,7 @@ class Handler(BaseHTTPRequestHandler):
                 text = {"approve": "已允许", "deny": "已拒绝"}.get(what, "已发送")
                 if status >= 400:
                     text = "失败（%d）" % status
-            back = "/?" + urlencode(keep + [("msg", text[:60])])
+            back = "/static?" + urlencode(keep + [("msg", text[:60])])
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", back)])
             return
 
@@ -1746,7 +1850,7 @@ class Handler(BaseHTTPRequestHandler):
         ctype = dict(resp_headers).get("Content-Type", "text/html; charset=utf-8")
         self._send(resp_body or b"bridge error", ctype, status, extra=extra)
 
-    def do_GET(self):
+    def _do_get(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
         if u.path in ("/favicon.ico", "/favicon.png"):
@@ -1854,11 +1958,7 @@ class Handler(BaseHTTPRequestHandler):
             key = line.split("\t", 1)[1]
             if key not in seen:
                 seen.add(key)
-                try:
-                    with DIAG_LOG.open("a") as fh:
-                        fh.write(line + "\n")
-                except Exception:
-                    pass
+                append_bounded(DIAG_LOG, line)
             self._send(b"ok", "text/plain; charset=utf-8", extra=extra)
             return
 
@@ -1908,10 +2008,23 @@ class Handler(BaseHTTPRequestHandler):
                    "text/html; charset=utf-8", extra=extra)
 
 
+def git_head() -> str:
+    """Short HEAD of the checkout this file lives in, without spawning git."""
+    try:
+        root = Path(__file__).resolve().parent.parent
+        ref = (root / ".git/HEAD").read_text().strip()
+        if ref.startswith("ref:"):
+            return (root / ".git" / ref.split(":", 1)[1].strip()).read_text().strip()[:7]
+        return ref[:7]
+    except Exception:
+        return "?"
+
+
 def main():
     load_fails()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
-    print("listening on http://%s:%d/ (session: %s)" % (BIND, PORT, newest_session()), flush=True)
+    print("listening on http://%s:%d/ (file: %s, rev: %s, session: %s)"
+          % (BIND, PORT, Path(__file__).resolve(), git_head(), newest_session()), flush=True)
     srv.serve_forever()
 
 
