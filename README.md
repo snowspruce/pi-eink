@@ -5,7 +5,7 @@ running [pi](https://pi.dev) session. The page shows the live conversation; five
 whitelisted buttons push actions back into the agent.
 
 Built for an e-ink device on the same LAN: one column, no JavaScript required,
-2 s polling while the agent is busy.
+1.2 s polling while the agent is busy (3 s when idle).
 
 ## How it fits together
 
@@ -188,18 +188,19 @@ Environment. Viewer variables go in the service unit; bridge variables must be i
 the environment that starts `pi` (the bridge is an in-process extension and never
 sees the unit's environment):
 
-| Variable | Default | Meaning |
-|---|---|---|
-| `EINK_PORT` | `8000` | viewer port |
-| `EINK_BIND` | `0.0.0.0` | interface to listen on; set the LAN address on a box that also has VPN/docker interfaces |
-| `EINK_BRIDGE_PORT` | unset | force one bridge port instead of the per-session hash |
-| `EINK_ALLOW_IPS` | unset | fallback peer allowlist when `allow_ips` is missing (comma separated, IP or CIDR) |
-| `EINK_ALLOW_UA` | `Kindle Build/` | fallback User-Agent allowlist |
-| `EINK_UA_STRICT` | off | `1` also enforces the UA check for loopback |
-| `EINK_VIEWER_IPS` | unset | (bridge) comma-separated viewer hosts allowed to proxy free text/approvals when the viewer runs on another machine; empty = loopback only |
-| `EINK_ALLOW_SAME_SUBNET` | on | peers in the host's own /24 are allowed; `0` disables (then only `allow_ips` counts). Both the viewer and the bridge read it, with the same default |
-| `EINK_LOG_UA` | off | `1` logs each (peer, User-Agent) pair once to `server.log`; `ua_seen.log` is written only for UAs the gate rejected |
-| `PI_SESSION_FILE` | unset | last-resort fallback: only used when no live bridge and no `bridge.json` name a session |
+| Variable | Process | Default | Meaning |
+|---|---|---|---|
+| `EINK_PORT` | both | `8000` | viewer port; the bridge also uses it to redirect its `/` |
+| `EINK_BIND` | both | `0.0.0.0` | interface to listen on; set the LAN address on a box that also has VPN/docker interfaces |
+| `EINK_BRIDGE_PORT` | both | unset | force one bridge port instead of the per-session hash |
+| `EINK_ALLOW_IPS` | both | unset | fallback peer allowlist when `allow_ips` is missing (comma separated, IP or CIDR) |
+| `EINK_ALLOW_UA` | both | `Kindle Build/` | fallback User-Agent allowlist |
+| `EINK_UA_STRICT` | viewer | off | `1` also enforces the UA check for loopback |
+| `EINK_VIEWER_IPS` | bridge | unset | comma-separated viewer hosts allowed to proxy free text/approvals when the viewer runs on another machine; empty = loopback only |
+| `EINK_ALLOW_SAME_SUBNET` | both | on | peers in the host's own /24 are allowed; `0` disables (then only `allow_ips` counts). Both the viewer and the bridge read it, with the same default |
+| `EINK_LOG_UA` | viewer | off | `1` logs each (peer, User-Agent) pair once to `server.log`; `ua_seen.log` is written only for UAs the gate rejected |
+| `PI_SESSION_FILE` | viewer | unset | last-resort fallback: only used when no live bridge and no `bridge.json` name a session |
+| `EINK_TRUST_HOURS` | viewer | `0` | `N` expires a network confirmation after N hours (0 = until the network changes) |
 
 State files under `~/.pi/eink/` (all ignored by git):
 
@@ -209,6 +210,7 @@ State files under `~/.pi/eink/` (all ignored by git):
 | `allow_ips`, `uas` | you | peer / browser allowlists |
 | `trust.json` | viewer | which networks may type (`confirmed` = host subnets, `peers` = peer subnets, `readonly` = global switch); written when a network is unlocked with the pin |
 | `fails.json` | viewer | failed-guess counters, so a restart or `kickstart -k` does not clear a lockout |
+| `install-meta` | `install.sh` | label/port/os of the installed unit, read back by `--uninstall` |
 | `actions.log` | viewer | one line per action: time, peer IP, capability, action, result |
 | `bridge.json` | bridge | most recent heartbeat — "is any bridge alive" |
 | `bridges.json` | bridge | session id → `{port, pid, cwd, sessionFile, updatedAt}`, heartbeat 60 s, entries older than 10 min ignored |
@@ -223,7 +225,8 @@ Viewer (`:8000`): `/` page shell · `/data` JSON fragment · `/static` no-JS fal
 (a form POST from a browser without JS lands here, since `/` needs script to fill
 the message list) ·
 `/sessions` picker · `/theme?d=0|1` day/night cookie · `/diag` · `/glyphs` ·
-`/favicon.png` · `POST /act/<action>` proxied to the session's bridge, plus two
+`/favicon.png` · `/done/<key>` (relayed from the bridge's confirmation page) ·
+`POST /act/<action>` proxied to the session's bridge, plus two
 viewer-local ones: `/act/unlock` (enter the pin to unlock this network) and
 `/act/readonly` (drop back to read-only).
 

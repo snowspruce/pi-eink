@@ -377,6 +377,28 @@ def atomic_write(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def trust_hours() -> float:
+    """EINK_TRUST_HOURS=8 also expires a confirmation after eight hours. Off (0) by
+    default: the network change check below is what actually matters."""
+    try:
+        return max(0.0, float(os.environ.get("EINK_TRUST_HOURS") or 0))
+    except Exception:
+        return 0.0
+
+
+def trust_stamp(state: dict) -> tuple:
+    """(subnet, at) of the network that was unlocked last, and when."""
+    stamp = state.get("stamp") or {}
+    if not isinstance(stamp, dict):
+        return "", 0.0
+    subnet = str(stamp.get("subnet") or "")
+    try:
+        at = float(stamp.get("at") or 0)
+    except Exception:
+        at = 0.0
+    return subnet, at
+
+
 def trust_state() -> dict:
     """Cached by (mtime, size): this is read on every poll, and the page polls at
     1.2s while the agent works."""
@@ -395,6 +417,7 @@ def trust_state() -> dict:
         "confirmed": [str(x) for x in (data.get("confirmed") or [])],
         "peers": [str(x) for x in (data.get("peers") or [])],
         "readonly": bool(data.get("readonly")),
+        "stamp": data.get("stamp") if isinstance(data.get("stamp"), dict) else {},
     }
     _TRUST_CACHE[0] = key
     _TRUST_CACHE[1] = state
@@ -420,6 +443,8 @@ def confirm_network(handler) -> None:
     peer = peer_subnet(handler)
     state = trust_state()
     state["readonly"] = False
+    if host:
+        state["stamp"] = {"subnet": host, "at": time.time()}
     if host and host not in state["confirmed"]:
         state["confirmed"].append(host)
     if peer and peer not in state["peers"]:
@@ -460,7 +485,29 @@ def caps_for(handler) -> str:
     host = host_subnet(handler)
     if not host or host not in state["confirmed"]:
         return "readonly"
-    return "full" if peer_subnet(handler) in state["peers"] else "readonly"
+    if peer_subnet(handler) not in state["peers"]:
+        return "readonly"
+    # Confirmed-once used to mean confirmed forever: a café that happens to use the
+    # same /24 as home inherited `full` months later. A confirmation now belongs to
+    # the network it was given on, and optionally expires.
+    stamped, at = trust_stamp(state)
+    if not stamped:
+        # trust.json from before stamps existed: the network serving this request is
+        # the one that was unlocked, so record it (once) instead of dropping to
+        # read-only - or, worse, re-deriving a fresh confirmation on every network.
+        try:
+            at = TRUST_FILE.stat().st_mtime
+        except Exception:
+            at = time.time()
+        stamped = host
+        state["stamp"] = {"subnet": host, "at": at}
+        save_trust(state)
+    if stamped != host:
+        return "readonly"
+    hours = trust_hours()
+    if hours and time.time() - at > hours * 3600:
+        return "readonly"
+    return "full"
 
 
 # A small burst, because one tap sends two beacons within a second (submit, then
@@ -621,8 +668,8 @@ def usage_totals(rows: list) -> dict:
     for row in rows:
         if row.get("type") != "message":
             continue
-        msg = row.get("message") or {}
-        if msg.get("role") != "assistant":
+        msg = row.get("message")
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
             continue
         u = msg.get("usage") or {}
         if not isinstance(u, dict):
@@ -708,9 +755,13 @@ def pending_owned_by(port: int, data: dict) -> bool:
     return False
 
 
-def pending_html(sid: str = "", port: int = 0) -> str:
+def pending_html(sid: str = "", port: int = 0, caps: str = "full") -> str:
     data = pending_approval()
     if not data or not pending_owned_by(port, data):
+        return ""
+    if caps != "full":
+        # the buttons could only 403, and the block quotes the parked command:
+        # an unlocked network must not be shown another session's command text
         return ""
     suffix = ("?s=" + quote(sid, safe="")) if sid else ""
     reason = esc(str(data.get("reason") or ""))
@@ -834,7 +885,7 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 /* Block layout on purpose: an older WebView drops `display:flex`, and under
    #acts{white-space:nowrap} the send button then landed off-screen. */
 #acts #sayform { display: block; margin-top: 6px; white-space: normal; }
-#acts #sayform textarea {
+#acts #sayform textarea, #acts #sayform input {
   display: block; width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
   font-family: inherit; font-size: 14px; line-height: 1.3;
   border: 2px solid #000; padding: 4px 8px; margin: 0;
@@ -1054,12 +1105,20 @@ document.addEventListener("submit", function (e) {
   var release = function () {
     for (bi = 0; bi < btns.length; bi++) { btns[bi].disabled = false; }
   };
+  // An e-ink browser on flaky WiFi may never reach readyState 4; without this the
+  // button stays disabled and the only way out is the 9px "重绘" link in the footer.
+  var guard = setTimeout(function () {
+    try { x.abort(); } catch (e) {}
+    release();
+    showResult("超时，请重试");
+  }, 8000);
   var x = new XMLHttpRequest();
   x.open("POST", action, true);
   x.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
   x.setRequestHeader("Accept", "application/json");
   x.onreadystatechange = function () {
     if (x.readyState !== 4) { return; }
+    clearTimeout(guard);
     release();
     var j = null;
     try { j = JSON.parse(x.responseText); } catch (err) { j = null; }
@@ -1377,9 +1436,11 @@ def load_rows(path: Path):
             if not line:
                 continue
             try:
-                rows.append(json.loads(line))
+                row = json.loads(line)
             except Exception:
                 continue
+            if isinstance(row, dict):
+                rows.append(row)
     totals = usage_totals(rows)
     # one slice assignment, not three writes: a reader in another thread must not
     # see key of X with the rows of Y
@@ -1387,11 +1448,15 @@ def load_rows(path: Path):
     return rows, totals
 
 
-def row_html(path_key: str, row: dict, index: int, show_thinking: bool, show_tools: bool):
+def row_html(path_key: str, row: dict, index: int, show_thinking: bool, show_tools: bool, version=()):
     """(key, html) for one row, or False when the row renders nothing.
-    Cached per row: rows are append-only, so only the tail is new on each poll."""
+
+    Cached per row: rows are append-only, so only the tail is new on each poll. The
+    (mtime, size) of the file is part of the key, otherwise a file rewritten in
+    place keeps serving the HTML of its previous content, digest included.
+    """
     # the index is part of the key: rows without an id would otherwise collide
-    ck = (path_key, row.get("id") or index, row.get("timestamp"), show_thinking, show_tools)
+    ck = (path_key, version, row.get("id") or index, row.get("timestamp"), show_thinking, show_tools)
     if ck in ROW_HTML:
         return ROW_HTML[ck]
     if len(ROW_HTML) > 20000:
@@ -1413,7 +1478,9 @@ def build_row(row: dict, index: int, show_thinking: bool, show_tools: bool):
                 '<div class="msg mono dim">\u2014 %s \u2014</div>' % note)
     if row.get("type") != "message":
         return False
-    mm = row.get("message") or {}
+    mm = row.get("message")
+    if not isinstance(mm, dict):
+        return False
     role = mm.get("role") or "?"
     if role == "system":
         return False
@@ -1469,9 +1536,15 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         rows = []
         total = usage_totals(rows)
 
+    try:
+        st = path.stat() if path else None
+        version = (st.st_mtime, st.st_size) if st else ()
+    except Exception:
+        version = ()
+
     out = []  # list of (key, html)
     for idx, row in enumerate(rows):
-        res = row_html(path_key, row, idx, show_thinking, show_tools)
+        res = row_html(path_key, row, idx, show_thinking, show_tools, version)
         if res:
             out.append(res)
 
@@ -1505,7 +1578,7 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
             # agent has not produced anything yet this turn: show a fresh card
             out.append(("working", '<div class="msg"><span class="role assistant">agent %s</span></div>'
                         % esc(frame)))
-    pend = pending_html(sid, port)
+    pend = pending_html(sid, port, caps)
     if pend:
         # end of the list: the page auto-scrolls to the bottom
         out.append(("pending", pend))
@@ -1599,8 +1672,12 @@ def acts_html(live: bool = True, sid: str = "", caps: str = "full") -> str:
             % (name, suffix, label) for name, label in ACTIONS if name in READONLY_ACTIONS)
         return buttons + (
             '<div class="body dim">此网络为只读。输入 PIN 才能打字或执行：</div>'
+            # <input>, not <textarea>: Android WebView capitalises the first letter of
+            # a textarea, and one capital letter silently fails the PIN - which then
+            # costs a 10 minute lockout.
             '<form method="POST" action="/act/unlock%s" id="sayform">'
-            '<textarea name="k" rows="1" maxlength="64" placeholder="PIN"></textarea>'
+            '<input type="text" name="k" inputmode="numeric" maxlength="64" placeholder="PIN" '
+            'autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">'
             '<button type="submit">\u89e3\u9501</button></form>' % suffix
         )
     buttons = "".join('<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'

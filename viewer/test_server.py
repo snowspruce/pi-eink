@@ -267,6 +267,87 @@ class UaComments(unittest.TestCase):
             ua_file.write_text("kindle build/\n")
 
 
+class TrustScope(unittest.TestCase):
+    """A confirmation belongs to the network it was given on."""
+
+    def setUp(self):
+        server.save_trust({"confirmed": ["192.168.9.0/24"], "peers": ["192.168.9.0/24"],
+                           "readonly": False, "stamp": {"subnet": "192.168.9.0/24",
+                                                        "at": time.time()}})
+        os.environ.pop("EINK_TRUST_HOURS", None)
+
+    def tearDown(self):
+        os.environ.pop("EINK_TRUST_HOURS", None)
+
+    def test_same_network_stays_full(self):
+        self.assertEqual(server.caps_for(FakeHandler("192.168.9.9", "192.168.9.20")), "full")
+
+    def test_another_network_with_the_same_subnet_is_not_inherited(self):
+        # the host moved to a different network; only its own address says so
+        self.assertEqual(server.caps_for(FakeHandler("10.9.9.9", "10.9.9.20")), "readonly")
+
+    def test_network_change_reverts_even_when_the_subnet_was_confirmed(self):
+        # trust.json lists both, but the confirmation was given on the first one
+        server.save_trust({"confirmed": ["192.168.9.0/24", "10.9.9.0/24"],
+                           "peers": ["192.168.9.0/24", "10.9.9.0/24"], "readonly": False,
+                           "stamp": {"subnet": "192.168.9.0/24", "at": time.time()}})
+        self.assertEqual(server.caps_for(FakeHandler("10.9.9.9", "10.9.9.20")), "readonly")
+
+    def test_optional_expiry(self):
+        server.save_trust({"confirmed": ["192.168.9.0/24"], "peers": ["192.168.9.0/24"],
+                           "readonly": False,
+                           "stamp": {"subnet": "192.168.9.0/24", "at": time.time() - 9 * 3600}})
+        handler = FakeHandler("192.168.9.9", "192.168.9.20")
+        self.assertEqual(server.caps_for(handler), "full")     # no TTL configured
+        os.environ["EINK_TRUST_HOURS"] = "8"
+        self.assertEqual(server.caps_for(handler), "readonly")
+
+    def test_pin_confirmation_records_the_network_and_time(self):
+        handler = FakeHandler("172.20.10.7", "172.20.10.2")
+        server.confirm_network(handler)
+        state = server.trust_state()
+        self.assertEqual(state["stamp"]["subnet"], "172.20.10.0/24")
+        self.assertGreater(state["stamp"]["at"], 0)
+        self.assertEqual(server.caps_for(handler), "full")
+
+
+class RenderRobustness(unittest.TestCase):
+    def test_non_object_rows_do_not_break_the_page(self):
+        import json as _json
+        path = server.SESSIONS / "--broken--" / "broken.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("\n".join([
+            "null",
+            '"just a string"',
+            "[1, 2]",
+            _json.dumps({"type": "message", "id": "ok1", "timestamp": "t",
+                         "message": {"role": "user", "content": [{"type": "text", "text": "still here"}]}}),
+            _json.dumps({"type": "message", "id": "bad", "message": "not a dict"}),
+        ]) + "\n")
+        try:
+            digest, frag, status, foot, items, busy = server.render(path, 5, False, False)
+            self.assertIn("still here", frag)
+        finally:
+            path.unlink()
+
+    def test_rewritten_file_does_not_serve_cached_rows(self):
+        path = server.SESSIONS / "--rewrite--" / "rewrite.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        row = {"type": "message", "id": "same-id", "timestamp": "same-ts",
+               "message": {"role": "user", "content": [{"type": "text", "text": "ORIGINAL"}]}}
+        path.write_text(_json.dumps(row) + "\n")
+        try:
+            first = server.render(path, 5, False, False)[1]
+            self.assertIn("ORIGINAL", first)
+            row["message"]["content"][0]["text"] = "REWRITTEN TEXT v2"
+            path.write_text(_json.dumps(row) + "\n")
+            second = server.render(path, 5, False, False)[1]
+            self.assertIn("REWRITTEN TEXT v2", second)
+        finally:
+            path.unlink()
+
+
 class ActionGate(unittest.TestCase):
     """action_allowed() is the enforcement point; caps_for() only decides."""
 
