@@ -15,6 +15,11 @@ answer.json
 bridge.log
 server.log
 diag.log
+actions.log
+
+# network trust: which LANs may type, and the failed-guess counters
+trust.json
+fails.json
 
 # service units and logs contain absolute paths and a local username
 *.plist

@@ -36,7 +36,42 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 
 ## Install
 
-### 1. State directory and secrets
+On the machine that will serve the page (it does not have to be the machine
+running pi, only something always on and on the same LAN):
+
+```sh
+git clone https://github.com/<you>/pi-eink ~/pi-eink
+~/pi-eink/install.sh
+```
+
+That one command does everything the manual steps below describe:
+
+- creates `~/.pi/eink` (mode 700) with a fresh `token` and `pin`, default `uas`
+  and `allow_ips`, and a `trust.json` seeded with the network you are on
+- registers the extension with `pi install` (and disables a stray loose copy in
+  `~/.pi/agent/extensions/`, which would otherwise load twice)
+- installs and starts the service unit — launchd on macOS, `systemd --user` on
+  Linux — with the absolute paths and port filled in
+- checks that the viewer answers, then prints the two URLs to open once:
+  `?k=<token>` on the computer, `?k=<pin>` on the Kindle
+
+Re-running it is safe: an existing `token`/`pin` is never regenerated (that would
+log every device out) and an existing `EINK_UA_STRICT` setting is preserved.
+
+| Flag | Meaning |
+|---|---|
+| `--port N` | viewer port (default `8000`) |
+| `--label NAME` | service label (default `com.$(whoami).pi-eink`) |
+| `--no-service` | everything except the service unit |
+| `--no-pi` | skip `pi install` |
+| `--ua-strict` / `--no-ua-strict` | force the loopback UA gate on/off |
+| `--uninstall` | stop and remove the unit, unregister the package, keep state |
+| `--keep-pi` | with `--uninstall`: leave the pi package registered |
+
+Afterwards: `/reload` in pi so the bridge extension loads, then refresh the Kindle
+page.
+
+### Manual install
 
 ```sh
 mkdir -p ~/.pi/eink
@@ -48,7 +83,7 @@ Optional but strongly recommended on e-ink, where typing a 32-char token is
 painful — a short code that stands in for it:
 
 ```sh
-printf '4821\n' > ~/.pi/eink/pin && chmod 600 ~/.pi/eink/pin
+printf '482913\n' > ~/.pi/eink/pin && chmod 600 ~/.pi/eink/pin   # 6 digits
 ```
 
 Then decide **which peers may talk to the service at all**. Without this file only
@@ -66,7 +101,16 @@ EOF
 Both the viewer and the bridge read this same file, so they always agree on who
 may connect (`EINK_ALLOW_IPS` is only the fallback when the file is absent).
 
-### 2. Install the pi extension
+Then decide **where you may type**: write `~/.pi/eink/trust.json` with the network
+you are on, otherwise the first visit is read-only until you enter the pin:
+
+```json
+{ "confirmed": ["192.168.1.0/24"], "peers": ["192.168.1.0/24"], "readonly": false }
+```
+
+`install.sh` seeds this for you from the current network.
+
+#### Install the pi extension
 
 Recommended — let pi manage it from this repository (a local source is loaded in
 place, nothing is copied, so `git pull` is the update mechanism):
@@ -81,11 +125,18 @@ pi list                         # should list /path/to/pi-eink and its resolved 
 `eink-bridge.ts` in `~/.pi/agent/extensions/` — both load, and one session would
 then bind two bridge ports and answer the same button twice.
 
+**Local directory or `git:` source?** Both work for the extension, but only a
+local clone can also host the viewer service: `git:github.com/you/pi-eink` is
+cloned into `~/.pi/agent/git/...`, a tree pi owns and rewrites on update
+(`git reset --hard`, `git clean -fdx`, path keyed by ref). Pointing launchd or
+systemd there means the unit breaks on the next `pi update --extensions`. Use one
+clone you control, and let `git pull` + a service restart be the update path.
+
 To confirm the extension is live: start pi, then look at
 `~/.pi/eink/bridges.json` — a running session should appear there with its own
 port. If it does not, `~/.pi/eink/bridge.log` says why.
 
-### 3. Run the viewer
+#### Run the viewer
 
 Try it in the foreground first:
 
@@ -97,36 +148,39 @@ Open `http://<host>:8000/?k=$(cat ~/.pi/eink/token)` once — that seeds the
 `pieink` cookie, after which plain `http://<host>:8000/` works. On the Kindle you
 can use `?k=<pin>` instead of the long token.
 
-Keep it running with launchd (macOS). Save as
-`~/Library/LaunchAgents/com.example.pi-eink.plist` — replace `/path/to` and the
-python path — then `launchctl load -w` it:
+Keep it running with launchd (macOS): copy `service/com.example.pi-eink.plist.example`
+to `~/Library/LaunchAgents/`, replace every `/path/to/pi-eink` and the python path,
+then:
 
-```xml
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>Label</key>              <string>com.example.pi-eink</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/usr/bin/python3</string>
-    <string>/path/to/pi-eink/viewer/server.py</string>
-  </array>
-  <key>EnvironmentVariables</key><dict>
-    <key>EINK_PORT</key><string>8000</string>
-  </dict>
-  <key>RunAtLoad</key>          <true/>
-  <key>KeepAlive</key>          <true/>
-  <key>ProcessType</key>        <string>Background</string>
-  <key>StandardOutPath</key>    <string>/tmp/pi-eink.log</string>
-  <key>StandardErrorPath</key>  <string>/tmp/pi-eink.log</string>
-</dict></plist>
+```sh
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.example.pi-eink.plist
 ```
 
-On Linux, the equivalent is a `systemd --user` unit with `ExecStart=` and
-`Restart=always`.
+On Linux there is `service/pi-eink.service.example` (`systemctl --user enable --now
+pi-eink`). Either way: `git pull` does **not** restart the viewer — the unit keeps a
+running process alive, it does not reload code. After an update:
+
+```sh
+launchctl kickstart -k gui/$(id -u)/com.example.pi-eink   # macOS
+systemctl --user restart pi-eink                          # Linux
+```
 
 E-ink note: if the host sleeps, the page goes dark. `caffeinate -s` in a second
 launchd unit keeps the machine awake while it is on AC power.
+
+## Develop
+
+```sh
+npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
+npm run test:viewer  # viewer: allowlist, network trust, capability gates
+```
+
+The tests bind a fixed port (`18019`) so they never collide with a real bridge,
+and never touch `~/.pi/eink`. They cover the approval handshake (including the
+409 on a second tap and the cross-session pid refusal), `/act/say` and its command
+mapping, and `ipAllowed()` against the `allow_ips` file. The viewer tests drive
+`caps_for()` directly: an unlocked network, an unknown one, a peer routed in from
+another subnet, and the 只读 switch.
 
 ## Configuration
 
@@ -135,11 +189,13 @@ Environment (set them in the service unit; both processes read them):
 | Variable | Default | Meaning |
 |---|---|---|
 | `EINK_PORT` | `8000` | viewer port |
+| `EINK_BIND` | `0.0.0.0` | interface to listen on; set the LAN address on a box that also has VPN/docker interfaces |
 | `EINK_BRIDGE_PORT` | unset | force one bridge port instead of the per-session hash |
 | `EINK_ALLOW_IPS` | unset | fallback peer allowlist when `allow_ips` is missing (comma separated, IP or CIDR) |
 | `EINK_ALLOW_UA` | `Kindle Build/` | fallback User-Agent allowlist |
 | `EINK_UA_STRICT` | off | `1` also enforces the UA check for loopback |
-| `EINK_ALLOW_SAME_SUBNET` | off | `1` also allows any peer in the host's own /24 |
+| `EINK_VIEWER_IPS` | unset | (bridge) comma-separated viewer hosts allowed to proxy free text/approvals when the viewer runs on another machine; empty = loopback only |
+| `EINK_ALLOW_SAME_SUBNET` | on | peers in the host's own /24 are allowed; `0` disables (then only `allow_ips` counts) |
 | `EINK_LOG_UA` | off | `1` logs every User-Agent to `ua_seen.log` |
 | `PI_SESSION_FILE` | unset | pin the page to one session file instead of following live bridges |
 
@@ -149,6 +205,9 @@ State files under `~/.pi/eink/` (all ignored by git):
 |---|---|---|
 | `token`, `pin`, `masked_secrets` | you | credentials (retired tokens are masked so they never leak into page output) |
 | `allow_ips`, `uas` | you | peer / browser allowlists |
+| `trust.json` | viewer | which networks may type (`confirmed` = host subnets, `peers` = peer subnets, `readonly` = global switch); written when a network is unlocked with the pin |
+| `fails.json` | viewer | failed-guess counters, so a restart or `kickstart -k` does not clear a lockout |
+| `actions.log` | viewer | one line per action: time, peer IP, capability, action, result |
 | `bridge.json` | bridge | most recent heartbeat — "is any bridge alive" |
 | `bridges.json` | bridge | session id → `{port, pid, cwd, sessionFile, updatedAt}`, heartbeat 60 s, entries older than 10 min ignored |
 | `pending.json`, `answer.json` | safety-gate ↔ bridge | a parked risky command and the page's verdict |
@@ -159,30 +218,66 @@ State files under `~/.pi/eink/` (all ignored by git):
 
 Viewer (`:8000`): `/` page shell · `/data` JSON fragment · `/static` no-JS fallback ·
 `/sessions` picker · `/theme?d=0|1` day/night cookie · `/diag` · `/glyphs` ·
-`/favicon.png` · `/act/<action>` proxied to the session's bridge.
+`/favicon.png` · `POST /act/<action>` proxied to the session's bridge, plus two
+viewer-local ones: `/act/unlock` (enter the pin to unlock this network) and
+`/act/readonly` (drop back to read-only).
 
 Bridge (`:8010`+, or `EINK_BRIDGE_PORT`): `GET /`, `/state`,
-`POST /act/{stop,continue,review,execute,status,say,approve,deny}`. Free text
-(`say`) is accepted from loopback only, so it works through the viewer's proxy but
-not directly from the LAN.
+`POST /act/{stop,continue,review,execute,status,say,approve,deny}`. Only `stop` and
+`status` are accepted from a non-loopback peer: everything else — free text,
+approvals, prompts — must come through the viewer's proxy.
 
 ## Security model
 
-Four gates, all must pass:
+Two different questions, answered separately: **who are you** (the cookie) and
+**what may you do here** (the network).
 
-1. peer IP is loopback, in `allow_ips`, or (opt-in) in the host's /24
-2. User-Agent matches a `uas` entry — spoofable, so it is only a speed bump
-3. HttpOnly cookie `pieink` equals `token` (or `pin` seeds it via `?k=`)
-4. five wrong guesses from one IP block it for 10 minutes
+**Identity**
 
-There is no free-text channel reachable from the LAN on purpose: the agent has
-shell access, so a remote free-text endpoint would be remote code execution.
-Actions are a fixed list, which is what makes putting this on a LAN defensible at
-all. Keep the token out of chat transcripts and screenshots — the page itself is a
-leak surface.
+1. User-Agent matches a `uas` entry — spoofable, so it is only a speed bump
+2. HttpOnly cookie `pieink` equals `token`; `?k=<token|pin>` seeds it
+3. The cookie lives 7 days and is re-issued on use, so a Kindle left in a bag
+   stops working on its own
+4. five wrong guesses from one IP block it for 10 minutes; the counters live in
+   `fails.json`, so restarting the viewer does not clear them
 
-Rotate by writing a new `token`/`pin`; both files are re-read on every request, so
-no restart is needed.
+**Capability** (`full` or `readonly`)
+
+The peer address cannot tell home from a café — in both cases it is just "the LAN
+this laptop is on". So the capability follows the network the *host* is attached
+to, and each network is unlocked once by entering the pin from it:
+
+| Situation | Result |
+|---|---|
+| loopback (you, on the computer) | `full` |
+| a network already unlocked | `full` |
+| a network the viewer has never served on | `readonly`: read + 停下/状态 only |
+| peer routed in from a subnet you never unlocked | `readonly` |
+| you tapped 只读 | `readonly` everywhere except loopback, until the pin is entered |
+
+`readonly` means: no free text, no 继续/审查/执行, no session picker (that list
+exposes every project on the machine) and `?s=` is ignored, so only the default
+session can be read. Stopping a runaway agent is kept available on purpose — it is
+the one action that is safe without a secret. `readonly` decisions, pin unlocks and
+every proxied action land in `actions.log`.
+
+What read-only still allows is reading the *current* conversation. On a network you
+do not control, that is a real exposure: treat the page as "assume the person next
+to you can read it" rather than "assume it is private".
+
+**What this does not fix**
+
+The page is plain HTTP. On a network you do not control, anyone who can capture
+traffic can steal the cookie and get `full` if that network was unlocked, or
+`readonly` if it was not. The Kindle's browser is too old for a modern TLS
+handshake (TLS 1.2+ with AEAD suites), so "add TLS" mostly means "downgrade to
+TLS 1.0/CBC" — for café use, prefer a phone hotspot, which makes the whole
+exposure your own WPA2 network. Arriving on any new network, tap 只读 before you
+do anything else if you are unsure.
+
+Keep the token out of chat transcripts and screenshots — the page itself is a leak
+surface. Rotate by writing a new `token`/`pin`; both are re-read on every request,
+so no restart is needed.
 
 ## Troubleshooting
 
@@ -190,6 +285,11 @@ no restart is needed.
 `session_start`, and the bridge binds a port there. An unbounded `EADDRINUSE`
 retry blocks the whole reload with no error anywhere. The retry is bounded on
 purpose: keep it that way.
+
+**The page is read-only and the text box is gone** — that network has not been
+unlocked. Enter the pin in the box under the buttons once (`trust.json` remembers
+both the host subnet and the peer subnet, which is what split-subnet offices need).
+Tapping 只读 puts it back to read-only on purpose; loopback is never affected.
 
 **The page works but every button is 403** — the bridge could not match the peer.
 It reads the same `allow_ips` as the viewer; check the file, then look at
