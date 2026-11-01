@@ -1,0 +1,8 @@
+# macOS / Python noise
+__pycache__/
+*.pyc
+.DS_Store
+
+# Runtime state and secrets NEVER live in this repo. They stay in ~/.pi/eink/
+# (token, pin, allow_ips, uas, bridge.json, bridges.json, pending.json,
+# answer.json, diag.log, ua_seen.log, server.log).

@@ -1,0 +1,9 @@
+{
+	"name": "pi-eink",
+	"version": "0.1.0",
+	"private": true,
+	"description": "E-ink (Kindle) viewer plus action bridge for pi sessions",
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*"
+	}
+}
