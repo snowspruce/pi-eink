@@ -192,6 +192,19 @@ export function mayProxy(ip: string, trusted: string[] = VIEWER_IPS): boolean {
 	return isLoopback(ip) || trusted.includes(ip);
 }
 
+/** null = allowed; otherwise the reason to refuse. Kept as one function so the
+ *  handler has a single call site and the rules themselves can be tested. */
+export function gate(ip: string, action: string, path = "", localIp = "",
+	trusted: string[] = VIEWER_IPS): string | null {
+	// localIp matters: the same-subnet rule needs the address this socket answered on
+	if (!ipAllowed(ip, localIp)) return "不在允许列表";
+	// /state exposes the same model/context/idle the status action returns
+	if (!mayProxy(ip, trusted) && ((action !== "" && loopbackOnly(action)) || path === "/state")) {
+		return "该动作只接受本机转发（通过 eink 页面操作）";
+	}
+	return null;
+}
+
 function isLoopback(ip: string): boolean {
 	return ip.startsWith("127.") || ip === "::1" || ip === "localhost";
 }
@@ -445,9 +458,14 @@ export default function einkBridge(pi: ExtensionAPI) {
 		const path = url.pathname;
 		const action = path.startsWith("/act/") ? path.slice(5) : "";
 
-		if (!ipAllowed(ip, req.socket.localAddress ?? "")) {
-			res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(html("拒绝", `<p>拒绝：${escAttr(ip || "unknown")} 不在允许列表</p>`));
+		const refused = gate(ip, action, path, req.socket.localAddress ?? "");
+		if (refused) {
+			if (wantsJson(req) || path === "/state") {
+				reply(res, action || "state", refused, req, 403);
+			} else {
+				res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
+				res.end(html("拒绝", `<p>拒绝：${escAttr(refused)}（${escAttr(ip || "unknown")}）</p>`));
+			}
 			return;
 		}
 
@@ -476,19 +494,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 			res.setHeader("Set-Cookie", `${COOKIE}=${want}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax`);
 		}
 
-		if (action && loopbackOnly(action) && !mayProxy(ip)) {
-			reply(res, action, "该动作只接受本机转发（通过 eink 页面操作）", req, 403);
-			return;
-		}
-
 		if (path === "/state") {
-			// model/context/idle is the same information the status action returns,
-			// so it follows the same rule as every other loopback-only action
-			if (!mayProxy(ip)) {
-				res.writeHead(403, { "Content-Type": "application/json; charset=utf-8" });
-				res.end(JSON.stringify({ ok: false, msg: "只接受本机/受信代理访问" }));
-				return;
-			}
 			const usage = ctx?.getContextUsage();
 			const body = JSON.stringify({
 				idle: ctx ? ctx.isIdle() : true,

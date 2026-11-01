@@ -273,6 +273,17 @@ def bridge_state():
     return state
 
 
+def rendered_session_id() -> str:
+    """Id of the session a page without ?s= is showing.
+
+    Actions used to fall back to `bridge.json` (whichever pi wrote it last), while
+    the page renders the newest live bridge - with two sessions running, "stop" on
+    one page halted the other. Resolving the id makes both sides agree.
+    """
+    info = session_meta(newest_session("") or Path("/nonexistent"))
+    return str(info.get("id") or "")
+
+
 def bridge_port() -> int:
     state = bridge_state()
     try:
@@ -348,14 +359,21 @@ def action_allowed(caps: str, action: str) -> bool:
 
 _TRUST_CACHE = [None, {}]
 _WRITE_LOCK = threading.Lock()
+# Separate from _WRITE_LOCK: auth accounting must never wait on disk IO.
+_AUTH_LOCK = threading.Lock()
+_LAST_FAIL_COUNTED = {}   # ip -> unix time of the last counted cookie failure
 
 
 def atomic_write(path: Path, text: str) -> None:
     """tmp+rename with a unique tmp name: a fixed `.tmp` is shared by every
     handler thread, and two concurrent writers leave a broken file behind."""
-    tmp = "%s.%d.tmp" % (path, threading.get_ident())
+    # pid AND thread: two viewer processes on the same host have identical
+    # main-thread idents, so a thread-only name made them overwrite each other
+    tmp = "%s.%d.%d.tmp" % (path, os.getpid(), threading.get_ident())
     with open(tmp, "w") as fh:
         fh.write(text)
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 
@@ -1610,6 +1628,38 @@ class Handler(BaseHTTPRequestHandler):
     def _dark(self) -> bool:
         return parse_cookies(self.headers.get("Cookie") or "").get("piedark") == "1"
 
+    def _note_fail(self, ip: str, guess: bool) -> None:
+        """Count one failed credential attempt.
+
+        `guess` is True for a ?k= attempt (a deliberate guess) and False for a
+        cookie that simply does not match. A browser holding one stale cookie
+        repeats it on every poll; counting each repeat locked the reader out of
+        the page (and out of the ?k= recovery path) within seconds, so the same
+        cookie can only cost one failure per minute.
+        """
+        now = time.time()
+        with _AUTH_LOCK:
+            if not guess:
+                if now - _LAST_FAIL_COUNTED.get(ip, 0) < 60:
+                    return
+                _LAST_FAIL_COUNTED[ip] = now
+            fails, since = _FAILS.get(ip, (0, now))
+            if now - since > 600:
+                fails, since = 0, now
+            fails += 1
+            if fails >= 5:
+                _FAILS[ip] = (0, now)
+                _BLOCKED[ip] = now + 600
+            else:
+                _FAILS[ip] = (fails, since)
+        save_fails()
+
+    def _clear_fails(self, ip: str) -> None:
+        with _AUTH_LOCK:
+            touched = _FAILS.pop(ip, None) is not None or _BLOCKED.pop(ip, None) is not None
+        if touched:
+            save_fails()
+
     def _send(self, body: bytes, ctype: str, code: int = 200, extra=(), cache: str = "no-store"):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -1629,9 +1679,9 @@ class Handler(BaseHTTPRequestHandler):
         """Return (ok, headers-to-set, reason). Cookie, or ?k=<token> which sets the cookie."""
         extra = []
         ip = client_ip(self)
-        until = _BLOCKED.get(ip, 0)
-        if until > time.time():
-            return False, extra, "错误次数过多，%d 分钟后再试" % max(1, round((until - time.time()) / 60))
+        # Credentials are checked before the lockout, so a correct token/pin always
+        # recovers: locking the door in front of the key was how a token rotation
+        # locked the reader out for ten minutes.
         ok_ip, why = ip_allowed(ip, local_ip(self))
         if not ok_ip:
             return False, extra, why
@@ -1646,29 +1696,24 @@ class Handler(BaseHTTPRequestHandler):
         if not want:
             return False, extra, "token file missing or empty"
         if parse_cookies(self.headers.get("Cookie", "")).get(COOKIE) == want:
+            self._clear_fails(ip)
             return True, extra + cookie_refresh(ip), ""
         given = (q.get("k") or [""])[0]
         if given and given in (want, pin()):
+            self._clear_fails(ip)
             _COOKIE_REFRESH[ip] = time.time()
             extra.append(("Set-Cookie", cookie_value()))
             return True, extra, ""
 
-        # Count every *presented but wrong* credential: a wrong cookie is just as
-        # much a guess as a wrong ?k=. A request carrying nothing is an anonymous
-        # probe, not a guess, and must not be able to lock out the real device.
+        # A guess is a ?k= attempt or a cookie that does not match. A request with
+        # no credential at all is an anonymous probe and must not count, or anyone
+        # could lock the real device out by polling it.
         presented = bool(given) or COOKIE in parse_cookies(self.headers.get("Cookie", ""))
         if presented:
-            now = time.time()
-            fails, since = _FAILS.get(ip, (0, now))
-            if now - since > 600:
-                fails, since = 0, now
-            _FAILS[ip] = (fails + 1, since)
-            if fails + 1 >= 5:
-                _FAILS[ip] = (0, now)
-                _BLOCKED[ip] = now + 600
-            save_fails()
-            if ip in _BLOCKED:
-                return False, extra, "错误次数过多，等 10 分钟后再试"
+            self._note_fail(ip, guess=bool(given))
+        until = _BLOCKED.get(ip, 0)
+        if until > time.time():
+            return False, extra, "错误次数过多，%d 分钟后再试" % max(1, round((until - time.time()) / 60))
         return False, extra, "bad or missing token"
 
     def do_POST(self):
@@ -1743,16 +1788,12 @@ class Handler(BaseHTTPRequestHandler):
         if action == "unlock":
             given = (parse_qs(body.decode("utf-8", "replace")).get("k") or [""])[0].strip()
             give = given or (q.get("k") or [""])[0]
-            if not give or give not in (pin(), token()):
-                now = time.time()
-                fails, since = _FAILS.get(ip, (0, now))
-                if now - since > 600:
-                    fails, since = 0, now
-                _FAILS[ip] = (fails + 1, since)
-                if fails + 1 >= 5:
-                    _FAILS[ip] = (0, now)
-                    _BLOCKED[ip] = now + 600
-                save_fails()
+            # Only the pin unlocks a network. The cookie's value *is* the token, so
+            # accepting the token here let anyone who sniffed a cookie upgrade an
+            # unknown network to full and write it into trust.json.
+            expected = pin()
+            if not give or not expected or give != expected:
+                self._note_fail(ip, guess=True)
                 back("PIN 不对", 403)
                 return
             confirm_network(self)
@@ -1768,7 +1809,13 @@ class Handler(BaseHTTPRequestHandler):
             back("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c", 403)
             return
 
-        post_sid = "" if caps != "full" else sid_hint
+        # Routing only: on a read-only network the page must not *choose* another
+        # session's history, but its stop/status still has to reach the session it
+        # displays, so the id is kept for routing and never used to pick a view.
+        # Route to the session the page displays. In read-only mode ?s= is ignored
+        # entirely (no choosing another session's history), so the id comes from the
+        # rendered page rather than from the request.
+        post_sid = (sid_hint if caps == "full" else "") or rendered_session_id()
         if not post_sid:
             # approval requests belong to whichever session parked them: match its pid
             try:
@@ -1779,7 +1826,12 @@ class Handler(BaseHTTPRequestHandler):
                 if parked and info.get("pid") == parked:
                     post_sid = live_sid
                     break
-        target = "http://127.0.0.1:%d%s" % ((bridge_port_for(post_sid) or bridge_port()) if post_sid else bridge_port(), u.path)
+        port_target = bridge_port_for(post_sid) if post_sid else 0
+        if not port_target:
+            # Never fall back to BRIDGE_PORT: that is a different process, or nothing
+            back("该会话未在运行（没有可用的 bridge）", 502)
+            return
+        target = "http://127.0.0.1:%d%s" % (port_target, u.path)
         req = urllib.request.Request(target, data=body, method="POST")
         # forward credentials: the bridge gates on the same cookie
         if self.headers.get("Cookie"):
@@ -1863,7 +1915,7 @@ class Handler(BaseHTTPRequestHandler):
             # that is not unlocked: show the default session instead. What read-only
             # mode must not allow is *choosing* another project's history.
             sid = ""
-        port = bridge_port_for(sid) if sid else bridge_port()
+        port = bridge_port_for(sid) if sid else bridge_port_for(rendered_session_id())
         live_here = (sid in live_bridges()) if sid else bool(live_bridges())
         keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
         limit = qint(q, "n", 12, 1, 200)

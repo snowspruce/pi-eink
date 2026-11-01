@@ -172,7 +172,7 @@ launchd unit keeps the machine awake while it is on AC power.
 
 ```sh
 npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
-npm run test:viewer  # viewer: allowlist, network trust, capability gates
+npm run test:viewer  # viewer: unit + HTTP-level enforcement (49 tests, ~1.2s)
 ```
 
 The tests bind a fixed port (`18019`) so they never collide with a real bridge,
@@ -250,7 +250,9 @@ Two different questions, answered separately: **who are you** (the cookie) and
 
 The peer address cannot tell home from a café — in both cases it is just "the LAN
 this laptop is on". So the capability follows the network the *host* is attached
-to, and each network is unlocked once by entering the pin from it:
+to, and each network is unlocked once by entering the **pin** from it. The token
+does not unlock a network: the cookie's value is the token, so accepting it here
+would let anyone who sniffed a cookie promote an unknown network to `full`.
 
 | Situation | Result |
 |---|---|

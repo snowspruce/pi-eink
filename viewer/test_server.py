@@ -140,11 +140,13 @@ class Authorized(unittest.TestCase):
     def setUp(self):
         server._FAILS.clear()
         server._BLOCKED.clear()
+        server._LAST_FAIL_COUNTED.clear()
         os.environ.pop("EINK_UA_STRICT", None)
 
     def tearDown(self):
         server._FAILS.clear()
         server._BLOCKED.clear()
+        server._LAST_FAIL_COUNTED.clear()
         os.environ.pop("EINK_UA_STRICT", None)
 
     def test_good_cookie_passes(self):
@@ -173,17 +175,35 @@ class Authorized(unittest.TestCase):
         self.assertTrue(ok)
         self.assertIn("Set-Cookie", extra[0][0])
 
-    def test_wrong_cookie_counts_toward_the_lockout(self):
-        # a wrong cookie is as much a guess as a wrong ?k=; it used to be free
-        for _ in range(4):
+    def test_wrong_cookie_costs_one_failure_per_minute(self):
+        # the same stale cookie is repeated by every poll; counting each repeat is
+        # what locked a reader out (and shut the ?k= recovery path) within seconds
+        for _ in range(10):
             fake_handler(cookie="pieink=wrong")._authorized({})
         self.assertNotIn("127.0.0.1", server._BLOCKED)
-        fake_handler(cookie="pieink=wrong")._authorized({})
+        self.assertEqual(server._FAILS["127.0.0.1"][0], 1)
+
+    def test_wrong_guesses_still_lock(self):
+        for _ in range(4):
+            fake_handler()._authorized({"k": ["wrong"]})
+        self.assertNotIn("127.0.0.1", server._BLOCKED)
+        fake_handler()._authorized({"k": ["wrong"]})
         self.assertIn("127.0.0.1", server._BLOCKED)
 
-    def test_blocked_peer_is_refused_before_anything_else(self):
+    def test_a_valid_credential_recovers_from_a_lockout(self):
+        # credentials are checked before the lockout on purpose: after a token
+        # rotation the reader must not be locked out of their own page
         server._BLOCKED["127.0.0.1"] = time.time() + 600
         ok, _extra, reason = fake_handler(cookie="pieink=" + "a" * 32)._authorized({})
+        self.assertTrue(ok, reason)
+        self.assertNotIn("127.0.0.1", server._BLOCKED)
+        server._BLOCKED["127.0.0.1"] = time.time() + 600
+        ok, _extra, reason = fake_handler()._authorized({"k": ["123456"]})
+        self.assertTrue(ok, reason)
+
+    def test_a_blocked_peer_with_a_bad_credential_is_still_refused(self):
+        server._BLOCKED["127.0.0.1"] = time.time() + 600
+        ok, _extra, reason = fake_handler(cookie="pieink=wrong")._authorized({})
         self.assertFalse(ok)
         self.assertIn("错误次数过多", reason)
 

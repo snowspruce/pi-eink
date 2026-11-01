@@ -189,6 +189,31 @@ describe("mayProxy", () => {
 	});
 });
 
+describe("gate", () => {
+	it("refuses a peer outside the allowlist", () => {
+		assert.equal(mod.gate("8.8.8.8", "stop"), "不在允许列表");
+	});
+
+	it("lets a LAN peer stop and read status, but nothing else", () => {
+		assert.equal(mod.gate("192.168.3.9", "stop", "", "192.168.3.45"), null);
+		assert.equal(mod.gate("192.168.3.9", "status", "", "192.168.3.45"), null);
+		for (const action of ["say", "approve", "deny", "continue", "review", "execute"]) {
+			assert.notEqual(mod.gate("192.168.3.9", action, "", "192.168.3.45"), null, action);
+		}
+	});
+
+	it("treats /state like an action, not like a static page", () => {
+		assert.notEqual(mod.gate("192.168.3.9", "", "/state", "192.168.3.45"), null);
+		assert.equal(mod.gate("127.0.0.1", "", "/state", "192.168.3.45"), null);
+	});
+
+	it("trusts a listed viewer host as a proxy", () => {
+		const trusted = ["192.168.3.9"];
+		assert.equal(mod.gate("192.168.3.9", "say", "", "192.168.3.45", trusted), null);
+		assert.notEqual(mod.gate("192.168.3.10", "say", "", "192.168.3.45", trusted), null);
+	});
+});
+
 describe("ipAllowed", () => {
 	after(() => rmSync(HOME, { recursive: true, force: true }));
 

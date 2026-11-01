@@ -29,7 +29,7 @@ die() { printf 'error: %s\n' "$*" >&2; exit 1; }
 
 while [ $# -gt 0 ]; do
 	case "$1" in
-		--port) [ $# -ge 2 ] || die "--port needs a value"; PORT="$2"; shift 2 ;;
+		--port) [ $# -ge 2 ] || die "--port needs a value"; PORT="$2"; PORT_SET=1; shift 2 ;;
 		--label) [ $# -ge 2 ] || die "--label needs a value"; LABEL="$2"; shift 2 ;;
 		--no-pi) DO_PI=0; shift ;;
 		--keep-pi) KEEP_PI=1; shift ;;
@@ -66,10 +66,13 @@ esac
 # remember it, and a custom label was silently left running before.
 META="$STATE/install-meta"
 if [ -f "$META" ]; then
-	# shellcheck disable=SC1090
-	. "$META"
+	# parsed, not sourced: a truncated meta used to abort the script under `set -u`
+	META_LABEL="$(sed -n 's/^META_LABEL=//p' "$META" | head -1)"
+	META_PORT="$(sed -n 's/^META_PORT=//p' "$META" | head -1)"
+	META_OS="$(sed -n 's/^META_OS=//p' "$META" | head -1)"
 	[ "$UNINSTALL" = 1 ] && { [ -n "${META_LABEL:-}" ] && LABEL="$META_LABEL"; }
-	[ -n "${META_PORT:-}" ] && [ "$PORT" = 8000 ] && PORT="$META_PORT"
+	# PORT_SET distinguishes "--port 8000" from the default value
+	[ "${PORT_SET:-0}" = 0 ] && [ -n "${META_PORT:-}" ] && PORT="$META_PORT"
 	case "$OS" in
 		Darwin) PLIST="$HOME/Library/LaunchAgents/$LABEL.plist" ;;
 	esac
@@ -230,21 +233,44 @@ case "$OS" in
 	Linux) existing_unit="$UNIT" ;;
 esac
 if [ -f "$existing_unit" ]; then
-	KEEP_ENV="$(grep -o 'EINK_[A-Z_]*=[^<>"]*' "$existing_unit" 2>/dev/null | grep -v '^EINK_PORT=' | sort -u || true)"
+	# launchd units hold <key>NAME</key><string>VALUE</string>, systemd units hold
+	# NAME=VALUE; the systemd pattern matched nothing on macOS, so settings were
+	# silently dropped on every re-run there.
+	case "$OS" in
+		Darwin)
+			KEEP_ENV="$("$PY" - "$existing_unit" <<'PYREAD'
+import json, plistlib, sys
+try:
+    with open(sys.argv[1], "rb") as fh:
+        env = (plistlib.load(fh) or {}).get("EnvironmentVariables") or {}
+except Exception:
+    env = {}
+print("\n".join("%s=%s" % (k, v) for k, v in env.items() if k.startswith("EINK_") and k != "EINK_PORT"))
+PYREAD
+)" ;;
+		Linux)
+			KEEP_ENV="$(sed -n 's/^Environment=\(EINK_[A-Z_]*\)=\(.*\)$/\1=\2/p' "$existing_unit" | grep -v '^EINK_PORT=' | sort -u)" ;;
+	esac
 fi
 
 # An existing unit may carry EINK_UA_STRICT (loopback is UA-gated too). Reinstalling
 # must not silently relax a security setting the operator turned on.
 if [ -z "$UA_STRICT" ]; then
+	# The template's own comment mentions EINK_UA_STRICT, so a substring grep on the
+	# rendered file always matched and every re-run re-enabled the loopback UA gate,
+	# making --no-ua-strict impossible to keep.
+	strict_now=""
 	case "$OS" in
-		Darwin) existing="$PLIST" ;;
-		Linux) existing="$UNIT" ;;
+		Darwin)
+			if [ -f "$PLIST" ]; then
+				strict_now="$(plutil -extract EnvironmentVariables.EINK_UA_STRICT raw -o - "$PLIST" 2>/dev/null || true)"
+			fi ;;
+		Linux)
+			if [ -f "$UNIT" ]; then
+				strict_now="$(sed -n 's/^Environment=EINK_UA_STRICT=\(.*\)$/\1/p' "$UNIT" | head -1)"
+			fi ;;
 	esac
-	if [ -f "$existing" ] && grep -q "EINK_UA_STRICT" "$existing"; then
-		UA_STRICT=1
-	else
-		UA_STRICT=0
-	fi
+	[ "$strict_now" = "1" ] && UA_STRICT=1 || UA_STRICT=0
 fi
 
 if [ "$DO_SERVICE" = 1 ]; then
@@ -254,16 +280,20 @@ if [ "$DO_SERVICE" = 1 ]; then
 			render "$REPO/service/com.example.pi-eink.plist.example" launchd "$UA_STRICT" > "$PLIST"
 			if [ -n "$KEEP_ENV" ]; then
 				say "keeping from the previous unit: $(printf '%s' "$KEEP_ENV" | tr '\n' ' ')"
-				# plist: insert <key>/<string> pairs before the closing </dict>
+				# re-parse the plist so the keys land inside EnvironmentVariables, not
+				# as siblings of Label (which plutil -lint accepts and launchd ignores)
 				"$PY" - "$PLIST" "$KEEP_ENV" <<'PYENV'
-import pathlib, sys
-path, env = pathlib.Path(sys.argv[1]), sys.argv[2].split()
-text = path.read_text()
-extra = "".join("  <key>%s</key>\n  <string>%s</string>\n" % tuple(e.split("=", 1)) for e in env if "=" in e)
-marker = "</dict>\n</plist>"
-if extra and marker in text:
-    text = text.replace(marker, extra + marker, 1)
-path.write_text(text)
+import plistlib, sys
+path = sys.argv[1]
+with open(path, "rb") as fh:
+    unit = plistlib.load(fh)
+env = unit.setdefault("EnvironmentVariables", {})
+for entry in sys.argv[2].split():
+    if "=" in entry:
+        key, value = entry.split("=", 1)
+        env.setdefault(key, value)
+with open(path, "wb") as fh:
+    plistlib.dump(unit, fh)
 PYENV
 			fi
 			plutil -lint "$PLIST" >/dev/null || die "generated unit is not a valid plist: $PLIST"
@@ -278,8 +308,28 @@ PYENV
 			[ "$LABEL" = "com.$(whoami).pi-eink" ] || say "note: --label only names the launchd unit; the systemd unit is pi-eink.service"
 			mkdir -p "$(dirname "$UNIT")"
 			render "$REPO/service/pi-eink.service.example" systemd "$UA_STRICT" > "$UNIT"
+			if [ -n "$KEEP_ENV" ]; then
+				say "keeping from the previous unit: $(printf '%s' "$KEEP_ENV" | tr '\n' ' ')"
+				"$PY" - "$UNIT" "$KEEP_ENV" <<'PYENV2'
+import pathlib, sys
+path, env = pathlib.Path(sys.argv[1]), sys.argv[2].split()
+lines = path.read_text().splitlines()
+extra = ["Environment=%s" % e for e in env if "=" in e]
+out, placed = [], False
+for line in lines:
+    if not placed and line.startswith("[Install]"):
+        out.extend(extra); extra = []; placed = True
+    out.append(line)
+if extra:
+    out.extend(extra)
+path.write_text("\n".join(out) + "\n")
+PYENV2
+			fi
 			systemctl --user daemon-reload
-			systemctl --user enable --now pi-eink
+			systemctl --user enable pi-eink
+			# enable --now does not restart a running unit, so a changed --port or env
+			# silently kept the old process
+			systemctl --user restart pi-eink
 			say "systemd unit installed: $UNIT (enable-linger for a headless box)" ;;
 	esac
 	sleep 1
@@ -294,7 +344,9 @@ PYENV
 	esac
 fi
 
-printf 'META_LABEL=%s\nMETA_PORT=%s\nMETA_OS=%s\n' "$LABEL" "$PORT" "$OS" > "$META"
+if [ "$DO_SERVICE" = 1 ]; then
+	printf 'META_LABEL=%s\nMETA_PORT=%s\nMETA_OS=%s\n' "$LABEL" "$PORT" "$OS" > "$META"
+fi
 
 LAN="$("$PY" - <<'PY' 2>/dev/null || true
 import socket
