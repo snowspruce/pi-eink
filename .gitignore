@@ -1,8 +1,29 @@
-# macOS / Python noise
+# ---- secrets and runtime state (never commit) -------------------------------
+# These files live in ~/.pi/eink/. They are listed here as well so that a state
+# directory copied into the working tree, or a viewer started with cwd here, can
+# never end up in a commit.
+token
+pin
+masked_secrets
+allow_ips
+uas
+ua_seen.log
+bridge.json
+bridges.json
+pending.json
+answer.json
+bridge.log
+server.log
+diag.log
+
+# service units and logs contain absolute paths and a local username
+*.plist
+*.service
+*.log
+
+# ---- local artifacts --------------------------------------------------------
 __pycache__/
 *.pyc
 .DS_Store
-
-# Runtime state and secrets NEVER live in this repo. They stay in ~/.pi/eink/
-# (token, pin, allow_ips, uas, bridge.json, bridges.json, pending.json,
-# answer.json, diag.log, ua_seen.log, server.log).
+*.swp
+node_modules/
