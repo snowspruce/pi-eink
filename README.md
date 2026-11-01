@@ -39,14 +39,43 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
                       └──── ~/.pi/eink/*.json ─┘
 ```
 
+## The safety-gate contract
+
+`允许/拒绝` is not implemented here. It is a handshake with the separate
+[pi-safety-gate](https://github.com/snowspruce/pi-safety-gate) extension, over two
+files in `~/.pi/eink/`:
+
+| File | Written by | Read by |
+|---|---|---|
+| `pending.json` | safety-gate parks a risky tool call there, **with its `pid`** | viewer (renders the block), bridge (answers it) |
+| `answer.json` | bridge writes the verdict, **with the same `pid`** | safety-gate (unparks the call, or blocks it) |
+
+Both sides check ownership, and both checks must stay:
+
+- the viewer only shows a block whose `pid` owns the session being rendered
+  (`pending_owned_by()`), so the page never quotes another project's command line;
+- the bridge refuses to answer a block whose `pid` is not its own (HTTP 409,
+  `eink-bridge.ts:394`), because `pending.json` is shared by every pi process.
+
+That is the whole contract — park a command with a `pid`, wait for `answer.json`.
+Anything that follows it gets Kindle-side approval for free.
+
 ## Requirements
 
 - pi installed and working (`pi --version`)
-- the `safety-gate` pi extension, **which is not part of this repository**, loaded in
-  the same pi process: it parks risky commands in `~/.pi/eink/pending.json`, the only
-  source of the 允许/拒绝 buttons. Everything else works without it — the page simply
-  never shows a pending block, and nothing reports an error. `install.sh` tells you
-  whether it found one
+- the [`safety-gate`](https://github.com/snowspruce/pi-safety-gate) pi extension, a
+  **separate repository**, loaded in the same pi process: it parks risky commands in
+  `~/.pi/eink/pending.json`, the only source of the 允许/拒绝 buttons. Optional — with
+  no gate installed, risky commands are confirmed in the desktop terminal only, the
+  page never shows a pending block, and nothing reports an error
+
+  ```sh
+  git clone https://github.com/snowspruce/pi-safety-gate.git ~/.local/share/pi-safety-gate
+  ln -sfn ~/.local/share/pi-safety-gate/extensions/safety-gate ~/.pi/agent/extensions/safety-gate
+  ```
+
+  Do not load it twice (`~/.pi/agent/extensions/` *and* `pi install`): the same
+  command would ask for approval twice. `install.sh` reports whether it found one
 - Python 3 with the standard library only (no `pip install`; tested on 3.14)
 - macOS (launchd) or Linux (systemd) for the viewer service — any always-on host
   on the same LAN works, it does not have to be the machine running pi
@@ -383,8 +412,9 @@ both the host subnet and the peer subnet, which is what split-subnet offices nee
 Tapping 只读 puts it back to read-only on purpose; loopback is never affected.
 
 **No 允许/拒绝 block ever appears** — that block is fed by `~/.pi/eink/pending.json`,
-which only the `safety-gate` extension writes. Check that `safety-gate` is loaded
-(`~/.pi/agent/extensions/safety-gate`); with a gate loaded but no risky call pending,
+which only the `safety-gate` extension writes
+([pi-safety-gate](https://github.com/snowspruce/pi-safety-gate)). Check that it is
+loaded (`~/.pi/agent/extensions/safety-gate`); with a gate loaded but no risky call pending,
 an empty block is the correct, silent state. `install.sh` prints what it found.
 
 **The page switched to another conversation by itself** — that was a bug: without

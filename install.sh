@@ -208,8 +208,10 @@ GATE="$HOME/.pi/agent/extensions/safety-gate/index.ts"
 if [ -f "$GATE" ]; then
 	say "safety-gate found: the 允许/拒绝 buttons have a source"
 else
-	say "warning: no safety-gate at $GATE"
-	say "warning: the page will never show a pending command until it is installed"
+	say "safety-gate not installed - Kindle-side approval needs it (optional):"
+	say "    git clone https://github.com/snowspruce/pi-safety-gate.git ~/.local/share/pi-safety-gate"
+	say "    ln -sfn ~/.local/share/pi-safety-gate/extensions/safety-gate ~/.pi/agent/extensions/safety-gate"
+	say "  pi-eink works without it; risky commands are then confirmed in the desktop terminal only."
 fi
 
 # --- service unit --------------------------------------------------------------

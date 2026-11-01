@@ -141,7 +141,9 @@ README 曾有 5 处与代码不符：`PI_SESSION_FILE` 写成"优先"（实际�
 
 更难发现的是：**这个功能的"缺失"和"空闲"在页面上长得一模一样**（没有待确认命令时
 本来就该是空的）。对策：Requirements 写明它是前置依赖，`install.sh` 装完就报
-"找到/没找到"，Troubleshooting 加一条"块不出现先看 gate 加载了没有"。
+"找到/没找到"并给出 clone + 软链命令，Troubleshooting 加一条"块不出现先看 gate
+加载了没有"。gate 后来单独公开为
+[snowspruce/pi-safety-gate](https://github.com/snowspruce/pi-safety-gate)。
 判据是：凡是"空输出等于正常"的通道，都必须另有一条通道证明它不是坏的。
 
 ### 12. 默认视图绑了一个会变的目标
