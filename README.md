@@ -463,6 +463,10 @@ It reads the label and port recorded in `~/.pi/eink/install-meta`, so a custom
 installer had moved aside. State is kept; `rm -rf ~/.pi/eink` deletes the token and
 the history config. Nothing else to revoke — it never left the machine.
 
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md); the tags (`v1.0.0` onwards) follow it.
+
 ## License
 
 MIT — see [LICENSE](LICENSE).

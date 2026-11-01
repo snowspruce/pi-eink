@@ -410,6 +410,10 @@ EINK_LANG=en python3 ~/pi-eink/viewer/server.py    # 前台
 它还会把安装器挪走的散落 `eink-bridge.ts` 放回原处。状态保留；`rm -rf ~/.pi/eink` 会删掉
 token 和历史配置。没有别的要吊销——它从未离开过这台机器。
 
+## 变更记录
+
+见 [CHANGELOG.md](CHANGELOG.md)；tag（从 `v1.0.0` 起）与之一致。
+
 ## 许可证
 
 MIT——见 [LICENSE](LICENSE)。
