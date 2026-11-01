@@ -84,8 +84,9 @@ Anything that follows it gets Kindle-side approval for free.
 - a device with a browser: the page is plain HTML + one small inline stylesheet
 
 Reading order if you are new to this: this README for what it does and how to run
-it, then [DEVELOPMENT.md](DEVELOPMENT.md) for why it is shaped this way and for the
-debugging ladder to use when a device cannot open the page.
+it, then [DEVELOPMENT.md](DEVELOPMENT.md) (in Chinese — the maintainer's own notes)
+for why it is shaped this way and for the debugging ladder to use when a device
+cannot open the page.
 
 ## Install
 
@@ -142,7 +143,8 @@ hotspot needs "Maximize Compatibility": the Voyage is 2.4 GHz only).
 If the page opens but a button is missing, that session is not serving a bridge and
 `~/.pi/eink/bridge.log` says why. If the text box is gone, the network has not been
 unlocked — enter the pin once. Neither case is an auth failure; the debugging ladder
-in [DEVELOPMENT.md](DEVELOPMENT.md) starts by proving the request arrived at all.
+in [DEVELOPMENT.md](DEVELOPMENT.md) (in Chinese, but its commands are copy-pasteable)
+starts by proving the request arrived at all.
 
 ### Manual install
 
