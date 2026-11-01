@@ -51,12 +51,14 @@ proxies actions to that session's own port.
 
 ## Install
 
-Today this repository is a copy; `~/.pi` still loads the loose files. Wiring it
-as a package (step 2 of the migration) is:
+Note: `file:` sources resolve relative to the settings file that declares
+them, so pass an absolute path (replace `/path/to/pi-eink` below). Today this
+repository is a copy — `~/.pi` still loads the loose files. Wiring it as a
+package is:
 
 ```json
 // ~/.pi/agent/settings.json
-"packages": ["npm:pi-subagents", "npm:pi-web-access", "file:/Users/wangke/Documents/Program/pi-eink"]
+"packages": ["npm:pi-subagents", "npm:pi-web-access", "file:/path/to/pi-eink"]
 ```
 
 Pi loads a local path source without copying, so git stays the only truth.
