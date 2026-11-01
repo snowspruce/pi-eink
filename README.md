@@ -7,6 +7,10 @@ whitelisted buttons push actions back into the agent.
 Built for an e-ink device on the same LAN: one column, no JavaScript required,
 1.2 s polling while the agent is busy (3 s when idle).
 
+Scope: personal use — one viewer, a handful of sessions, a network you control. It
+is not a multi-user service, and it is not a sandbox: the page can drive an agent
+that has a shell.
+
 ## How it fits together
 
 | Piece | Lives as | Why not something else |
@@ -29,10 +33,11 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 ## Requirements
 
 - pi installed and working (`pi --version`)
-- the `safety-gate` pi extension loaded in the same pi process: it parks risky
-  commands in `~/.pi/eink/pending.json`, the only source of the 允许/拒绝 buttons.
-  Without it the page simply never shows a pending command — no error anywhere.
-  `install.sh` reports whether it found one
+- the `safety-gate` pi extension, **which is not part of this repository**, loaded in
+  the same pi process: it parks risky commands in `~/.pi/eink/pending.json`, the only
+  source of the 允许/拒绝 buttons. Everything else works without it — the page simply
+  never shows a pending block, and nothing reports an error. `install.sh` tells you
+  whether it found one
 - Python 3 with the standard library only (no `pip install`; tested on 3.14)
 - macOS (launchd) or Linux (systemd) for the viewer service — any always-on host
   on the same LAN works, it does not have to be the machine running pi
@@ -48,7 +53,7 @@ On the machine that will serve the page (it does not have to be the machine
 running pi, only something always on and on the same LAN):
 
 ```sh
-git clone https://github.com/<you>/pi-eink ~/pi-eink
+git clone https://github.com/snowspruce/pi-eink ~/pi-eink
 ~/pi-eink/install.sh
 ```
 
@@ -78,6 +83,26 @@ log every device out) and an existing `EINK_UA_STRICT` setting is preserved.
 
 Afterwards: `/reload` in pi so the bridge extension loads, then refresh the Kindle
 page.
+
+### Verify
+
+Three checks, in this order — each proves a different layer:
+
+```sh
+pi list                                              # the package is registered
+cat ~/.pi/eink/bridges.json                          # this session is there, with its port
+grep 'listening on' ~/.pi/eink/server.log | tail -1   # service up; rev: should be your HEAD
+```
+
+Then open `http://<host>:8000/?k=<token>` on the computer: the conversation should
+render and the buttons should be enabled. The Kindle uses
+`http://<host>:8000/?k=<pin>` — device and host must be on the same LAN (an iPhone
+hotspot needs "Maximize Compatibility": the Voyage is 2.4 GHz only).
+
+If the page opens but a button is missing, that session is not serving a bridge and
+`~/.pi/eink/bridge.log` says why. If the text box is gone, the network has not been
+unlocked — enter the pin once. Neither case is an auth failure; the debugging ladder
+in [DEVELOPMENT.md](DEVELOPMENT.md) starts by proving the request arrived at all.
 
 ### Manual install
 
@@ -124,8 +149,8 @@ Recommended — let pi manage it from this repository (a local source is loaded 
 place, nothing is copied, so `git pull` is the update mechanism):
 
 ```sh
-pi install /path/to/pi-eink     # writes the entry into ~/.pi/agent/settings.json
-pi list                         # should list /path/to/pi-eink and its resolved path
+pi install ~/pi-eink          # writes the entry into ~/.pi/agent/settings.json
+pi list                       # should list ~/pi-eink and its resolved path
 ```
 
 `pi install` records the path **relative to the settings file**
@@ -149,7 +174,7 @@ port. If it does not, `~/.pi/eink/bridge.log` says why.
 Try it in the foreground first:
 
 ```sh
-EINK_PORT=8000 python3 /path/to/pi-eink/viewer/server.py
+EINK_PORT=8000 python3 ~/pi-eink/viewer/server.py
 ```
 
 Open `http://<host>:8000/?k=$(cat ~/.pi/eink/token)` once — that seeds the
@@ -178,17 +203,22 @@ launchd unit keeps the machine awake while it is on AC power.
 
 ## Develop
 
+Node 22+ for the extension tests, Python 3 for the viewer (neither is needed to
+just run the page).
+
 ```sh
 npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
 npm run test:viewer  # viewer: unit + HTTP-level enforcement (62 tests, ~1.6s)
 ```
 
-The tests bind a fixed port (`18019`) so they never collide with a real bridge,
-and never touch `~/.pi/eink`. They cover the approval handshake (including the
-409 on a second tap and the cross-session pid refusal), `/act/say` and its command
-mapping, and `ipAllowed()` against the `allow_ips` file. The viewer tests drive
-`caps_for()` directly: an unlocked network, an unknown one, a peer routed in from
-another subnet, and the 只读 switch.
+The tests bind a fixed port (`18019`) so they never collide with a real bridge, and
+never touch `~/.pi/eink`: HOME points at a temp dir, and `PI_SESSION_FILE` is
+cleared first — pi exports that variable, and it outranks the temp session dir.
+`test_http.py` starts a real viewer against a fake bridge and asserts on the wire:
+a read-only peer cannot type even when the request reaches the handler, an action
+lands on the session the page shows, and a request cannot select a session the
+network was not already shown. `test_server.py` drives the pure gates: capability
+per network, UA, lockout, trust.
 
 ## Configuration
 
@@ -356,3 +386,7 @@ It reads the label and port recorded in `~/.pi/eink/install-meta`, so a custom
 `--label` needs no repetition, and it puts back a loose `eink-bridge.ts` that the
 installer had moved aside. State is kept; `rm -rf ~/.pi/eink` deletes the token and
 the history config. Nothing else to revoke — it never left the machine.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
