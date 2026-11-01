@@ -2,7 +2,12 @@
 	"name": "pi-eink",
 	"version": "0.1.0",
 	"private": true,
+	"type": "module",
 	"description": "E-ink (Kindle) viewer plus action bridge for pi sessions",
+	"scripts": {
+		"test": "node --test extensions/eink-bridge.test.mjs",
+		"test:viewer": "python3 -m unittest discover -s viewer -p 'test_*.py'"
+	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*"
 	}

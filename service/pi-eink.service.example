@@ -1,0 +1,23 @@
+# systemd --user unit for the eink viewer (Linux).
+#
+# Copy to ~/.config/systemd/user/pi-eink.service, replace /path/to/pi-eink, then:
+#
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now pi-eink
+#   loginctl enable-linger "$USER"     # keep it running without an open session
+#
+# Point ExecStart at a directory you control (a git clone), never at
+# ~/.pi/agent/git/... — pi owns that tree and rewrites it on updates.
+[Unit]
+Description=pi eink viewer
+After=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /path/to/pi-eink/viewer/server.py
+Environment=EINK_PORT=8000
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target

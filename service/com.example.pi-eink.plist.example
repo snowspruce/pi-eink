@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd unit for the eink viewer (macOS).
+
+  Copy to ~/Library/LaunchAgents/<label>.plist, replace every /path/to/pi-eink and
+  the python path, then:
+
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/<label>.plist 2>/dev/null
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<label>.plist
+
+  Point ProgramArguments at a directory you control (a git clone), never at
+  ~/.pi/agent/git/... — pi owns that tree and rewrites it on updates.
+
+  Add <key>EINK_UA_STRICT</key><string>1</string> to also apply the User-Agent
+  allowlist to loopback. Off by default: it blocks `curl` and unusual desktop
+  browsers from the computer itself, which mostly confuses first-time setup.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.pi-eink</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>/path/to/pi-eink/viewer/server.py</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>EINK_PORT</key>
+    <string>8000</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ProcessType</key>
+  <string>Background</string>
+  <key>StandardOutPath</key>
+  <string>/tmp/pi-eink.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/pi-eink.log</string>
+</dict>
+</plist>
