@@ -71,16 +71,19 @@ may connect (`EINK_ALLOW_IPS` is only the fallback when the file is absent).
 Recommended — let pi manage it from this repository (a local source is loaded in
 place, nothing is copied, so `git pull` is the update mechanism):
 
-```jsonc
-// ~/.pi/agent/settings.json
-{
-  "packages": ["file:/path/to/pi-eink"]
-}
+```sh
+pi install /path/to/pi-eink     # writes the entry into ~/.pi/agent/settings.json
+pi list                         # should list /path/to/pi-eink and its resolved path
 ```
 
-Then start (or `/reload`) pi and check that no warning appears. Manual
-alternative, if you prefer loose files: copy `extensions/eink-bridge.ts` into
-`~/.pi/agent/extensions/`.
+`pi install` records the path **relative to the settings file**
+(`../../Documents/...` style); that is expected. Do not also keep a copy of
+`eink-bridge.ts` in `~/.pi/agent/extensions/` — both load, and one session would
+then bind two bridge ports and answer the same button twice.
+
+To confirm the extension is live: start pi, then look at
+`~/.pi/eink/bridges.json` — a running session should appear there with its own
+port. If it does not, `~/.pi/eink/bridge.log` says why.
 
 ### 3. Run the viewer
 
