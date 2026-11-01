@@ -534,14 +534,16 @@ export default function einkBridge(pi: ExtensionAPI) {
 		const ua = (req.headers["user-agent"] ?? "").toLowerCase();
 		if (uas.length > 0 && !isLoopback(ip) && !uas.some((a) => ua.includes(a))) {
 			res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(html("拒绝", "<p>拒绝：浏览器标识不在白名单</p>"));
+			res.end(html(tt(lang, "refused"),
+				`<p>${tt(lang, "refused")}: user agent not in the allow list</p>`));
 			return;
 		}
 
 		const want = token();
 		if (!want) {
 			res.writeHead(503, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(html("缺少 token", "<p>缺少 ~/.pi/eink/token</p>"));
+			res.end(html(tt(lang, "missing_token"),
+				`<p>${tt(lang, "missing_token")}: ~/.pi/eink/token</p>`));
 			return;
 		}
 
@@ -549,7 +551,8 @@ export default function einkBridge(pi: ExtensionAPI) {
 		if (!hasCookie) {
 			if (url.searchParams.get("k") !== want) {
 				res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(html("未授权", "<p>未授权：需要 ?k=&lt;token&gt;</p>"));
+				res.end(html(tt(lang, "unauthorized"),
+					`<p>${tt(lang, "unauthorized")}: ?k=&lt;token&gt;</p>`));
 				return;
 			}
 			res.setHeader("Set-Cookie", `${COOKIE}=${want}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax`);
@@ -573,7 +576,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 			const direct = (req.headers.host ?? "").replace(/:\d+$/, "");
 			if (!HOST_OK.test(direct)) {
 				res.writeHead(400, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(html("错误", "<p>bad host</p>"));
+				res.end(html(tt(lang, "bad_host"), "<p>bad host</p>"));
 				return;
 			}
 			res.writeHead(302, { Location: `http://${direct}:${VIEWER_PORT}/` });
@@ -585,13 +588,14 @@ export default function einkBridge(pi: ExtensionAPI) {
 			const key = path.slice(6);
 			const msg = url.searchParams.get("m") ?? "";
 			res.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
-			res.end(html("完成", `<p>${escAttr(msg)}</p><p><a href="/">返回</a></p>`));
+			res.end(html(tt(lang, "done"),
+			`<p>${escAttr(msg)}</p><p><a href="/">${tt(lang, "back")}</a></p>`));
 			return;
 		}
 
 		if (req.method !== "POST" && action) {
 			res.writeHead(405, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(html("方法错误", "<p>只接受 POST</p>"));
+			res.end(html(tt(lang, "method"), `<p>${tt(lang, "post_only")}</p>`));
 			return;
 		}
 

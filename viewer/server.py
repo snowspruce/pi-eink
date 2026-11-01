@@ -1258,7 +1258,7 @@ document.addEventListener("submit", function (e) {
   var form = e.target;
   var action = form.getAttribute("action") || "";
   if (action.indexOf("/act/") !== 0) { return; }
-  if (new RegExp("/status$").test(action)) { return; }   // 状态 keeps its own page
+  if (new RegExp("/status$").test(action)) { return; }   // status has its own page
   e.preventDefault();
   var body = "", els = form.querySelectorAll("textarea,input"), i;
   for (i = 0; i < els.length; i++) {
@@ -1277,7 +1277,7 @@ document.addEventListener("submit", function (e) {
     for (bi = 0; bi < btns.length; bi++) { btns[bi].disabled = false; }
   };
   // An e-ink browser on flaky WiFi may never reach readyState 4; without this the
-  // button stays disabled and the only way out is the 9px "重绘" link in the footer.
+  // button stays disabled and the only way out is the 9px "redraw" link in the footer.
   var guard = setTimeout(function () {
     try { x.abort(); } catch (e) {}
     release();
@@ -1322,7 +1322,7 @@ document.addEventListener("submit", function (e) {
 
 var resultTimer = null;
 function showResult(msg) {
-  // Right below the input: that is where the reader's eye is after tapping 发送.
+  // Right below the input: that is where the reader's eye is after tapping send.
   var el = document.getElementById("result");
   if (!el) {
     el = document.createElement("div");

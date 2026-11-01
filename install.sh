@@ -216,9 +216,9 @@ fi
 
 # --- service unit --------------------------------------------------------------
 render() {  # $1 = template, $2 = "launchd" | "systemd", $3 = "1" to keep UA strict
-	"$PY" - "$1" "$2" "$LABEL" "$REPO" "$PY" "$PORT" "$STATE" "$3" <<'PYRENDER'
+	"$PY" - "$1" "$2" "$LABEL" "$REPO" "$PY" "$PORT" "$STATE" "$3" "$HOME" <<'PYRENDER'
 import sys, pathlib
-src, kind, label, repo, py, port, state, strict = sys.argv[1:9]
+src, kind, label, repo, py, port, state, strict, home = sys.argv[1:10]
 t = pathlib.Path(src).read_text()
 t = t.replace("com.example.pi-eink", label).replace("/path/to/pi-eink", repo)
 t = t.replace("/usr/bin/python3", py).replace("/tmp/pi-eink.log", state + "/server.log")
@@ -229,11 +229,19 @@ if kind == "launchd":
         t = t.replace("<key>EINK_PORT</key>\n    <string>%s</string>" % port,
                       "<key>EINK_PORT</key>\n    <string>%s</string>\n"
                       "    <key>EINK_UA_STRICT</key>\n    <string>1</string>" % port)
+    # Pin HOME into the unit: launchd does not inherit the shell's environment, so
+    # without this the service resolves ~/.pi/eink from the *login* home and the
+    # installer's own health check (which used the state dir it just wrote) 403s.
+    t = t.replace("<key>EINK_PORT</key>\n    <string>%s</string>" % port,
+                  "<key>EINK_PORT</key>\n    <string>%s</string>\n"
+                  "    <key>HOME</key>\n    <string>%s</string>" % (port, home))
 else:
     t = t.replace("Environment=EINK_PORT=8000", "Environment=EINK_PORT=%s" % port)
     if strict == "1":
         t = t.replace("Environment=EINK_PORT=%s" % port,
                       "Environment=EINK_PORT=%s\nEnvironment=EINK_UA_STRICT=1" % port)
+    t = t.replace("Environment=EINK_PORT=%s" % port,
+                  "Environment=EINK_PORT=%s\nEnvironment=HOME=%s" % (port, home))
 sys.stdout.write(t)
 PYRENDER
 }
