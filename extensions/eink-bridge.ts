@@ -17,11 +17,13 @@
  * execution.
  *
  * Auth: HttpOnly cookie `pieink`, seeded once via ?k=<token>, where the token
- * lives in ~/.pi/eink/token. Requests from IPs outside EINK_ALLOW_IPS are refused.
+ * lives in ~/.pi/eink/token. Peers are gated by ~/.pi/eink/allow_ips (IP or
+ * CIDR, loopback always allowed), the same file the viewer reads.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { appendFileSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -65,18 +67,71 @@ const MAX_LISTEN_ATTEMPTS = 4;
 // retries exist for the old socket the previous runtime closed asynchronously.
 // A pid in bridge.json proves nothing if the entry is ancient: pids get reused.
 const STATE_MAX_AGE_MS = 5 * 60_000;
-const DEFAULT_ALLOW = "192.168.3.25,192.168.3.45,127.0.0.1,::1";
 // Kindle Voyage's browser reports "Kindle Build/4.0-rc2". Spoofable, so it only
 // sits in front of the token check as a speed bump.
 const DEFAULT_UA = "Kindle Build/";
 const UA_FILE = join(homedir(), ".pi/eink/uas");
+const ALLOW_FILE = join(homedir(), ".pi/eink/allow_ips");
 
-function allowList(): Set<string> {
-	return new Set(
-		(process.env.EINK_ALLOW_IPS ?? DEFAULT_ALLOW)
-			.split(",")
-			.map((s) => s.trim())
-			.filter(Boolean),
+/** Same precedence as the viewer: the file wins, then the env list. */
+function allowEntries(): string[] {
+	try {
+		const items = readFileSync(ALLOW_FILE, "utf8")
+			.split("\n")
+			.map((line) => line.replace(/#.*$/, "").trim())
+			.filter(Boolean);
+		if (items.length > 0) return items;
+	} catch {
+		// fall through to the env list
+	}
+	return (process.env.EINK_ALLOW_IPS ?? "")
+		.split(",")
+		.map((s) => s.trim())
+		.filter(Boolean);
+}
+
+function familyOf(ip: string): "ipv4" | "ipv6" | null {
+	if (isIPv4(ip)) return "ipv4";
+	if (isIPv6(ip)) return "ipv6";
+	return null;
+}
+
+function sameV4Slash24(a: string, b: string): boolean {
+	const pa = a.split(".");
+	const pb = b.split(".");
+	return pa.length === 4 && pb.length === 4 && pa[0] === pb[0] && pa[1] === pb[1] && pa[2] === pb[2];
+}
+
+/**
+ * Mirrors viewer/server.py:ip_allowed() so the page and the buttons agree on who
+ * may talk to us. Exported for tests; pi only uses the default export.
+ */
+export function ipAllowed(rawIp: string, localIp = ""): boolean {
+	const ip = rawIp.startsWith("::ffff:") ? rawIp.slice(7) : rawIp;
+	if (isLoopback(ip)) return true;
+	const family = familyOf(ip);
+	if (!family) return false;
+
+	const block = new BlockList();
+	for (const entry of allowEntries()) {
+		const [addr, bits] = entry.split("/");
+		const entryFamily = familyOf(addr ?? "");
+		if (!entryFamily) continue;
+		try {
+			if (bits === undefined) block.addAddress(addr, entryFamily);
+			else block.addSubnet(addr, Number(bits), entryFamily);
+		} catch {
+			// a malformed line must not take the whole gate down
+		}
+	}
+	if (block.check(ip, family)) return true;
+
+	// Opt-in convenience: any peer in the host's own /24. Off unless asked for.
+	return (
+		process.env.EINK_ALLOW_SAME_SUBNET === "1" &&
+		family === "ipv4" &&
+		localIp !== "" &&
+		sameV4Slash24(ip, localIp)
 	);
 }
 
@@ -366,12 +421,11 @@ export default function einkBridge(pi: ExtensionAPI) {
 
 	const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
 		const url = new URL(req.url ?? "/", "http://localhost");
-		const allowed = allowList();
 		const ip = clientIp(req);
 		const path = url.pathname;
 		const action = path.startsWith("/act/") ? path.slice(5) : "";
 
-		if (!allowed.has(ip)) {
+		if (!ipAllowed(ip, req.socket.localAddress ?? "")) {
 			res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
 			res.end(html("拒绝", `<p>拒绝：${escAttr(ip || "unknown")} 不在允许列表</p>`));
 			return;
