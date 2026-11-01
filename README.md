@@ -180,7 +180,7 @@ launchd unit keeps the machine awake while it is on AC power.
 
 ```sh
 npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
-npm run test:viewer  # viewer: unit + HTTP-level enforcement (56 tests, ~1.2s)
+npm run test:viewer  # viewer: unit + HTTP-level enforcement (59 tests, ~1.2s)
 ```
 
 The tests bind a fixed port (`18019`) so they never collide with a real bridge,
@@ -229,7 +229,9 @@ State files under `~/.pi/eink/` (all ignored by git):
 
 ## Endpoints
 
-Viewer (`:8000`): `/` page shell · `/data` JSON fragment · `/static` no-JS fallback
+Viewer (`:8000`): `/` page shell (a first visit without `?s=` is redirected once to
+`/?s=<id>`, so the poll stays on the conversation you opened) · `/data` JSON
+fragment · `/static` no-JS fallback
 (a form POST from a browser without JS lands here, since `/` needs script to fill
 the message list) ·
 `/sessions` picker · `/theme?d=0|1` day/night cookie · `/diag` · `/glyphs` ·
@@ -279,6 +281,11 @@ session can be read. Stopping a runaway agent is kept available on purpose — i
 the one action that is safe without a secret. `readonly` decisions, pin unlocks and
 every proxied action land in `actions.log`.
 
+One consequence of dropping `?s=`: a read-only page always follows the *newest*
+live session, so with two pi sessions running the page can change under you when the
+other one writes. That is why the id is pinned only on an unlocked network — there
+`?s=` survives, and the page stays where you put it.
+
 What read-only still allows is reading the *current* conversation. On a network you
 do not control, that is a real exposure: treat the page as "assume the person next
 to you can read it" rather than "assume it is private".
@@ -313,6 +320,15 @@ Tapping 只读 puts it back to read-only on purpose; loopback is never affected.
 which only the `safety-gate` extension writes. Check that `safety-gate` is loaded
 (`~/.pi/agent/extensions/safety-gate`); with a gate loaded but no risky call pending,
 an empty block is the correct, silent state. `install.sh` prints what it found.
+
+**The page switched to another conversation by itself** — on an unlocked network
+that was a bug, fixed by pinning `?s=` on the first visit. On a read-only network it
+is by design: `?s=` is dropped there, so the page follows the newest live session.
+Enter the pin to unlock, then the page stays on the conversation you opened.
+
+**A conversation is gone and the page says so** — the `?s=` in your URL no longer
+resolves (session file deleted, moved, or forked into a new id). The page falls back
+to the current session and says which id it lost; pick another one from /sessions.
 
 **The page works but every button is 403** — the bridge could not match the peer.
 It reads the same `allow_ips` as the viewer; check the file, then look at

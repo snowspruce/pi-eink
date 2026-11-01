@@ -59,7 +59,7 @@ class Viewer:
         self.httpd.server_close()
 
 
-def request(port, path, method="GET", body=None, cookie=True, accept=None):
+def request(port, path, method="GET", body=None, cookie=True, accept=None, out=None):
     import http.client
 
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
@@ -74,6 +74,8 @@ def request(port, path, method="GET", body=None, cookie=True, accept=None):
     conn.request(method, path, body=payload, headers=headers)
     res = conn.getresponse()
     data = res.read()
+    if out is not None:
+        out.update(dict(res.getheaders()))
     conn.close()
     return res.status, data
 
@@ -130,6 +132,11 @@ class ReadOnlyEnforcement(unittest.TestCase):
         status, _data = request(self.viewer.port, "/data?s=01234567-89ab-cdef-0123-456789abcdef")
         self.assertEqual(status, 200)
 
+    def test_readonly_page_is_not_redirected(self):
+        # ?s= is dropped on a read-only network, so pinning it would loop forever
+        status, _data = request(self.viewer.port, "/")
+        self.assertEqual(status, 200)
+
 
 class FullNetwork(unittest.TestCase):
     @classmethod
@@ -164,6 +171,19 @@ class FullNetwork(unittest.TestCase):
     def test_actions_are_routed_to_the_rendered_session(self):
         request(self.viewer.port, "/act/stop", "POST", accept="application/json")
         self.assertEqual(FakeBridge.seen[0][1], "/act/stop")
+
+    def test_page_without_s_pins_the_session_into_the_url(self):
+        """Without this the poll re-resolved "newest live session" every 1.2s, so a
+        second pi session's heartbeat swapped the whole page to another conversation."""
+        seen = {}
+        status, _data = request(self.viewer.port, "/", out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("s=aaaabbbb-1111-2222-3333-444455556666", seen.get("Location", ""))
+
+    def test_a_stale_session_id_is_reported_not_silently_swapped(self):
+        status, data = request(self.viewer.port, "/data?s=ffffffff-0000-1111-2222-333333333333")
+        self.assertEqual(status, 200)
+        self.assertIn("\u5df2\u4e0d\u53ef\u7528", data.decode("utf-8"))
 
 
 class Concurrency(unittest.TestCase):

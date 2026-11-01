@@ -21,6 +21,9 @@ atexit.register(shutil.rmtree, HOME, True)
 EINK = HOME / ".pi/eink"
 EINK.mkdir(parents=True)
 os.environ["HOME"] = str(HOME)
+# pi exports this to every child it starts; left in place it outranks the temp
+# session dir and every test would read the developer's real conversation.
+os.environ.pop("PI_SESSION_FILE", None)
 for name, value in (("token", "a" * 32), ("pin", "123456"), ("allow_ips", "127.0.0.1\n"),
                     ("uas", "kindle build/\n")):
     (EINK / name).write_text(value)

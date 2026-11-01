@@ -228,6 +228,22 @@ def session_path_by_id(session_id: str):
     return None
 
 
+def session_selected(session_id: str) -> bool:
+    """True when an explicit ?s= still names a session the viewer can read.
+
+    `newest_session()` falls back to the newest live bridge when an id does not
+    resolve, which is how a page showing a deleted or forked session silently
+    turned into another conversation. The caller has to tell "the reader picked
+    this one" apart from "that one is gone".
+    """
+    if not session_id:
+        return True
+    info = live_bridges().get(session_id)
+    if info and info.get("sessionFile") and Path(str(info["sessionFile"])).exists():
+        return True
+    return session_path_by_id(session_id) is not None
+
+
 def sessions_html() -> str:
     """Picker: running bridges first, then the most recently used session files."""
     live = live_bridges()
@@ -1542,7 +1558,7 @@ def build_row(row: dict, index: int, show_thinking: bool, show_tools: bool):
 
 
 def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: int = 0, dark: bool = False,
-           sid: str = "", caps: str = "full"):
+           sid: str = "", caps: str = "full", note: str = ""):
     path_key = str(path) if path else ""
     if path and path.exists():
         rows, total = load_rows(path)
@@ -1593,6 +1609,11 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
             out.append(("working", '<div class="msg"><span class="role assistant">agent %s</span></div>'
                         % esc(frame)))
     pend = pending_html(sid, port, caps)
+    if note:
+        # inside the fragment, before the approval block: the reader must see that
+        # the conversation changed before they see a button that targets the new one
+        out.append(("gone", '<div class="msg"><span class="role tool">\u63d0\u793a</span>'
+                            '<div class="body dim">%s</div></div>' % esc(note)))
     if pend:
         # end of the list: the page auto-scrolls to the bottom
         out.append(("pending", pend))
@@ -2001,11 +2022,15 @@ class Handler(BaseHTTPRequestHandler):
             return
         sid = (q.get("s") or [""])[0]
         caps = caps_for(self)
+        gone = ""
         if caps != "full" and sid:
             # A bookmark from a trusted network must not 403 every poll on a network
             # that is not unlocked: show the default session instead. What read-only
             # mode must not allow is *choosing* another project's history.
             sid = ""
+        elif sid and not session_selected(sid):
+            # Say it out loud instead of swapping the page to another conversation.
+            gone, sid = sid, ""
         port = bridge_port_for(sid) if sid else bridge_port_for(rendered_session_id())
         live_here = (sid in live_bridges()) if sid else bool(live_bridges())
         keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
@@ -2015,6 +2040,10 @@ class Handler(BaseHTTPRequestHandler):
         fs = qint(q, "fs", 18, 10, 48)
         hint = ('<div class="body dim">\u8be5\u7f51\u7edc\u53ea\u8bfb\uff1a\u53ea\u80fd\u67e5\u770b\u4e0e\u505c\u4e0b\u3002</div>'
                 if caps != "full" else "")
+        # Carried into render() so it lands inside the polled fragment: /data never
+        # repaints #acts, so a notice only in the shell would not show up.
+        gone_note = ("\u4f1a\u8bdd %s \u5df2\u4e0d\u53ef\u7528\uff08\u6587\u4ef6\u4e0d\u5728\u6216\u5df2\u79fb\u8d70\uff09\uff0c\u5df2\u5207\u5230\u5f53\u524d\u4f1a\u8bdd"
+                     % gone[:8]) if gone else ""
         dark = parse_cookies(self.headers.get("Cookie") or "").get("piedark") == "1"
         css = (CSS.replace("__FS__", str(fs)) + (DARK_CSS if dark else ""))
 
@@ -2033,6 +2062,19 @@ class Handler(BaseHTTPRequestHandler):
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
             return
+
+        # Opening the page without ?s= used to mean "whichever session heartbeats
+        # last", re-resolved on every poll: with two pi sessions running, the whole
+        # page swapped conversations whenever the other heartbeat landed later.
+        # Pin the id into the URL once — the poll then carries it forever.
+        # Read-only networks skip this on purpose: ?s= is dropped there (above), so
+        # the redirect would loop.
+        if not sid and caps == "full" and u.path == "/" and path is not None:
+            pinned = str(session_meta(path).get("id") or "")
+            if pinned and session_path_by_id(pinned) == path:
+                self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
+                    ("Location", "/?" + urlencode(keep + [("s", pinned)]))])
+                return
         if caps != "full" and u.path == "/sessions":
             self._send(auth_page("只读网络：会话列表要先解锁（页面上输入 PIN）", self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403, extra=extra)
@@ -2106,7 +2148,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/data":
-            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps)
+            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps,
+                                                              note=gone_note)
             payload = json.dumps({"v": digest, "html": frag, "status": status, "foot": foot,
                                   "items": [{"k": k, "h": h} for k, h in items],
                                   "busy": busy},
@@ -2132,7 +2175,8 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/static":
-            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps)
+            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps,
+                                                              note=gone_note)
             page = ("<!DOCTYPE html><html><head>"
                     '<meta http-equiv="refresh" content="15">'
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
