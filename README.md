@@ -34,6 +34,10 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
   on the same LAN works, it does not have to be the machine running pi
 - a device with a browser: the page is plain HTML + one small inline stylesheet
 
+Reading order if you are new to this: this README for what it does and how to run
+it, then [DEVELOPMENT.md](DEVELOPMENT.md) for why it is shaped this way and for the
+debugging ladder to use when a device cannot open the page.
+
 ## Install
 
 On the machine that will serve the page (it does not have to be the machine
