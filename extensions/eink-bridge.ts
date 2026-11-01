@@ -168,6 +168,27 @@ function pidAlive(pid: number): boolean {
 	}
 }
 
+/** Actions a non-loopback peer may run on the bridge port directly.
+ *  Everything else - free text, approvals, prompts - is loopback-only: the viewer
+ *  proxies from 127.0.0.1, so the Kindle keeps working while a LAN client cannot
+ *  drive the agent even if it holds the token. Exported for tests. */
+export function loopbackOnly(action: string): boolean {
+	return action !== "" && action !== "stop" && action !== "status";
+}
+
+// A viewer running on another host proxies with its own LAN address, not loopback,
+// so those actions would be refused there. EINK_VIEWER_IPS names that host; empty
+// (the default) keeps this machine as the only trusted proxy.
+const VIEWER_IPS = (process.env.EINK_VIEWER_IPS ?? "")
+	.split(",")
+	.map((s) => s.trim())
+	.filter(Boolean);
+
+/** True when this peer may run loopback-only actions. Exported for tests. */
+export function mayProxy(ip: string, trusted: string[] = VIEWER_IPS): boolean {
+	return isLoopback(ip) || trusted.includes(ip);
+}
+
 function isLoopback(ip: string): boolean {
 	return ip.startsWith("127.") || ip === "::1" || ip === "localhost";
 }
@@ -341,12 +362,8 @@ export default function einkBridge(pi: ExtensionAPI) {
 				return;
 			}
 			if (action === "say") {
-				// Text from the LAN would be RCE through the agent's bash tool; the viewer
-				// proxies from 127.0.0.1, so narrowing here costs nothing.
-				if (!isLoopback(clientIp(req))) {
-					reply(res, "say", "自由文本只接受本机转发（通过 eink 页面发送）", req, 403);
-					return;
-				}
+				// also gated below for every loopback-only action; kept here so a future
+				// refactor of the dispatcher cannot quietly reopen the free-text path
 				const text = new URLSearchParams(body).get("text")?.trim() ?? "";
 				if (!text) {
 					reply(res, "say", "没有输入内容", req, 400);
@@ -454,6 +471,11 @@ export default function einkBridge(pi: ExtensionAPI) {
 				return;
 			}
 			res.setHeader("Set-Cookie", `${COOKIE}=${want}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax`);
+		}
+
+		if (action && loopbackOnly(action) && !mayProxy(ip)) {
+			reply(res, action, "该动作只接受本机转发（通过 eink 页面操作）", req, 403);
+			return;
 		}
 
 		if (path === "/state") {
