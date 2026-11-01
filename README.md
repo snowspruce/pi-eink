@@ -29,6 +29,10 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 ## Requirements
 
 - pi installed and working (`pi --version`)
+- the `safety-gate` pi extension loaded in the same pi process: it parks risky
+  commands in `~/.pi/eink/pending.json`, the only source of the 允许/拒绝 buttons.
+  Without it the page simply never shows a pending command — no error anywhere.
+  `install.sh` reports whether it found one
 - Python 3 with the standard library only (no `pip install`; tested on 3.14)
 - macOS (launchd) or Linux (systemd) for the viewer service — any always-on host
   on the same LAN works, it does not have to be the machine running pi
@@ -176,7 +180,7 @@ launchd unit keeps the machine awake while it is on AC power.
 
 ```sh
 npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
-npm run test:viewer  # viewer: unit + HTTP-level enforcement (49 tests, ~1.2s)
+npm run test:viewer  # viewer: unit + HTTP-level enforcement (56 tests, ~1.2s)
 ```
 
 The tests bind a fixed port (`18019`) so they never collide with a real bridge,
@@ -304,6 +308,11 @@ purpose: keep it that way.
 unlocked. Enter the pin in the box under the buttons once (`trust.json` remembers
 both the host subnet and the peer subnet, which is what split-subnet offices need).
 Tapping 只读 puts it back to read-only on purpose; loopback is never affected.
+
+**No 允许/拒绝 block ever appears** — that block is fed by `~/.pi/eink/pending.json`,
+which only the `safety-gate` extension writes. Check that `safety-gate` is loaded
+(`~/.pi/agent/extensions/safety-gate`); with a gate loaded but no risky call pending,
+an empty block is the correct, silent state. `install.sh` prints what it found.
 
 **The page works but every button is 403** — the bridge could not match the peer.
 It reads the same `allow_ips` as the viewer; check the file, then look at

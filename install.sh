@@ -200,6 +200,18 @@ PYCHECK
 	fi
 fi
 
+# --- safety-gate dependency ----------------------------------------------------
+# The 允许/拒绝 block renders from ~/.pi/eink/pending.json, which only the
+# safety-gate extension writes. A missing gate yields an empty block and no error
+# anywhere, so report what was found instead of leaving it to be discovered.
+GATE="$HOME/.pi/agent/extensions/safety-gate/index.ts"
+if [ -f "$GATE" ]; then
+	say "safety-gate found: the 允许/拒绝 buttons have a source"
+else
+	say "warning: no safety-gate at $GATE"
+	say "warning: the page will never show a pending command until it is installed"
+fi
+
 # --- service unit --------------------------------------------------------------
 render() {  # $1 = template, $2 = "launchd" | "systemd", $3 = "1" to keep UA strict
 	"$PY" - "$1" "$2" "$LABEL" "$REPO" "$PY" "$PORT" "$STATE" "$3" <<'PYRENDER'
