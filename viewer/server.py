@@ -882,16 +882,29 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
   white-space: nowrap; overflow: hidden;
 }
 #acts form { display: inline-block; vertical-align: top; margin: 0 8px 0 0; line-height: 1; }
-/* Block layout on purpose: an older WebView drops `display:flex`, and under
-   #acts{white-space:nowrap} the send button then landed off-screen. */
-#acts #sayform { display: block; margin-top: 6px; white-space: normal; }
+/* One row: field then button. `-webkit-box` is the 2009 flexbox that the older
+   Kindle browser understands, `flex` the one Chromium 30 uses; both are written so
+   neither engine falls back to stacked block boxes. No `gap`: neither has it, so the
+   spacing is a margin on the button. */
+#acts #sayform {
+  display: -webkit-box; display: flex;
+  -webkit-box-align: stretch; align-items: stretch;
+  margin-top: 6px; white-space: normal;
+  width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
+}
 #acts #sayform textarea, #acts #sayform input {
-  display: block; width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
+  display: block;
+  -webkit-box-flex: 1; flex: 1 1 auto; min-width: 0;
+  -webkit-box-sizing: border-box; box-sizing: border-box;
   font-family: inherit; font-size: 14px; line-height: 1.3;
   border: 2px solid #000; padding: 4px 8px; margin: 0;
   background: #fff; color: #000; resize: none;
 }
-#acts #sayform button { display: block; width: 100%; margin-top: 6px; padding: 8px 12px; }
+#acts #sayform button {
+  display: block;
+  -webkit-box-flex: 0; flex: 0 0 auto;
+  width: auto; min-width: 64px; margin: 0 0 0 8px; padding: 4px 12px;
+}
 #acts button, .btn {
   font-family: inherit; font-size: 12px; min-height: 30px;
   background: #fff; color: #000; border: 2px solid #000;
@@ -929,10 +942,11 @@ hr { border-top-color: #fff; }
 #pending { border-color: #fff; background: #000; }
 #acts { border-top-color: #fff; }
 #acts button, .btn { background: #000; color: #fff; border-color: #fff; }
-#acts #sayform textarea { background: #000; color: #fff; border-color: #fff; }
+#acts #sayform textarea, #acts #sayform input { background: #000; color: #fff; border-color: #fff; }
 /* Chromium 30 (the Kindle) only knows the -webkit- prefixed pseudo element */
-#acts #sayform textarea::-webkit-input-placeholder { color: #eee; }
-#acts #sayform textarea::placeholder { color: #eee; }
+#acts #sayform textarea::-webkit-input-placeholder,
+#acts #sayform input::-webkit-input-placeholder { color: #eee; }
+#acts #sayform textarea::placeholder, #acts #sayform input::placeholder { color: #eee; }
 .sess { border-bottom-color: #fff; }
 .sess a { color: #fff; }
 #note, #result { color: #fff; }
