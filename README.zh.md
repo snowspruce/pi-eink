@@ -232,15 +232,21 @@ systemctl --user restart pi-eink                          # Linux
 扩展测试需要 Node 22+，viewer 需要 Python 3（只是跑页面的话两个都不需要）。
 
 ```sh
-npm test             # 扩展：stub 的 pi API、临时 HOME、真 HTTP 处理器
-npm run test:viewer  # viewer：单元 + HTTP 级强制点（67 条，约 2.1 秒）
+npm test                 # 扩展：stub 的 pi API、临时 HOME、真 HTTP 处理器
+npm run test:viewer      # viewer：单元 + HTTP 级强制点（188 条，约 7 秒）
+npm run test:cov         # 扩展覆盖率（node 内置报告器）
+npm run test:cov:viewer  # viewer 覆盖率（需 `pip install coverage`）
 ```
+
+两边都在 90% 行覆盖以上；具体数字看上面两个命令的输出，文档里不写死以免漂移。
 
 测试绑定固定端口（`18019`），永不与真实 bridge 冲突，也从不碰 `~/.pi/eink`：HOME 指向临时
 目录，并且会先清掉 `PI_SESSION_FILE`——pi 会导出这个变量，而它的优先级高于临时会话目录。
 `test_http.py` 起一个真的 viewer 对着假 bridge，断言落在线上：只读对端即使请求进到处理器也
-打不了字、动作落到页面显示的那个会话、请求无法选择该网络没被展示过的会话。`test_server.py`
-测纯判据：按网络的能力、UA、锁定、信任。
+打不了字、动作落到页面显示的那个会话、请求无法选择该网络没被展示过的会话。`test_render.py`
+覆盖那些不经过 socket 的部分：markdown → html、一行 → 一个消息块、确认块、bridge 注册表过滤
+（pid 被复用时不能把死条目留在表里）和会话解析。`test_server.py` 测纯判据：按网络的能力、
+UA、锁定、信任。
 
 ## 配置
 

@@ -7,7 +7,9 @@
 	"license": "MIT",
 	"scripts": {
 		"test": "node --test extensions/eink-bridge.test.mjs",
-		"test:viewer": "python3 -m unittest discover -s viewer -p 'test_*.py'"
+		"test:viewer": "python3 -m unittest discover -s viewer -p 'test_*.py'",
+		"test:cov": "node --test --experimental-test-coverage extensions/eink-bridge.test.mjs",
+		"test:cov:viewer": "python3 -m coverage run --branch --include='*/viewer/server.py' -m unittest discover -s viewer -p 'test_*.py' && python3 -m coverage report --precision=1"
 	},
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*"

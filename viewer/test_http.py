@@ -34,15 +34,21 @@ class FakeBridge(BaseHTTPRequestHandler):
     def log_message(self, *_args):
         pass
 
+    reply_status = 200
+    reply_body = b'{"ok": true, "msg": "fake bridge"}'
+    reply_headers: list = []
+
     def _record(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         FakeBridge.seen.append((self.command, self.path, body.decode("utf-8", "replace"),
                                dict(self.headers)))
-        payload = b'{"ok": true, "msg": "fake bridge"}'
-        self.send_response(200)
+        payload = FakeBridge.reply_body
+        self.send_response(FakeBridge.reply_status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
+        for key, value in FakeBridge.reply_headers:
+            self.send_header(key, value)
         self.end_headers()
         self.wfile.write(payload)
 
@@ -101,6 +107,9 @@ class ReadOnlyEnforcement(unittest.TestCase):
 
     def setUp(self):
         FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
         # the pin is server-side state: every test starts from "nothing remembered"
         server.VIEW_FILE.unlink(missing_ok=True)
         self.caps = mock.patch.object(server, "caps_for", return_value="readonly")
@@ -161,6 +170,9 @@ class FullNetwork(unittest.TestCase):
 
     def setUp(self):
         FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
         server.VIEW_FILE.unlink(missing_ok=True)
         for name, value in (("caps_for", lambda _h: "full"),
                             ("bridge_port_for", lambda _sid: self.bridge_port),
@@ -180,6 +192,9 @@ class FullNetwork(unittest.TestCase):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")
         FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "zh")
 
@@ -342,6 +357,385 @@ class StrictUa(unittest.TestCase):
             ok, _extra, reason = handler._authorized({})
         self.assertFalse(ok)
         self.assertIn("ua not allowed", reason)
+
+
+class ProxyBehaviour(unittest.TestCase):
+    """The viewer is a proxy: whatever the bridge answers has to reach the page
+    unchanged, and a missing bridge must say so instead of looking successful."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        cls.bridge_port = cls.bridge.server_address[1]
+        threading.Thread(target=cls.bridge.serve_forever, daemon=True).start()
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+        cls.bridge.shutdown()
+        cls.bridge.server_close()
+
+    def setUp(self):
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        for name, value in (("caps_for", lambda _h: "full"),
+                            ("bridge_port_for", lambda _sid: self.bridge_port)):
+            mock.patch.object(server, name, value).start()
+
+    def test_approve_relays_the_bridge_verdict(self):
+        FakeBridge.reply_body = '{"ok": true, "msg": "已允许（fake）"}'.encode()
+        status, data = request(self.viewer.port, "/act/approve", "POST", accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertIn("已允许", json.loads(data)["msg"])
+        self.assertEqual(FakeBridge.seen[0][1], "/act/approve")
+
+    def test_bridge_error_status_is_forwarded_with_its_message(self):
+        FakeBridge.reply_status = 409
+        FakeBridge.reply_body = '{"ok": false, "msg": "该确认属于另一个会话"}'.encode()
+        status, data = request(self.viewer.port, "/act/deny", "POST", accept="application/json")
+        self.assertEqual(status, 409)
+        self.assertIn("另一个会话", json.loads(data)["msg"])
+
+    def test_plain_form_post_is_bounced_to_the_static_page(self):
+        # no JSON accept header: an old browser cached before the inline handler
+        FakeBridge.reply_body = '{"ok": true, "msg": "已发送"}'.encode()
+        seen = {}
+        status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi", out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("/static?", seen.get("Location", ""))
+        self.assertIn("msg=", seen.get("Location", ""))
+
+    def test_non_json_bridge_body_falls_back_to_a_generic_verdict(self):
+        FakeBridge.reply_body = b"<html>not json</html>"
+        status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi")
+        self.assertEqual(status, 303)
+
+    def test_post_without_a_running_bridge_is_502(self):
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: 0):
+            status, data = request(self.viewer.port, "/act/say", "POST", "text=hi",
+                                   accept="application/json")
+        self.assertEqual(status, 502)
+        self.assertIn("bridge", json.loads(data)["msg"])
+
+    def test_done_page_is_relayed_from_the_bridge(self):
+        with mock.patch.object(server, "bridge_port", lambda: self.bridge_port):
+            status, data = request(self.viewer.port, "/done/say?m=ok")
+        self.assertEqual(status, 200)
+        self.assertIn("/done/say", FakeBridge.seen[0][1])
+
+    def test_done_page_without_a_bridge_reports_it(self):
+        with mock.patch.object(server, "bridge_port", lambda: 1):
+            status, data = request(self.viewer.port, "/done/say?m=ok")
+        self.assertEqual(status, 502)
+        self.assertIn(b"bridge", data)
+
+    def test_glyphs_page_lists_the_candidates(self):
+        status, data = request(self.viewer.port, "/glyphs")
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn("盲文 (pi TUI)", body)     # default language is Chinese
+        self.assertIn("[|]", body)
+
+    def test_theme_switches_both_ways(self):
+        for want, cookie in (("1", "piedark=1"), ("0", "piedark=0")):
+            seen = {}
+            status, _data = request(self.viewer.port, "/theme?d=" + want, out=seen)
+            self.assertEqual(status, 303)
+            self.assertIn(cookie, seen.get("Set-Cookie", ""))
+
+    def test_lang_rejects_an_unknown_value(self):
+        seen = {}
+        status, _data = request(self.viewer.port, "/lang?l=klingon", out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("pielang=en", seen.get("Set-Cookie", ""))
+
+    def test_footer_reports_a_stale_bridge(self):
+        live = {"aaaabbbb-1111-2222-3333-444455556666": {"port": 1}}
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_state", lambda: None), \
+             mock.patch.object(server, "bridge_alive", lambda: True):
+            status, data = request(self.viewer.port, "/data?s=aaaabbbb-1111-2222-3333-444455556666")
+        self.assertEqual(status, 200)
+        self.assertIn("bridge", json.loads(data)["status"])
+
+    def test_busy_page_carries_the_spinner_into_the_digest(self):
+        live = {"aaaabbbb-1111-2222-3333-444455556666": {"port": 1}}
+        state = {"idle": False, "context": {"window": 200000, "percent": 3.5}}
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_state", lambda: {"port": 1, "pid": os.getpid(),
+                                                               "sessionFile": "x"}), \
+             mock.patch.object(server, "agent_state", lambda _p=0: state):
+            status, data = request(self.viewer.port, "/data?s=aaaabbbb-1111-2222-3333-444455556666")
+        self.assertEqual(status, 200)
+        payload = json.loads(data)
+        self.assertTrue(payload["busy"])
+        self.assertIn("200k", payload["status"])
+
+
+class UnlockFlow(unittest.TestCase):
+    """The two viewer-local actions: /act/unlock and /act/readonly."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def setUp(self):
+        self.trust = server.TRUST_FILE
+        self.saved = self.trust.read_text() if self.trust.exists() else None
+        self.trust.write_text(json.dumps({"confirmed": [], "peers": [], "readonly": False}))
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self.saved is None:
+            self.trust.unlink(missing_ok=True)
+        else:
+            self.trust.write_text(self.saved)
+        mock.patch.stopall()
+
+    def test_unlock_with_the_right_pin_unlocks_this_network(self):
+        with mock.patch.object(server, "peer_subnet", lambda _h: "192.168.3.0/24"), \
+             mock.patch.object(server, "host_subnet", lambda _h: "192.168.3.0/24"):
+            status, data = request(self.viewer.port, "/act/unlock", "POST",
+                                   "k=" + (base.EINK / "pin").read_text().strip(),
+                                   accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertIn("解锁", json.loads(data)["msg"])
+        state = json.loads(self.trust.read_text())
+        self.assertIn("192.168.3.0/24", state["confirmed"])
+
+    def test_unlock_with_a_wrong_pin_is_refused(self):
+        status, data = request(self.viewer.port, "/act/unlock", "POST", "k=000000",
+                               accept="application/json")
+        self.assertEqual(status, 403)
+        self.assertIn("PIN", json.loads(data)["msg"])
+        self.assertEqual(json.loads(self.trust.read_text())["confirmed"], [])
+
+    def test_readonly_action_switches_the_network_back(self):
+        status, data = request(self.viewer.port, "/act/readonly", "POST", accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertTrue(json.loads(self.trust.read_text())["readonly"])
+
+
+class ProxyEdges(unittest.TestCase):
+    """Bridge responses that are not the happy-path 200 JSON."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        cls.bridge_port = cls.bridge.server_address[1]
+        threading.Thread(target=cls.bridge.serve_forever, daemon=True).start()
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+        cls.bridge.shutdown()
+        cls.bridge.server_close()
+
+    def setUp(self):
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        mock.patch.object(server, "caps_for", lambda _h: "full").start()
+        mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port).start()
+
+    def test_a_bridge_redirect_is_relayed_as_a_redirect(self):
+        FakeBridge.reply_status = 303
+        FakeBridge.reply_body = b""
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port):
+            status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi",
+                                    accept="application/json")
+        self.assertIn(status, (200, 303))
+
+    def test_unreachable_bridge_reports_502(self):
+        dead = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        port = dead.server_address[1]
+        dead.server_close()          # bound then released: connection refused
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: port):
+            status, data = request(self.viewer.port, "/act/say", "POST", "text=hi",
+                                   accept="application/json")
+        self.assertEqual(status, 502)
+        self.assertIn(b"bridge", data)
+
+    def test_an_oversized_body_is_not_forwarded(self):
+        status, _data = request(self.viewer.port, "/act/say", "POST", "x=" + "a" * 9000,
+                                accept="application/json")
+        # over the 8 KiB cap the body is dropped, not buffered: the page's own limit
+        # is 2000 chars, so anything larger is a client bug
+        self.assertEqual(FakeBridge.seen[0][2], "")
+        self.assertEqual(status, 200)
+
+    def test_post_is_routed_by_pending_pid_when_no_session_is_named(self):
+        server.PENDING_FILE.write_text(json.dumps({"id": "p", "pid": os.getpid()}))
+        self.addCleanup(server.PENDING_FILE.unlink, missing_ok=True)
+        live = {"aaaa1111-2222-3333-4444-555566667777":
+                {"port": self.bridge_port, "pid": os.getpid()}}
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "rendered_session_id", lambda: ""):
+            status, _data = request(self.viewer.port, "/act/approve", "POST",
+                                    accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertEqual(FakeBridge.seen[0][1], "/act/approve")
+
+
+class HandlerEdges(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def setUp(self):
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        self.addCleanup(mock.patch.stopall)
+
+    def test_post_to_a_non_action_path_is_404(self):
+        status, data = request(self.viewer.port, "/nope", "POST", "x=1", accept="application/json")
+        self.assertEqual(status, 404)
+        self.assertIn(b"not found", data)
+
+    def test_post_without_a_credential_never_reaches_the_bridge(self):
+        status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi",
+                                cookie=False, accept="application/json")
+        self.assertEqual(status, 403)
+        self.assertEqual(FakeBridge.seen, [])
+
+    def test_an_internal_error_still_answers_the_device(self):
+        with mock.patch.object(server, "caps_for", lambda _h: "full"), \
+             mock.patch.object(server, "resolve_view", side_effect=RuntimeError("boom")):
+            status, data = request(self.viewer.port, "/")
+        self.assertEqual(status, 500)
+        self.assertIn(b"RuntimeError", data)
+
+
+class EndpointPages(unittest.TestCase):
+    """Pages that are served by the viewer itself, not by the bridge."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def setUp(self):
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        self.addCleanup(server.DIAG_LOG.unlink, missing_ok=True)
+        server._DIAG_SEEN = None
+        server._DIAG_SEEN_TIME.clear() if hasattr(server, "_DIAG_SEEN_TIME") else None
+        mock.patch.object(server, "caps_for", lambda _h: "full").start()
+        mock.patch.object(server, "bridge_port_for", lambda _sid: 0).start()
+
+    def test_picker_page_lists_sessions(self):
+        status, data = request(self.viewer.port, "/sessions")
+        self.assertEqual(status, 200)
+        self.assertIn(b'class="sess"', data)
+
+    def test_static_page_renders_without_javascript(self):
+        status, data = request(self.viewer.port, "/static")
+        self.assertEqual(status, 200)
+        self.assertIn(b"http-equiv=\"refresh\"", data)
+
+    def test_diag_beacon_is_recorded_once(self):
+        for _ in range(3):
+            status, data = request(self.viewer.port, "/diag?ev=tap&a=%2Fact%2Fsay")
+            self.assertEqual(status, 200)
+        self.assertEqual(data, b"ok")
+        log = server.DIAG_LOG.read_text()
+        self.assertEqual(log.count("ev=tap"), 1)      # the same beacon is deduped
+
+    def test_diag_rate_limit_answers_429(self):
+        with mock.patch.object(server, "_diag_allow", lambda _ip: False):
+            status, data = request(self.viewer.port, "/diag?ev=x")
+        self.assertEqual(status, 429)
+        self.assertIn(b"slow down", data)
+
+    def test_ua_logging_records_a_peer_once(self):
+        with mock.patch.dict(os.environ, {"EINK_LOG_UA": "1"}):
+            server._UA_SEEN.clear()
+            request(self.viewer.port, "/data")
+            request(self.viewer.port, "/data")
+            self.assertEqual(len(server._UA_SEEN), 1)
+
+    def test_get_without_credential_is_refused(self):
+        status, data = request(self.viewer.port, "/", cookie=False)
+        self.assertEqual(status, 403)
+        self.assertIn(b"denied", data)
+
+    def test_favicon_is_served_for_both_names(self):
+        for name in ("/favicon.ico", "/favicon.png"):
+            status, data = request(self.viewer.port, name)
+            self.assertEqual(status, 200)
+            self.assertTrue(data.startswith(b"\x89PNG"))
+
+    def test_corrupt_pending_file_does_not_break_a_post(self):
+        server.PENDING_FILE.write_text("{not json")
+        self.addCleanup(server.PENDING_FILE.unlink, missing_ok=True)
+        with mock.patch.object(server, "rendered_session_id", lambda: ""):
+            status, _data = request(self.viewer.port, "/act/approve", "POST",
+                                    accept="application/json")
+        self.assertEqual(status, 502)          # no session to route to, said out loud
+
+    def test_bridge_redirect_reaches_a_javascript_client_as_303(self):
+        bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        port = bridge.server_address[1]
+        threading.Thread(target=bridge.serve_forever, daemon=True).start()
+        self.addCleanup(bridge.server_close)
+        self.addCleanup(bridge.shutdown)
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        FakeBridge.reply_status = 303
+        FakeBridge.reply_body = b""
+        FakeBridge.reply_headers = [("Location", "/done/say?m=ok")]
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: port):
+            status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi",
+                                    accept="application/json")
+        self.assertEqual(status, 303)
+
+    def test_plain_form_failure_is_bounced_with_the_failure_text(self):
+        bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        port = bridge.server_address[1]
+        threading.Thread(target=bridge.serve_forever, daemon=True).start()
+        self.addCleanup(bridge.server_close)
+        self.addCleanup(bridge.shutdown)
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        FakeBridge.reply_status = 403
+        FakeBridge.reply_body = '{"ok": false, "msg": "not in the allow list"}'.encode()
+        FakeBridge.reply_headers = []
+        seen = {}
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: port):
+            status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi", out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("msg=", seen.get("Location", ""))
 
 
 if __name__ == "__main__":

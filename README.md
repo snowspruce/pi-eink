@@ -249,9 +249,14 @@ Node 22+ for the extension tests, Python 3 for the viewer (neither is needed to
 just run the page).
 
 ```sh
-npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
-npm run test:viewer  # viewer: unit + HTTP-level enforcement (67 tests, ~2.1s)
+npm test                 # extension: stubbed pi API, temp HOME, real HTTP handler
+npm run test:viewer      # viewer: unit + HTTP-level enforcement (188 tests, ~7s)
+npm run test:cov         # extension coverage (node's built-in reporter)
+npm run test:cov:viewer  # viewer coverage (needs `pip install coverage`)
 ```
+
+Both suites sit above 90% line coverage; the numbers are what the two commands print,
+not a badge kept in sync by hand.
 
 The tests bind a fixed port (`18019`) so they never collide with a real bridge, and
 never touch `~/.pi/eink`: HOME points at a temp dir, and `PI_SESSION_FILE` is
@@ -259,8 +264,11 @@ cleared first — pi exports that variable, and it outranks the temp session dir
 `test_http.py` starts a real viewer against a fake bridge and asserts on the wire:
 a read-only peer cannot type even when the request reaches the handler, an action
 lands on the session the page shows, and a request cannot select a session the
-network was not already shown. `test_server.py` drives the pure gates: capability
-per network, UA, lockout, trust.
+network was not already shown. `test_render.py` covers what never reaches a socket:
+markdown -> html, one row -> one message block, the approval block, the bridge
+registry filter (a reused pid must not keep a dead entry alive) and session
+resolution. `test_server.py` drives the pure gates: capability per network, UA,
+lockout, trust.
 
 ## Configuration
 

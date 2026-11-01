@@ -18,13 +18,15 @@ const EINK = join(HOME, ".pi/eink");
 // random per run: a fixed weak token plus a LAN-bound port made the bridge
 // reachable by anyone on the same network while the tests ran
 const TOKEN = randomUUID();
-// fixed port: the per-session hash would land in the 8010+ range real bridges use
-const TEST_PORT = 18019;
+// no fixed port on purpose: the suite exercises the per-session hash path, and the
+// collision test below needs `preferredPort() + n` to be reachable
+const TEST_PORT = 0;
 
 const PENDING = join(EINK, "pending.json");
 const ANSWER = join(EINK, "answer.json");
 
 let handlers = {};
+let aborted = 0;
 let sent = [];
 let port = 0;
 let mod;
@@ -36,8 +38,9 @@ async function load() {
 	writeFileSync(join(EINK, "allow_ips"), "127.0.0.1\n# a CIDR the old env-only gate could not express\n192.168.0.0/16\n");
 	writeFileSync(join(EINK, "uas"), "kindle build/\n");
 	process.env.HOME = HOME;
-	process.env.EINK_BRIDGE_PORT = String(TEST_PORT);
-	process.env.EINK_BIND = "127.0.0.1";
+	// 0.0.0.0: a request from this machine's LAN address is not loopback, which is
+	// the only way to exercise the UA gate without a second host
+	process.env.EINK_BIND = "0.0.0.0";
 	mod = await import("../extensions/eink-bridge.ts");
 }
 
@@ -59,6 +62,7 @@ const ctx = {
 		getSessionFile: () => join(HOME, "test-session.jsonl"),
 	},
 	isIdle: () => true,
+	abort: () => { aborted += 1; },
 	hasPendingMessages: () => false,
 	model: { provider: "test", id: "model" },
 	thinkingLevel: "high",
@@ -103,7 +107,9 @@ describe("eink bridge", () => {
 	it("registers this session in the bridge registry", () => {
 		const reg = JSON.parse(readFileSync(join(EINK, "bridges.json"), "utf8"));
 		assert.deepEqual(Object.keys(reg), ["test-session"]);
-		assert.equal(reg["test-session"].port, TEST_PORT);
+		// hashed off the session id, inside the 8010 + PORT_SPAN window
+		assert.ok(reg["test-session"].port >= 8010 && reg["test-session"].port < 8010 + 40,
+			`unexpected bridge port ${reg["test-session"].port}`);
 		assert.equal(reg["test-session"].pid, process.pid);
 	});
 
@@ -161,6 +167,240 @@ describe("eink bridge", () => {
 		const res = await post("/act/say", "text=");
 		assert.equal(res.status, 400);
 		assert.equal(sent.length, 0);
+	});
+
+	it("redirects the bare bridge port to the viewer", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/`, {
+			redirect: "manual",
+			headers: { Cookie: `pieink=${TOKEN}` },
+		});
+		assert.ok([301, 302].includes(res.status));
+		assert.match(res.headers.get("location") ?? "", /^http:\/\//);
+	});
+
+	it("refuses a request without a cookie or a k parameter", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/state`);
+		assert.equal(res.status, 403);
+	});
+
+	it("accepts ?k=<token> once and seeds the cookie", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/state?k=${TOKEN}`, { redirect: "manual" });
+		assert.ok([200, 303].includes(res.status));
+		assert.match(res.headers.get("set-cookie") ?? "", new RegExp(`pieink=${TOKEN}`));
+	});
+
+	it("answers a plain browser with html, not json", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/done/say?m=ok`, {
+			headers: { Cookie: `pieink=${TOKEN}` },
+		});
+		assert.equal(res.status, 200);
+		const body = await res.text();
+		assert.match(body, /<html/);
+		assert.match(body, /ok/);
+	});
+
+	it("renders the status page for a browser", async () => {
+		// status answers with its own HTML page, so it is a POST like every action
+		const res = await fetch(`http://127.0.0.1:${port}/act/status`, {
+			method: "POST",
+			headers: { Cookie: `pieink=${TOKEN}`, Accept: "text/html" },
+		});
+		assert.equal(res.status, 200);
+		assert.match(await res.text(), /Status|状态/);
+	});
+
+	it("answers 404 for an unknown action", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/act/nope`, {
+			method: "POST",
+			headers: { Cookie: `pieink=${TOKEN}`, Accept: "application/json" },
+		});
+		assert.equal(res.status, 404);
+	});
+
+	it("keeps the language header for the answers", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/act/status`, {
+			method: "POST",
+			headers: { Cookie: `pieink=${TOKEN}`, Accept: "text/html", "X-Eink-Lang": "en" },
+		});
+		assert.match(await res.text(), /Status/);
+	});
+
+	it("maps the slash commands it can perform", async () => {
+		for (const cmd of ["/compact", "/reload", "/quit"]) {
+			sent = [];
+			const res = await post("/act/say", "text=" + encodeURIComponent(cmd));
+			assert.equal(res.status, 200, cmd);
+			assert.equal(sent.length, 1, cmd);
+		}
+	});
+
+	it("passes an unknown slash command through as text", async () => {
+		sent = [];
+		const res = await post("/act/say", "text=" + encodeURIComponent("/foo bar"));
+		assert.equal(res.status, 200);
+		assert.equal(sent[0].text, "/foo bar");
+	});
+
+	it("ignores a second tap inside the dedupe window", async () => {
+		const first = await post("/act/continue");
+		const second = await post("/act/continue");
+		assert.equal(first.status, 200);
+		assert.match(second.json.msg, /忽略|Ignored/);
+	});
+
+	it("retries as a steer when a run starts between the idle check and the send", async () => {
+		const original = pi.sendUserMessage;
+		let calls = 0;
+		pi.sendUserMessage = async (_text, opts) => {
+			calls += 1;
+			if (!opts) throw new Error("a run already started");
+		};
+		try {
+			const res = await post("/act/execute");
+			assert.equal(res.status, 200);
+			assert.equal(calls, 2);
+		} finally {
+			pi.sendUserMessage = original;
+		}
+	});
+
+	it("answers 405 to a GET on an action", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/act/say`, {
+			headers: { Cookie: `pieink=${TOKEN}` },
+		});
+		assert.equal(res.status, 405);
+	});
+
+	it("keeps ipv6 loopback and unknown addresses straight", () => {
+		assert.equal(mod.ipAllowed("::1"), true);
+		assert.equal(mod.ipAllowed("fe80::1"), false);
+		assert.equal(mod.ipAllowed(""), false);
+	});
+
+	it("rejects a Host header that is not an address", async () => {
+		const http = await import("node:http");
+		const status = await new Promise((resolve, reject) => {
+			const req = http.request({
+				host: "127.0.0.1",
+				port,
+				path: "/",
+				// a bare hostname is fine (the regex allows it); a colon is not
+				headers: { Host: "evil:example", Cookie: `pieink=${TOKEN}` },
+			}, (res) => {
+				res.resume();
+				resolve(res.statusCode);
+			});
+			req.on("error", reject);
+			req.end();
+		});
+		assert.equal(status, 400);
+	});
+
+	it("stops a LAN peer whose user agent is not allowed", async () => {
+		const os = await import("node:os");
+		const lan = Object.values(os.networkInterfaces()).flat()
+			.find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+		if (!lan) {
+			return; // no LAN address on this machine: nothing to test
+		}
+		const res = await fetch(`http://${lan}:${port}/state`, {
+			headers: { Cookie: `pieink=${TOKEN}`, "User-Agent": "curl/8" },
+		});
+		assert.equal(res.status, 403);
+	});
+
+	it("lets a LAN peer with the Kindle user agent read state", async () => {
+		const os = await import("node:os");
+		const lan = Object.values(os.networkInterfaces()).flat()
+			.find((i) => i && i.family === "IPv4" && !i.internal)?.address;
+		if (!lan) {
+			return;
+		}
+		const res = await fetch(`http://${lan}:${port}/state`, {
+			headers: { Cookie: `pieink=${TOKEN}`, "User-Agent": "Kindle Build/4.0-rc2" },
+		});
+		assert.equal(res.status, 200);
+	});
+
+	it("stops the current run", async () => {
+		const res = await post("/act/stop");
+		assert.equal(res.status, 200);
+		assert.match(res.json.msg, /中止|Nothing|没有/);
+	});
+
+	it("queues text behind a running turn", async () => {
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			const res = await post("/act/say", "text=" + encodeURIComponent("later"));
+			assert.equal(res.status, 200);
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+	});
+
+	it("maps /new and refuses a TUI-only built-in", async () => {
+		const created = await post("/act/say", "text=" + encodeURIComponent("/new"));
+		assert.equal(created.status, 200);
+		assert.match(created.json.msg, /新建|New session/);
+		const refused = await post("/act/say", "text=" + encodeURIComponent("/settings"));
+		assert.equal(refused.status, 400);
+		assert.match(refused.json.msg, /TUI/);
+	});
+
+	it("reviews when asked", async () => {
+		sent = [];
+		const res = await post("/act/review");
+		assert.equal(res.status, 200);
+		assert.equal(sent.length, 1);
+	});
+
+	it("reports a missing token instead of crashing", async () => {
+		const tokenPath = join(EINK, "token");
+		const saved = readFileSync(tokenPath, "utf8");
+		rmSync(tokenPath);
+		try {
+			const res = await fetch(`http://127.0.0.1:${port}/state`, {
+				headers: { Cookie: `pieink=${TOKEN}` },
+			});
+			assert.equal(res.status, 503);
+		} finally {
+			writeFileSync(tokenPath, saved);
+		}
+	});
+
+	it("refuses a POST to a path that is not an action", async () => {
+		const res = await fetch(`http://127.0.0.1:${port}/nope`, {
+			method: "POST",
+			headers: { Cookie: `pieink=${TOKEN}`, Accept: "application/json" },
+		});
+		assert.equal(res.status, 404);
+	});
+});
+
+describe("port collision", () => {
+	let blocker;
+	let firstPort;
+
+	before(async () => {
+		firstPort = port;                        // the port the suite above used
+		const net = await import("node:net");
+		blocker = net.createServer();
+		await new Promise((resolve) => blocker.listen(firstPort, "0.0.0.0", resolve));
+		mod.default(pi);
+		await handlers.session_start({}, ctx);
+	});
+
+	after(async () => {
+		await handlers.session_shutdown({});
+		await new Promise((resolve) => blocker.close(resolve));
+	});
+
+	it("walks forward instead of dying when its port is taken", () => {
+		const reg = JSON.parse(readFileSync(join(EINK, "bridges.json"), "utf8"));
+		const now = reg["test-session"].port;
+		assert.notEqual(now, firstPort);
+		assert.ok(now >= 8010 && now < 8010 + 40, `unexpected bridge port ${now}`);
 	});
 });
 
