@@ -1,8 +1,17 @@
 # pi-eink
 
+![A hand holding a Kindle showing the pi-eink page](docs/hero.jpg)
+
 Use a Kindle — or any browser that barely renders HTML — as a second screen for a
 running [pi](https://pi.dev) session. The page shows the live conversation; five
 whitelisted buttons push actions back into the agent.
+
+![the page on a real 511x573 e-ink screen](docs/kindle-page.png)
+
+The page on a real 511×573 e-ink screen: cost and context in the status line, the
+conversation below it, then 停下 / 继续 / 审查 / 执行 / 状态 / 只读 and one input field.
+Reading needs no JavaScript; polling replaces the message list in place, so the screen
+does not flicker.
 
 Built for an e-ink device on the same LAN: one column, no JavaScript required,
 1.2 s polling while the agent is busy (3 s when idle).
