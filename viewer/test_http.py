@@ -37,7 +37,8 @@ class FakeBridge(BaseHTTPRequestHandler):
     def _record(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
-        FakeBridge.seen.append((self.command, self.path, body.decode("utf-8", "replace")))
+        FakeBridge.seen.append((self.command, self.path, body.decode("utf-8", "replace"),
+                               dict(self.headers)))
         payload = b'{"ok": true, "msg": "fake bridge"}'
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -63,13 +64,13 @@ class Viewer:
         self.httpd.server_close()
 
 
-def request(port, path, method="GET", body=None, cookie=True, accept=None, out=None):
+def request(port, path, method="GET", body=None, cookie=True, accept=None, out=None, lang=None):
     import http.client
 
     conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
     headers = {"User-Agent": KINDLE_UA}
     if cookie:
-        headers["Cookie"] = "pieink=" + TOKEN
+        headers["Cookie"] = "pieink=" + TOKEN + (("; pielang=" + lang) if lang else "")
     if accept:
         headers["Accept"] = accept
     payload = body.encode() if body is not None else None
@@ -175,6 +176,13 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(len(FakeBridge.seen), 1)
         self.assertEqual(FakeBridge.seen[0][2], "text=hello")
 
+    def test_language_reaches_the_bridge(self):
+        request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
+        self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")
+        FakeBridge.seen = []
+        request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json")
+        self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "zh")
+
     def test_actions_are_routed_to_the_rendered_session(self):
         request(self.viewer.port, "/act/stop", "POST", accept="application/json")
         self.assertEqual(FakeBridge.seen[0][1], "/act/stop")
@@ -244,6 +252,59 @@ class ReadOnlyPinnedView(unittest.TestCase):
         with mock.patch.object(server, "bridge_port_for", port_for):
             request(self.viewer.port, "/act/stop", "POST", accept="application/json")
         self.assertEqual(seen[-1], self.REMEMBERED)
+
+
+class Language(unittest.TestCase):
+    """Page furniture is bilingual; the default is Chinese, English is opt-in and
+    must not depend on guessing from the User-Agent."""
+
+    SID = "aaaabbbb-1111-2222-3333-444455556666"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def _page(self, lang=None):
+        live = {self.SID: {"port": 1, "sessionId": self.SID}}
+        with mock.patch.object(server, "caps_for", lambda _h: "full"), \
+             mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_port_for", lambda _s: 1), \
+             mock.patch.object(server, "bridge_state", lambda: None), \
+             mock.patch.object(server, "bridge_alive", lambda: False):
+            return request(self.viewer.port, "/?s=" + self.SID, lang=lang)
+
+    def test_chinese_is_the_default(self):
+        status, data = self._page()
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn("停下", body)
+        self.assertIn("输入指令", body)
+        self.assertNotIn(">Stop<", body)
+
+    def test_pielang_cookie_switches_to_english(self):
+        status, data = self._page("en")
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn(">Stop<", body)
+        self.assertIn("Type a command", body)
+        self.assertNotIn("停下", body)
+
+    def test_lang_route_sets_the_cookie_and_comes_back(self):
+        seen = {}
+        status, _data = request(self.viewer.port, "/lang?l=en&s=" + self.SID, out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("pielang=en", seen.get("Set-Cookie", ""))
+        self.assertIn("s=" + self.SID, seen.get("Location", ""))
+
+    def test_env_default_applies_when_no_cookie(self):
+        with mock.patch.object(server, "DEFAULT_LANG", "en"):
+            status, data = self._page()
+        self.assertEqual(status, 200)
+        self.assertIn(">Stop<", data.decode("utf-8"))
 
 
 class Concurrency(unittest.TestCase):

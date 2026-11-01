@@ -55,6 +55,91 @@ VIEW_FILE = Path.home() / ".pi/eink/view.json"
 STATE_FILE = Path.home() / ".pi/eink/bridge.json"
 BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid, cwd, sessionFile, updatedAt}
 COOKIE = "pieink"
+LANG_COOKIE = "pielang"
+# Page furniture only (~35 strings). Conversation content is never translated.
+# Default is Chinese: that is what the reader uses daily; English is opt-in with
+# ?lang or /lang?l=en, because an English README reader should still be able to
+# read the buttons.
+STRINGS = {
+    "stop": ("\u505c\u4e0b", "Stop"),
+    "continue": ("\u7ee7\u7eed", "Continue"),
+    "review": ("\u5ba1\u67e5", "Review"),
+    "execute": ("\u6267\u884c", "Run"),
+    "status": ("\u72b6\u6001", "Status"),
+    "readonly": ("\u53ea\u8bfb", "Read-only"),
+    "unlock": ("\u89e3\u9501", "Unlock"),
+    "send": ("\u53d1\u9001", "Send"),
+    "allow": ("\u5141\u8bb8", "Allow"),
+    "deny": ("\u62d2\u7edd", "Deny"),
+    "say_placeholder": ("\u8f93\u5165\u6307\u4ee4\uff0c\u56de\u8f66\u53d1\u9001", "Type a command, Enter to send"),
+    "awaiting": ("\u7b49\u5f85\u786e\u8ba4", "Waiting for approval"),
+    "theme_day": ("\u65e5\u95f4", "Day"),
+    "theme_night": ("\u591c\u95f4", "Night"),
+    "redraw": ("\u91cd\u7ed8", "Redraw"),
+    "sessions": ("\u4f1a\u8bdd\u5217\u8868", "Sessions"),
+    "sessions_short": ("\u4f1a\u8bdd", "Sessions"),
+    "lang_switch": ("EN", "\u4e2d\u6587"),
+    "bridge_stale": (" / bridge \u65e7\u7248\uff08\u4f1a\u8bdd\u672a\u4e0a\u62a5\uff09", " / bridge out of date"),
+    "bridge_off": (" / bridge \u672a\u6fc0\u6d3b", " / bridge not running"),
+    "pending_note": (" / \u5f85\u786e\u8ba4", " / awaiting approval"),
+    "no_bridge_view": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff0c\u53ea\u80fd\u67e5\u770b\uff08\u6ca1\u6709\u53ef\u7528\u7684\u52a8\u4f5c\u6309\u94ae\uff09",
+                       "This session is not running - nothing to press"),
+    "readonly_prompt": ("\u6b64\u7f51\u7edc\u4e3a\u53ea\u8bfb\u3002\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c\uff1a",
+                        "Read-only network. Enter the PIN to type or run:"),
+    "readonly_hint": ("\u8be5\u7f51\u7edc\u53ea\u8bfb\uff1a\u53ea\u80fd\u67e5\u770b\u4e0e\u505c\u4e0b\u3002",
+                      "Read-only network: view and stop only."),
+    "gone_notice": ("\u4f1a\u8bdd %s \u5df2\u4e0d\u53ef\u7528\uff08\u6587\u4ef6\u4e0d\u5728\u6216\u5df2\u79fb\u8d70\uff09\uff0c\u5df2\u5207\u5230\u5f53\u524d\u4f1a\u8bdd",
+                    "Session %s is gone (file missing or moved) - showing the current session"),
+    "note_label": ("\u63d0\u793a", "Note"),
+    "compacted": ("\u4e0a\u4e0b\u6587\u5df2\u538b\u7f29", "context compacted"),
+    "compacted_before": ("\uff08\u6b64\u524d %s tokens\uff09", " (%s tokens before)"),
+    "no_sessions": ("(\u6ca1\u6709\u4f1a\u8bdd)", "(no sessions)"),
+    "empty_value": ("(\u7a7a)", "(empty)"),
+    "running_at": ("%s \u8fd0\u884c\u4e2d :%s", "%s running :%s"),
+    "truncated": ("\u2026 \u5df2\u622a\u65ad\uff08\u5171 %d \u5b57\u7b26\uff09", "\u2026 clipped (%d chars)"),
+    "ua_not_allowed": ("ua not allowed\uff08\u5df2\u8bb0\u5f55\uff0c\u53ef\u52a0\u5165 ~/.pi/eink/uas\uff09",
+                       "ua not allowed (logged; add it to ~/.pi/eink/uas)"),
+    "too_many": ("\u9519\u8bef\u6b21\u6570\u8fc7\u591a\uff0c%d \u5206\u949f\u540e\u518d\u8bd5", "Too many attempts, retry in %d min"),
+    "bad_pin": ("PIN \u4e0d\u5bf9", "Wrong PIN"),
+    "unlocked": ("\u5df2\u5728\u8fd9\u4e2a\u7f51\u7edc\u89e3\u9501\uff0c\u53ef\u4ee5\u6253\u5b57\u4e86", "Network unlocked - typing enabled"),
+    "now_readonly": ("\u5df2\u5207\u4e3a\u53ea\u8bfb", "Switched to read-only"),
+    "readonly_need_pin": ("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c",
+                          "Read-only network (locked): enter the PIN to type or run"),
+    "session_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff08\u6ca1\u6709\u53ef\u7528\u7684 bridge\uff09", "This session has no bridge"),
+    "bridge_not_running": ("bridge \u672a\u6fc0\u6d3b\uff1a%s", "bridge not running: %s"),
+    "bridge_not_running_short": ("bridge \u672a\u6fc0\u6d3b", "bridge not running"),
+    "failed": ("\u5931\u8d25\uff1a", "Failed: "),
+    "failed_code": ("\u5931\u8d25\uff08%d\uff09", "Failed (%d)"),
+    "sent": ("\u5df2\u53d1\u9001", "Sent"),
+    "allowed": ("\u5df2\u5141\u8bb8", "Allowed"),
+    "denied": ("\u5df2\u62d2\u7edd", "Denied"),
+    "list_locked": ("\u53ea\u8bfb\u7f51\u7edc\uff1a\u4f1a\u8bdd\u5217\u8868\u8981\u5148\u89e3\u9501\uff08\u9875\u9762\u4e0a\u8f93\u5165 PIN\uff09",
+                    "Read-only network: unlock first to list sessions"),
+    "back_to_session": ("\u8fd4\u56de\u5f53\u524d\u4f1a\u8bdd", "Back to the current session"),
+    "glyphs_prompt": ("\u54ea\u4e9b\u884c\u663e\u793a\u6b63\u5e38\uff1a", "Which rows render correctly:"),
+    "glyphs_braille": ("\u76f2\u6587 (pi TUI)", "Braille (pi TUI)"),
+    "glyphs_quadrant": ("\u56db\u8c61\u9650", "Quadrants"),
+    "glyphs_half": ("\u534a\u5706", "Half circles"),
+    "glyphs_triangle": ("\u4e09\u89d2\u5f69", "Triangles"),
+    "js_timeout": ("\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5", "Timed out, try again"),
+    "js_net_error": ("\u7f51\u7edc\u9519\u8bef", "network error"),
+}
+DEFAULT_LANG = "en" if os.environ.get("EINK_LANG", "").lower().startswith("en") else "zh"
+
+
+def tr(key: str, lang: str = "", *args) -> str:
+    zh, en = STRINGS.get(key, (key, key))
+    text = en if lang == "en" else zh
+    return text % args if args else text
+
+
+def lang_of(handler=None) -> str:
+    """Page language: cookie wins (set by /lang?l=), then EINK_LANG, then Chinese."""
+    if handler is not None:
+        want = parse_cookies(handler.headers.get("Cookie") or "").get(LANG_COOKIE) or ""
+        if want in ("zh", "en"):
+            return want
+    return DEFAULT_LANG
 DEFAULT_ALLOW = "127.0.0.1,::1"
 _UA_SEEN = set()
 _FAILS = {}    # ip -> (wrong guesses, window start)
@@ -289,16 +374,16 @@ def resolve_view(requested_sid: str, caps: str) -> tuple:
     return newest_session(sid), sid, gone
 
 
-def sessions_html() -> str:
+def sessions_html(lang: str = "") -> str:
     """Picker: running bridges first, then the most recently used session files."""
     live = live_bridges()
     rows = []
     for sid, info in sorted(live.items(), key=lambda kv: kv[1].get("updatedAt", ""), reverse=True):
         cwd = info.get("cwd") or ""
         rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
-                    '<div class="mono dim">%s 运行中 :%s</div></div>'
+                    '<div class="mono dim">%s</div></div>'
                     % (quote(str(sid), safe=""), esc(short_path(cwd) or sid[:8]),
-                       esc(short_path(cwd)), esc(str(info.get("port", "")))))
+                       esc(tr("running_at", lang, short_path(cwd), str(info.get("port", ""))))))
 
     files = sorted(SESSIONS.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
     shown = 0
@@ -309,14 +394,16 @@ def sessions_html() -> str:
             continue
         when = time.strftime("%m-%d %H:%M", time.localtime(path.stat().st_mtime))
         rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
-                    '<div class="mono dim">%s · %s</div>'
+                    '<div class="mono dim">%s \u00b7 %s</div>'
                     '<div class="body">%s</div></div>'
                     % (quote(str(sid), safe=""), esc(when + "  " + (short_path(meta.get("cwd")) or "?")),
-                       esc(short_path(meta.get("cwd"))), esc(when), esc(meta.get("first") or "(空)")))
+                       esc(short_path(meta.get("cwd"))), esc(when),
+                       esc(meta.get("first") or tr("empty_value", lang))))
         shown += 1
         if shown >= 25:
             break
-    return "".join(rows) or '<div class="body">(没有会话)</div>'
+    return "".join(rows) or '<div class="body">%s</div>' % esc(tr("no_sessions", lang))
+
 
 
 def bridge_state():
@@ -822,7 +909,7 @@ def pending_owned_by(port: int, data: dict) -> bool:
     return False
 
 
-def pending_html(sid: str = "", port: int = 0, caps: str = "full") -> str:
+def pending_html(sid: str = "", port: int = 0, caps: str = "full", lang: str = "") -> str:
     data = pending_approval()
     if not data or not pending_owned_by(port, data):
         return ""
@@ -834,15 +921,17 @@ def pending_html(sid: str = "", port: int = 0, caps: str = "full") -> str:
     reason = esc(str(data.get("reason") or ""))
     raw_cmd = str(data.get("command") or "")
     if len(raw_cmd) > 600:
-        raw_cmd = raw_cmd[:600] + "\n\u2026 \u5df2\u622a\u65ad\uff08\u5171 %d \u5b57\u7b26\uff09" % len(raw_cmd)
+        raw_cmd = raw_cmd[:600] + tr("truncated", lang, len(raw_cmd))
     command = esc(raw_cmd)
     return (
-        '<div id="pending"><div class="body"><b>\u7b49\u5f85\u786e\u8ba4</b>\uff1a%s</div>'
+        '<div id="pending"><div class="body"><b>%s</b>\uff1a%s</div>'
         "<pre>%s</pre>"
-        '<form method="POST" action="/act/approve%s"><button type="submit">\u5141\u8bb8</button></form>'
-        '<form method="POST" action="/act/deny%s"><button type="submit">\u62d2\u7edd</button></form>'
+        '<form method="POST" action="/act/approve%s"><button type="submit">%s</button></form>'
+        '<form method="POST" action="/act/deny%s"><button type="submit">%s</button></form>'
         "</div>"
-    ) % (reason, command, suffix, suffix)
+    ) % (esc(tr("awaiting", lang)), reason, command, suffix, esc(tr("allow", lang)),
+         suffix, esc(tr("deny", lang)))
+
 
 
 def bridge_alive() -> bool:
@@ -1069,6 +1158,7 @@ SHELL = r"""<!DOCTYPE html>
 <div id="wrap"><div id="content"></div><div id="acts">%(acts)s</div></div>
 <div id="foot"><span id="foottxt"></span></div>
 <script>
+var T = %(i18n)s;
 var V = "", KEYS = [], NODES = {};
 // The Kindle has no console: any JS error or send attempt is reported to /diag
 // so it can be read from ~/.pi/eink/diag.log on the computer.
@@ -1191,7 +1281,7 @@ document.addEventListener("submit", function (e) {
   var guard = setTimeout(function () {
     try { x.abort(); } catch (e) {}
     release();
-    showResult("超时，请重试");
+    showResult(T.timeout);
   }, 8000);
   var x = new XMLHttpRequest();
   x.open("POST", action, true);
@@ -1206,7 +1296,7 @@ document.addEventListener("submit", function (e) {
     // status 0 = the request never reached the server (WiFi drop, abort);
     // counting it as success made a dead send look delivered
     var ok = x.status >= 200 && x.status < 400;
-    var msg = (j && j.msg) ? j.msg : (ok ? "已发送" : "失败（" + (x.status || "网络错误") + "）");
+    var msg = (j && j.msg) ? j.msg : (ok ? T.sent : T.failed + (x.status || T.netError));
     diag("ev=done&a=" + encodeURIComponent(action) + "&st=" + x.status + "&m=" + encodeURIComponent(msg));
     showResult(msg);
     if (ok) {
@@ -1529,7 +1619,8 @@ def load_rows(path: Path):
     return rows, totals
 
 
-def row_html(path_key: str, row: dict, index: int, show_thinking: bool, show_tools: bool, version=()):
+def row_html(path_key: str, row: dict, index: int, show_thinking: bool, show_tools: bool, version=(),
+             lang: str = ""):
     """(key, html) for one row, or False when the row renders nothing.
 
     Cached per row: rows are append-only, so only the tail is new on each poll. The
@@ -1537,24 +1628,24 @@ def row_html(path_key: str, row: dict, index: int, show_thinking: bool, show_too
     place keeps serving the HTML of its previous content, digest included.
     """
     # the index is part of the key: rows without an id would otherwise collide
-    ck = (path_key, version, row.get("id") or index, row.get("timestamp"), show_thinking, show_tools)
+    ck = (path_key, version, row.get("id") or index, row.get("timestamp"), show_thinking, show_tools, lang)
     if ck in ROW_HTML:
         return ROW_HTML[ck]
     if len(ROW_HTML) > 20000:
         ROW_HTML.clear()  # one long-lived viewer across many sessions
-    res = build_row(row, index, show_thinking, show_tools)
+    res = build_row(row, index, show_thinking, show_tools, lang)
     ROW_HTML[ck] = res
     return res
 
 
-def build_row(row: dict, index: int, show_thinking: bool, show_tools: bool):
+def build_row(row: dict, index: int, show_thinking: bool, show_tools: bool, lang: str = ""):
     if row.get("type") == "compaction":
         # raw history stays in the file after /compact, so mark the boundary:
         # without this the page silently keeps showing pre-compaction messages
         before = row.get("tokensBefore")
-        note = "\u4e0a\u4e0b\u6587\u5df2\u538b\u7f29"
+        note = tr("compacted", lang)
         if isinstance(before, int) and before > 0:
-            note += "\uff08\u6b64\u524d %s tokens\uff09" % human(before)
+            note += tr("compacted_before", lang, human(before))
         return ("cmp-" + str(row.get("id") or index),
                 '<div class="msg mono dim">\u2014 %s \u2014</div>' % note)
     if row.get("type") != "message":
@@ -1609,7 +1700,7 @@ def build_row(row: dict, index: int, show_thinking: bool, show_tools: bool):
 
 
 def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: int = 0, dark: bool = False,
-           sid: str = "", caps: str = "full", note: str = ""):
+           sid: str = "", caps: str = "full", note: str = "", lang: str = ""):
     path_key = str(path) if path else ""
     if path and path.exists():
         rows, total = load_rows(path)
@@ -1625,7 +1716,7 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
 
     out = []  # list of (key, html)
     for idx, row in enumerate(rows):
-        res = row_html(path_key, row, idx, show_thinking, show_tools, version)
+        res = row_html(path_key, row, idx, show_thinking, show_tools, version, lang)
         if res:
             out.append(res)
 
@@ -1659,12 +1750,13 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
             # agent has not produced anything yet this turn: show a fresh card
             out.append(("working", '<div class="msg"><span class="role assistant">agent %s</span></div>'
                         % esc(frame)))
-    pend = pending_html(sid, port, caps)
+    pend = pending_html(sid, port, caps, lang)
     if note:
         # inside the fragment, before the approval block: the reader must see that
         # the conversation changed before they see a button that targets the new one
-        out.append(("gone", '<div class="msg"><span class="role tool">\u63d0\u793a</span>'
-                            '<div class="body dim">%s</div></div>' % esc(note)))
+        out.append(("gone", '<div class="msg"><span class="role tool">%s</span>'
+                            '<div class="body dim">%s</div></div>'
+                            % (esc(tr("note_label", lang)), esc(note))))
     if pend:
         # end of the list: the page auto-scrolls to the bottom
         out.append(("pending", pend))
@@ -1700,37 +1792,38 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
     elif bridge_alive():
         # reachable but not reporting its session: an older extension build, so the
         # page may be showing a different session than the buttons act on
-        bridge_note = " / bridge \u65e7\u7248\uff08\u4f1a\u8bdd\u672a\u4e0a\u62a5\uff09"
+        bridge_note = tr("bridge_stale", lang)
     else:
-        bridge_note = " / bridge \u672a\u6fc0\u6d3b"
+        bridge_note = tr("bridge_off", lang)
     if pend:
-        bridge_note += " / \u5f85\u786e\u8ba4"
+        bridge_note += tr("pending_note", lang)
     line2 = " ".join(parts) + bridge_note
     status = (line1 + " " + line2) if line1 else line2
     # hash both: the page repaints only when this changes, and the status line
     # carries the Working spinner
     digest = hashlib.sha1((frag + status).encode("utf-8")).hexdigest()[:12]
-    theme_link = ('<a href="/theme?d=0">\u65e5\u95f4</a>' if dark
-                  else '<a href="/theme?d=1">\u591c\u95f4</a>')
-    reload_link = '<a href="/%s">\u91cd\u7ed8</a>' % (("?s=" + quote(sid, safe="")) if sid else "")
-    picker = '<a href="/sessions">\u4f1a\u8bdd\u5217\u8868</a> \u00b7 ' if caps == "full" else ""
-    foot = picker + reload_link + " \u00b7 " + theme_link
+    theme_link = ('<a href="/theme?d=0">%s</a>' % esc(tr("theme_day", lang)) if dark
+                  else '<a href="/theme?d=1">%s</a>' % esc(tr("theme_night", lang)))
+    reload_link = '<a href="/%s">%s</a>' % (("?s=" + quote(sid, safe="")) if sid else "",
+                                            esc(tr("redraw", lang)))
+    picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions", lang))) if caps == "full" else ""
+    # target language is the other one: the label doubles as the switch
+    lang_link = '<a href="/lang?l=%s%s">%s</a>' % (
+        "zh" if lang == "en" else "en",
+        ("&amp;s=" + quote(sid, safe="")) if sid else "",
+        esc(tr("lang_switch", lang)))
+    foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     if path:
         stem = path.stem
         short = stem.rsplit("_", 1)[-1][:8] if "_" in stem else stem[-8:]
         # the picker lists every project on this machine: not on a read-only network
-        picker = '<a href="/sessions">\u4f1a\u8bdd</a> \u00b7 ' if caps == "full" else ""
-        foot = (esc(short) + " \u00b7 " + picker + reload_link + " \u00b7 " + theme_link)
+        picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions_short", lang))) if caps == "full" else ""
+        foot = (esc(short) + " \u00b7 " + picker + reload_link + " \u00b7 " + theme_link
+                + " \u00b7 " + lang_link)
     return digest, frag, status, foot, items, busy
 
 
-ACTIONS = [
-    ("stop", "\u505c\u4e0b"),
-    ("continue", "\u7ee7\u7eed"),
-    ("review", "\u5ba1\u67e5"),
-    ("execute", "\u6267\u884c"),
-    ("status", "\u72b6\u6001"),
-]
+ACTIONS = ["stop", "continue", "review", "execute", "status"]   # labels live in STRINGS
 
 
 def cookie_value(ttl: int = COOKIE_MAX_AGE) -> str:
@@ -1747,34 +1840,35 @@ def cookie_refresh(ip: str) -> list:
     return [("Set-Cookie", cookie_value())]
 
 
-def acts_html(live: bool = True, sid: str = "", caps: str = "full") -> str:
+def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = "") -> str:
     # relative URLs: the viewer proxies them, so one port covers actions too
     if not live:
-        return ('<div class="body dim">该会话未在运行，只能查看（没有可用的动作按钮）</div>')
+        return '<div class="body dim">%s</div>' % esc(tr("no_bridge_view", lang))
     suffix = ("?s=" + quote(sid, safe="")) if sid else ""
     if caps != "full":
         buttons = "".join(
             '<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
-            % (name, suffix, label) for name, label in ACTIONS if name in READONLY_ACTIONS)
+            % (name, suffix, esc(tr(name, lang))) for name in ACTIONS if name in READONLY_ACTIONS)
         return buttons + (
-            '<div class="body dim">此网络为只读。输入 PIN 才能打字或执行：</div>'
+            '<div class="body dim">%s</div>'
             # <input>, not <textarea>: Android WebView capitalises the first letter of
             # a textarea, and one capital letter silently fails the PIN - which then
             # costs a 10 minute lockout.
             '<form method="POST" action="/act/unlock%s" id="sayform">'
             '<input type="text" name="k" inputmode="numeric" maxlength="64" placeholder="PIN" '
             'autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">'
-            '<button type="submit">\u89e3\u9501</button></form>' % suffix
-        )
+            '<button type="submit">%s</button></form>'
+        ) % (esc(tr("readonly_prompt", lang)), suffix, esc(tr("unlock", lang)))
     buttons = "".join('<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
-                      % (name, suffix, label) for name, label in ACTIONS)
+                      % (name, suffix, esc(tr(name, lang))) for name in ACTIONS)
     return buttons + (
-        '<form method="POST" action="/act/readonly%s"><button type="submit">\u53ea\u8bfb</button></form>'
+        '<form method="POST" action="/act/readonly%s"><button type="submit">%s</button></form>'
         '<form method="POST" action="/act/say%s" id="sayform">'
         '<textarea name="text" rows="1" maxlength="2000" '
-        'placeholder="\u8f93\u5165\u6307\u4ee4\uff0c\u56de\u8f66\u53d1\u9001"></textarea>'
-        '<button type="submit">\u53d1\u9001</button></form>' % (suffix, suffix)
-    )
+        'placeholder="%s"></textarea>'
+        '<button type="submit">%s</button></form>'
+    ) % (suffix, esc(tr("readonly", lang)), suffix, esc(tr("say_placeholder", lang)), esc(tr("send", lang)))
+
 
 
 def auth_page(msg: str, dark: bool = False) -> str:
@@ -1845,6 +1939,7 @@ class Handler(BaseHTTPRequestHandler):
         # Credentials are checked before the lockout, so a correct token/pin always
         # recovers: locking the door in front of the key was how a token rotation
         # locked the reader out for ten minutes.
+        lang = lang_of(self)
         ok_ip, why = ip_allowed(ip, local_ip(self))
         if not ok_ip:
             return False, extra, why
@@ -1854,7 +1949,7 @@ class Handler(BaseHTTPRequestHandler):
         if allowed_ua and (ua_strict or not is_loopback(ip)) and not any(a in ua for a in allowed_ua):
             if not is_loopback(ip) and ua:
                 note_unknown_ua(ip, self.headers.get("User-Agent") or "")
-            return False, extra, "ua not allowed（已记录，可加入 ~/.pi/eink/uas）"
+            return False, extra, tr("ua_not_allowed", lang)
         want = token()
         if not want:
             return False, extra, "token file missing or empty"
@@ -1876,7 +1971,7 @@ class Handler(BaseHTTPRequestHandler):
             self._note_fail(ip, guess=bool(given))
         until = _BLOCKED.get(ip, 0)
         if until > time.time():
-            return False, extra, "错误次数过多，%d 分钟后再试" % max(1, round((until - time.time()) / 60))
+            return False, extra, tr("too_many", lang, max(1, round((until - time.time()) / 60)))
         return False, extra, "bad or missing token"
 
     def do_POST(self):
@@ -1931,6 +2026,7 @@ class Handler(BaseHTTPRequestHandler):
         caps = caps_for(self)
         action = u.path.rsplit("/", 1)[-1]
         sid_hint = (q.get("s") or [""])[0]
+        lang = lang_of(self)
         keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
 
         def back(msg: str, status: int = 200) -> None:
@@ -1957,19 +2053,19 @@ class Handler(BaseHTTPRequestHandler):
             expected = pin()
             if not give or not expected or give != expected:
                 self._note_fail(ip, guess=True)
-                back("PIN 不对", 403)
+                back(tr("bad_pin", lang), 403)
                 return
             confirm_network(self)
-            back("\u5df2\u5728\u8fd9\u4e2a\u7f51\u7edc\u89e3\u9501\uff0c\u53ef\u4ee5\u6253\u5b57\u4e86")
+            back(tr("unlocked", lang))
             return
         if action == "readonly":
             state = trust_state()
             state["readonly"] = True
             save_trust(state)
-            back("\u5df2\u5207\u4e3a\u53ea\u8bfb")
+            back(tr("now_readonly", lang))
             return
         if not action_allowed(caps, action):
-            back("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c", 403)
+            back(tr("readonly_need_pin", lang), 403)
             return
 
         # Routing only: on a read-only network the page must not *choose* another
@@ -1992,7 +2088,7 @@ class Handler(BaseHTTPRequestHandler):
         port_target = bridge_port_for(post_sid) if post_sid else 0
         if not port_target:
             # Never fall back to BRIDGE_PORT: that is a different process, or nothing
-            back("该会话未在运行（没有可用的 bridge）", 502)
+            back(tr("session_no_bridge", lang), 502)
             return
         target = "http://127.0.0.1:%d%s" % (port_target, u.path)
         req = urllib.request.Request(target, data=body, method="POST")
@@ -2004,6 +2100,8 @@ class Handler(BaseHTTPRequestHandler):
         # data (status + msg), while the bridge's HTML redirect leads to a /done/
         # page this proxy would have to scrape for the message.
         req.add_header("Accept", "application/json")
+        # the bridge answers in the language the page is being read in
+        req.add_header("X-Eink-Lang", lang)
         js_client = "json" in (self.headers.get("Accept") or "").lower()
         if body:
             req.add_header("Content-Type",
@@ -2025,7 +2123,7 @@ class Handler(BaseHTTPRequestHandler):
             if err.headers.get("Location"):
                 resp_headers = [("Location", err.headers["Location"])]
         except Exception as err:
-            resp_body = ("bridge 未激活：%s" % err).encode("utf-8")
+            resp_body = tr("bridge_not_running", lang, err).encode("utf-8")
             status = 502
         log_action(ip, caps, action, status, post_sid)
 
@@ -2044,12 +2142,12 @@ class Handler(BaseHTTPRequestHandler):
             what = u.path.rsplit("/", 1)[-1]
             text = str(payload.get("msg") or "").strip()
             if status >= 400 and text:
-                text = "失败：" + text
+                text = tr("failed", lang) + text
             if not text:
                 # older bridge build: no JSON body to quote
-                text = {"approve": "已允许", "deny": "已拒绝"}.get(what, "已发送")
+                text = {"approve": tr("allowed", lang), "deny": tr("denied", lang)}.get(what, tr("sent", lang))
                 if status >= 400:
-                    text = "失败（%d）" % status
+                    text = tr("failed_code", lang, status)
             back = "/static?" + urlencode(keep + [("msg", text[:60])])
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", back)])
             return
@@ -2087,12 +2185,12 @@ class Handler(BaseHTTPRequestHandler):
         show_thinking = q.get("think", ["0"])[0] == "1"
         show_tools = q.get("tools", ["0"])[0] == "1"
         fs = qint(q, "fs", 18, 10, 48)
-        hint = ('<div class="body dim">\u8be5\u7f51\u7edc\u53ea\u8bfb\uff1a\u53ea\u80fd\u67e5\u770b\u4e0e\u505c\u4e0b\u3002</div>'
+        lang = lang_of(self)
+        hint = ('<div class="body dim">%s</div>' % esc(tr("readonly_hint", lang))
                 if caps != "full" else "")
         # Carried into render() so it lands inside the polled fragment: /data never
         # repaints #acts, so a notice only in the shell would not show up.
-        gone_note = ("\u4f1a\u8bdd %s \u5df2\u4e0d\u53ef\u7528\uff08\u6587\u4ef6\u4e0d\u5728\u6216\u5df2\u79fb\u8d70\uff09\uff0c\u5df2\u5207\u5230\u5f53\u524d\u4f1a\u8bdd"
-                     % gone[:8]) if gone else ""
+        gone_note = tr("gone_notice", lang, gone[:8]) if gone else ""
         dark = parse_cookies(self.headers.get("Cookie") or "").get("piedark") == "1"
         css = (CSS.replace("__FS__", str(fs)) + (DARK_CSS if dark else ""))
 
@@ -2128,9 +2226,21 @@ class Handler(BaseHTTPRequestHandler):
                     ("Location", "/?" + urlencode(keep + [("s", pinned)]))])
                 return
         if caps != "full" and u.path == "/sessions":
-            self._send(auth_page("只读网络：会话列表要先解锁（页面上输入 PIN）", self._dark()).encode("utf-8"),
+            self._send(auth_page(tr("list_locked", lang), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403, extra=extra)
             return
+        if u.path == "/lang":
+            want = (q.get("l") or ["en"])[0]
+            if want not in ("zh", "en"):
+                want = "en"
+            keep_lang = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
+            back = "/?" + urlencode(keep_lang) if keep_lang else "/"
+            self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
+                ("Location", back),
+                ("Set-Cookie", "%s=%s; Path=/; Max-Age=31536000; SameSite=Lax" % (LANG_COOKIE, want)),
+            ])
+            return
+
         if u.path == "/theme":
             want = (q.get("d") or ["1"])[0] == "1"
             keep_dark = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
@@ -2151,16 +2261,16 @@ class Handler(BaseHTTPRequestHandler):
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     self._send(resp.read(), "text/html; charset=utf-8", extra=extra)
             except Exception:
-                self._send(auth_page("bridge 未激活", self._dark()).encode("utf-8"),
+                self._send(auth_page(tr("bridge_not_running_short", lang), self._dark()).encode("utf-8"),
                            "text/html; charset=utf-8", 502, extra=extra)
             return
 
         if u.path == "/glyphs":
             groups = [
-                ("\u76f2\u6587 (pi TUI)", "\u280b \u2819 \u2839 \u2838 \u283c \u2834 \u2826 \u2827 \u2807 \u280f"),
-                ("\u56db\u8c61\u9650", "\u25f0 \u25f3 \u25f2 \u25f1"),
-                ("\u534a\u5706", "\u25d0 \u25d3 \u25d1 \u25d2"),
-                ("\u4e09\u89d2\u5f69", "\u25e2 \u25e3 \u25e4 \u25e5"),
+                (tr("glyphs_braille", lang), "\u280b \u2819 \u2839 \u2838 \u283c \u2834 \u2826 \u2827 \u2807 \u280f"),
+                (tr("glyphs_quadrant", lang), "\u25f0 \u25f3 \u25f2 \u25f1"),
+                (tr("glyphs_half", lang), "\u25d0 \u25d3 \u25d1 \u25d2"),
+                (tr("glyphs_triangle", lang), "\u25e2 \u25e3 \u25e4 \u25e5"),
                 ("ASCII", "[|] [/] [-] [\\]"),
             ]
             body = "".join(
@@ -2171,7 +2281,7 @@ class Handler(BaseHTTPRequestHandler):
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
                     "<style>body{font-family:sans-serif;background:#fff;color:#000;padding:16px}"
                     "div{border-bottom:1px solid #000}</style></head><body>"
-                    "<p>\u54ea\u4e9b\u884c\u663e\u793a\u6b63\u5e38\uff1a</p>%s</body></html>" % body)
+                    "<p>%s</p>%s</body></html>" % (esc(tr("glyphs_prompt", lang)), body))
             self._send(page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
             return
 
@@ -2201,7 +2311,7 @@ class Handler(BaseHTTPRequestHandler):
 
         if u.path == "/data":
             digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps,
-                                                              note=gone_note)
+                                                              note=gone_note, lang=lang)
             payload = json.dumps({"v": digest, "html": frag, "status": status, "foot": foot,
                                   "items": [{"k": k, "h": h} for k, h in items],
                                   "busy": busy},
@@ -2220,15 +2330,16 @@ class Handler(BaseHTTPRequestHandler):
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
                     '<link rel="icon" type="image/png" href="/favicon.png">'
                     "<style>%(css)s</style></head><body>"
-                    '<div id="wrap"><div class="body"><a href="/">返回当前会话</a></div>'
+                    '<div id="wrap"><div class="body"><a href="/">%(back)s</a></div>'
                     "%(list)s</div></body></html>")
-            self._send((page % {"css": css, "list": sessions_html()}).encode("utf-8"),
+            self._send((page % {"css": css, "list": sessions_html(lang),
+                                "back": esc(tr("back_to_session", lang))}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
             return
 
         if u.path == "/static":
             digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps,
-                                                              note=gone_note)
+                                                              note=gone_note, lang=lang)
             page = ("<!DOCTYPE html><html><head>"
                     '<meta http-equiv="refresh" content="15">'
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -2237,13 +2348,16 @@ class Handler(BaseHTTPRequestHandler):
                     '<div id="top">%(status)s</div><div id="wrap">%(frag)s<div id="acts">%(acts)s</div></div>'
                     '<div id="foot">%(foot)s</div></body></html>')
             self._send((page % {"css": css, "status": status,
-                               "acts": note_html + hint + acts_html(live_here, sid, caps),
+                               "acts": note_html + hint + acts_html(live_here, sid, caps, lang),
                                "frag": frag, "foot": foot}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
             return
 
-        self._send((SHELL % {"css": css, "acts": note_html + hint + acts_html(live_here, sid, caps),
-                            "qs": qs}).encode("utf-8"),
+        i18n = json.dumps({"sent": tr("sent", lang), "failed": tr("failed", lang),
+                           "timeout": tr("js_timeout", lang),
+                           "netError": tr("js_net_error", lang)}, ensure_ascii=False)
+        self._send((SHELL % {"css": css, "acts": note_html + hint + acts_html(live_here, sid, caps, lang),
+                            "qs": qs, "i18n": i18n}).encode("utf-8"),
                    "text/html; charset=utf-8", extra=extra)
 
 

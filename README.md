@@ -248,6 +248,7 @@ sees the unit's environment):
 | `EINK_LOG_UA` | viewer | off | `1` logs each (peer, User-Agent) pair once to `server.log`; `ua_seen.log` is written only for UAs the gate rejected |
 | `PI_SESSION_FILE` | viewer | unset | last-resort fallback: only used when no live bridge and no `bridge.json` name a session |
 | `EINK_TRUST_HOURS` | viewer | `0` | `N` expires a network confirmation after N hours (0 = until the network changes) |
+| `EINK_LANG` | viewer | `zh` | default interface language; `en` makes the page English. A device can still override it from the footer link or `/lang?l=` |
 
 State files under `~/.pi/eink/` (all ignored by git):
 
@@ -274,7 +275,8 @@ Viewer (`:8000`): `/` page shell (a first visit without `?s=` is redirected once
 fragment · `/static` no-JS fallback
 (a form POST from a browser without JS lands here, since `/` needs script to fill
 the message list) ·
-`/sessions` picker · `/theme?d=0|1` day/night cookie · `/diag` · `/glyphs` ·
+`/sessions` picker · `/theme?d=0|1` day/night cookie · `/lang?l=zh|en` interface
+language cookie · `/diag` · `/glyphs` ·
 `/favicon.png` · `/done/<key>` (relayed from the bridge's confirmation page) ·
 `POST /act/<action>` proxied to the session's bridge, plus two
 viewer-local ones: `/act/unlock` (enter the pin to unlock this network) and
@@ -284,6 +286,29 @@ Bridge (`:8010`+, or `EINK_BRIDGE_PORT`): `GET /`, `/state`,
 `POST /act/{stop,continue,review,execute,status,say,approve,deny}`. Only `stop` and
 `status` are accepted from a non-loopback peer: everything else — free text,
 approvals, prompts — must come through the viewer's proxy.
+
+## Interface language
+
+The page furniture — the six buttons, hints, the footer, action receipts — exists in
+Chinese and English. The conversation itself is never translated.
+
+The default is **Chinese**. English is opt-in per device, three ways:
+
+- tap the `EN` / `中文` link in the footer — it sets the `pielang` cookie for a year
+- open `/lang?l=en` once (same thing, handier from a bookmark)
+- set `EINK_LANG=en` in the service unit to make English the default for every device
+
+```sh
+EINK_LANG=en python3 ~/pi-eink/viewer/server.py    # foreground
+# or, in the launchd / systemd unit: EnvironmentVariables -> EINK_LANG = en
+```
+
+Nothing asks at install time: the default is what the reader already uses, and a new
+device inherits it until someone taps the footer link.
+
+The prompts the buttons send to the agent (`继续` / `对以上优化和修复做一个审查` /
+`根据建议执行`) stay Chinese on purpose — they are instructions to the model, not UI
+text, so their wording is not tied to the reader's locale.
 
 ## Security model
 

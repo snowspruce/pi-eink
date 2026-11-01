@@ -195,12 +195,12 @@ export function mayProxy(ip: string, trusted: string[] = VIEWER_IPS): boolean {
 /** null = allowed; otherwise the reason to refuse. Kept as one function so the
  *  handler has a single call site and the rules themselves can be tested. */
 export function gate(ip: string, action: string, path = "", localIp = "",
-	trusted: string[] = VIEWER_IPS): string | null {
+	trusted: string[] = VIEWER_IPS, lang: Lang = "zh"): string | null {
 	// localIp matters: the same-subnet rule needs the address this socket answered on
-	if (!ipAllowed(ip, localIp)) return "不在允许列表";
+	if (!ipAllowed(ip, localIp)) return tt(lang, "gate_ip");
 	// /state exposes the same model/context/idle the status action returns
 	if (!mayProxy(ip, trusted) && ((action !== "" && loopbackOnly(action)) || path === "/state")) {
-		return "该动作只接受本机转发（通过 eink 页面操作）";
+		return tt(lang, "gate_loopback");
 	}
 	return null;
 }
@@ -264,6 +264,65 @@ const PROMPTS: Record<Exclude<Action, "stop" | "status">, string> = {
 	execute: "根据建议执行",
 };
 
+type Lang = "zh" | "en";
+
+// Strings the bridge hands back to the reader. The prompts sent to the agent
+// (PROMPTS) stay Chinese on purpose: those are instructions to the model, not UI.
+const TEXT: Record<string, [string, string]> = {
+	gate_ip: ["不在允许列表", "not in the allow list"],
+	gate_loopback: ["该动作只接受本机转发（通过 eink 页面操作）", "loopback only: drive it from the e-ink page"],
+	queued: ["已有排队消息，等当前任务结束再点", "Messages are already queued; wait for this run"],
+	sent_run: ["已发送（立即执行）", "Sent (running now)"],
+	sent_steer: ["已插入当前运行（立即执行）", "Sent into the current run"],
+	sent_queued: ["已排队（当前任务结束后执行）", "Queued after the current run"],
+	sent: ["已发送", "Sent"],
+	already_answered: ["该确认已处理，无需再点", "Already answered"],
+	other_session: ["该确认属于另一个会话（pid %s）", "That approval belongs to another session (pid %s)"],
+	allowed: ["已允许", "Allowed"],
+	denied: ["已拒绝", "Denied"],
+	aborted: ["已中止当前运行", "Stopped the current run"],
+	nothing_running: ["当前没有运行", "Nothing is running"],
+	empty_input: ["没有输入内容", "Nothing to send"],
+	new_session: ["已新建会话", "New session created"],
+	reloading: ["正在重载扩展与配置", "Reloading extensions and config"],
+	compacting: ["开始压缩上下文", "Compacting the context"],
+	quitting: ["正在退出该 pi 会话", "Quitting this pi session"],
+	tui_only: ["该命令只能在电脑的 TUI 里执行（Kindle 上可用：/new /reload /compact /quit /skill:xxx）",
+		"That only works in the desktop TUI (on the Kindle: /new /reload /compact /quit /skill:xxx)"],
+	dedupe: ["%s 秒内重复点击，已忽略", "Ignored: tapped again within %s s"],
+	failed: ["失败：%s", "Failed: %s"],
+	unknown_action: ["未知动作", "Unknown action"],
+	refused: ["拒绝", "Refused"],
+	missing_token: ["缺少 token", "Missing token"],
+	unauthorized: ["未授权", "Unauthorized"],
+	bad_host: ["错误", "Error"],
+	method: ["方法错误", "Method not allowed"],
+	post_only: ["只接受 POST", "POST only"],
+	done: ["完成", "Done"],
+	back: ["返回", "Back"],
+	status_title: ["状态", "Status"],
+	status_idle: ["空闲", "idle"],
+	status_busy: ["运行中", "running"],
+	status_queue: ["排队", "Queued"],
+	status_yes: ["有", "yes"],
+	status_no: ["无", "no"],
+	status_model: ["模型", "Model"],
+	status_thinking: ["思考", "Thinking"],
+	unknown: ["未知", "unknown"],
+};
+
+function tt(lang: Lang, key: string, ...args: (string | number)[]): string {
+	const pair = TEXT[key];
+	let out = pair ? (lang === "en" ? pair[1] : pair[0]) : key;
+	for (const a of args) out = out.replace("%s", String(a));
+	return out;
+}
+
+function langOf(req: IncomingMessage): Lang {
+	return String(req.headers["x-eink-lang"] ?? "").toLowerCase() === "en" ? "en" : "zh";
+}
+
+
 export default function einkBridge(pi: ExtensionAPI) {
 	let server: ReturnType<typeof createServer> | null = null;
 	let ctx: ExtensionContext | null = null;
@@ -274,26 +333,26 @@ export default function einkBridge(pi: ExtensionAPI) {
 	const DEDUPE_MS = 8000;
 	const lastFired = new Map<string, number>();
 
-	const send = async (action: Exclude<Action, "stop" | "status">) => {
+	const send = async (action: Exclude<Action, "stop" | "status">, lang: Lang = "zh") => {
 		const text = PROMPTS[action];
 		if (!ctx) throw new Error("no session context");
 		// Idle: a plain user message starts a turn. Busy: queue after the current run.
 		if (!ctx.isIdle() && ctx.hasPendingMessages()) {
-			throw new Error("已有排队消息，等当前任务结束再点");
+			throw new Error(tt(lang, "queued"));
 		}
 		if (ctx.isIdle()) {
 			try {
 				await pi.sendUserMessage(text);
-				return "已发送（立即执行）";
+				return tt(lang, "sent_run");
 			} catch (err) {
 				// A run can start between the idle check and the send; sendUserMessage
 				// rejects without deliverAs in that case, so retry as a steer.
 				await pi.sendUserMessage(text, { deliverAs: "steer" });
-				return "已插入当前运行（立即执行）";
+				return tt(lang, "sent_steer");
 			}
 		}
 		await pi.sendUserMessage(text, { deliverAs: "followUp" });
-		return "已排队（当前任务结束后执行）";
+		return tt(lang, "sent_queued");
 	};
 
 	const wantsJson = (req: IncomingMessage) => (req.headers.accept ?? "").includes("application/json");
@@ -316,6 +375,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 
 	const handle = async (action: string, res: ServerResponse, req: IncomingMessage, body = "") => {
 		const viewer = "/";
+		const lang = langOf(req);
 		try {
 			if (action === "approve" || action === "deny") {
 				let pending: { id?: string; command?: string; pid?: number } = {};
@@ -324,7 +384,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 				} catch {
 					// a second tap on a block that was just answered lands here; the old
 					// wording ("nothing pending") read like a bug instead of "already done"
-					reply(res, "approve", "该确认已处理，无需再点", req, 409);
+					reply(res, "approve", tt(lang, "already_answered"), req, 409);
 					return;
 				}
 				// pending.json is shared by every pi process. Answering another session's
@@ -332,7 +392,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 				// session's, so refuse instead of guessing. 409, not 200: the viewer turns
 				// any 2xx into "已允许" on the page.
 				if (pending.pid !== process.pid) {
-					reply(res, action, `该确认属于另一个会话（pid ${pending.pid ?? "unknown"}）`, req, 409);
+					reply(res, action, tt(lang, "other_session", pending.pid ?? "unknown"), req, 409);
 					return;
 				}
 				// tmp+rename: the pi that parked this reads it in a tight loop, and a
@@ -352,29 +412,29 @@ export default function einkBridge(pi: ExtensionAPI) {
 				} catch {
 					// already gone
 				}
-				reply(res, action, action === "approve" ? "已允许" : "已拒绝", req);
+				reply(res, action, tt(lang, action === "approve" ? "allowed" : "denied"), req);
 				return;
 			}
 			if (action === "stop") {
 				if (!ctx) throw new Error("no session context");
 				const wasBusy = !ctx.isIdle();
 				ctx.abort();
-				reply(res, "stop", wasBusy ? "已中止当前运行" : "当前没有运行", req);
+				reply(res, "stop", tt(lang, wasBusy ? "aborted" : "nothing_running"), req);
 				return;
 			}
 			if (action === "status") {
 				if (!ctx) throw new Error("no session context");
 				const rows = [
-					["状态", ctx.isIdle() ? "空闲" : "运行中"],
-					["排队", ctx.hasPendingMessages() ? "有" : "无"],
-					["模型", ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "未知"],
-					["思考", ctx.thinkingLevel ?? "未知"],
+					[tt(lang, "status_title"), tt(lang, ctx.isIdle() ? "status_idle" : "status_busy")],
+					[tt(lang, "status_queue"), tt(lang, ctx.hasPendingMessages() ? "status_yes" : "status_no")],
+					[tt(lang, "status_model"), ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : tt(lang, "unknown")],
+					[tt(lang, "status_thinking"), ctx.thinkingLevel ?? tt(lang, "unknown")],
 				];
 				const body = rows
 					.map(([k, v]) => `<p>${k}：<b>${escAttr(v)}</b></p>`)
-					.join("") + `<p><a href="${viewer}">返回</a></p>`;
+					.join("") + `<p><a href="${viewer}">${tt(lang, "back")}</a></p>`;
 				res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(html("状态", body));
+				res.end(html(tt(lang, "status_title"), body));
 				return;
 			}
 			if (action === "say") {
@@ -382,12 +442,12 @@ export default function einkBridge(pi: ExtensionAPI) {
 				// refactor of the dispatcher cannot quietly reopen the free-text path
 				const text = new URLSearchParams(body).get("text")?.trim() ?? "";
 				if (!text) {
-					reply(res, "say", "没有输入内容", req, 400);
+					reply(res, "say", tt(lang, "empty_input"), req, 400);
 					return;
 				}
 				if (!ctx) throw new Error("no session context");
 				if (!ctx.isIdle() && ctx.hasPendingMessages()) {
-					throw new Error("已有排队消息，等当前任务结束再点");
+					throw new Error(tt(lang, "queued"));
 				}
 				const clipped = text.slice(0, 2000);
 				// Built-in slash commands live in the TUI, not in sendUserMessage:
@@ -401,11 +461,11 @@ export default function einkBridge(pi: ExtensionAPI) {
 					const mapped = BRIDGE_COMMANDS[name];
 					if (mapped) {
 						const label: Record<string, string> = {
-							new: "\u5df2\u65b0\u5efa\u4f1a\u8bdd",
-							reload: "\u6b63\u5728\u91cd\u8f7d\u6269\u5c55\u4e0e\u914d\u7f6e",
-							compact: "\u5f00\u59cb\u538b\u7f29\u4e0a\u4e0b\u6587",
-							quit: "\u6b63\u5728\u9000\u51fa\u8be5 pi \u4f1a\u8bdd",
-							exit: "\u6b63\u5728\u9000\u51fa\u8be5 pi \u4f1a\u8bdd",
+							new: tt(lang, "new_session"),
+							reload: tt(lang, "reloading"),
+							compact: tt(lang, "compacting"),
+							quit: tt(lang, "quitting"),
+							exit: tt(lang, "quitting"),
 						};
 						reply(res, "say", label[name] ?? "ok", req);
 						await pi.sendUserMessage("/" + mapped + (rest ? " " + rest : ""),
@@ -413,9 +473,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 						return;
 					}
 					if (TUI_ONLY_COMMANDS.has(name)) {
-						reply(res, "say",
-							"\u8be5\u547d\u4ee4\u53ea\u80fd\u5728\u7535\u8111\u7684 TUI \u91cc\u6267\u884c\uff08Kindle \u4e0a\u53ef\u7528\uff1a/new /reload /compact /quit /skill:xxx\uff09",
-							req, 400);
+						reply(res, "say", tt(lang, "tui_only"), req, 400);
 						return;
 					}
 				}
@@ -424,19 +482,20 @@ export default function einkBridge(pi: ExtensionAPI) {
 				} else {
 					await pi.sendUserMessage(clipped, { deliverAs: "followUp", expandPromptTemplates: true });
 				}
-				reply(res, "say", "已发送", req);
+				reply(res, "say", tt(lang, "sent"), req);
 				return;
 			}
 			if (action === "continue" || action === "review" || action === "execute") {
 				const now = Date.now();
 				const prev = lastFired.get(action) ?? 0;
 				if (now - prev < DEDUPE_MS) {
-					reply(res, action, `${Math.round((DEDUPE_MS - (now - prev)) / 1000)} 秒内重复点击，已忽略`, req);
+					reply(res, action,
+						tt(lang, "dedupe", Math.round((DEDUPE_MS - (now - prev)) / 1000)), req);
 					return;
 				}
 				lastFired.set(action, now);
 				try {
-					const msg = await send(action);
+					const msg = await send(action, lang);
 					reply(res, action, msg, req);
 				} catch (err) {
 					lastFired.delete(action);
@@ -445,26 +504,28 @@ export default function einkBridge(pi: ExtensionAPI) {
 				return;
 			}
 			res.writeHead(404, { "Content-Type": "text/html; charset=utf-8" });
-			res.end(html("未知动作", "<p>未知动作</p>"));
+			res.end(html(tt(lang, "unknown_action"), `<p>${tt(lang, "unknown_action")}</p>`));
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			reply(res, "error", `失败：${msg}`, req, 500);
+			reply(res, "error", tt(lang, "failed", msg), req, 500);
 		}
 	};
 
 	const requestHandler = (req: IncomingMessage, res: ServerResponse) => {
 		const url = new URL(req.url ?? "/", "http://localhost");
 		const ip = clientIp(req);
+		const lang = langOf(req);
 		const path = url.pathname;
 		const action = path.startsWith("/act/") ? path.slice(5) : "";
 
-		const refused = gate(ip, action, path, req.socket.localAddress ?? "");
+		const refused = gate(ip, action, path, req.socket.localAddress ?? "", undefined, lang);
 		if (refused) {
 			if (wantsJson(req) || path === "/state") {
 				reply(res, action || "state", refused, req, 403);
 			} else {
 				res.writeHead(403, { "Content-Type": "text/html; charset=utf-8" });
-				res.end(html("拒绝", `<p>拒绝：${escAttr(refused)}（${escAttr(ip || "unknown")}）</p>`));
+				res.end(html(tt(lang, "refused"),
+					`<p>${tt(lang, "refused")}: ${escAttr(refused)} (${escAttr(ip || "unknown")})</p>`));
 			}
 			return;
 		}
