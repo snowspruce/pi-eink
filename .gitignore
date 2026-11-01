@@ -12,6 +12,9 @@ bridge.json
 bridges.json
 pending.json
 answer.json
+# the session the viewer last rendered; server-written, keeps read-only pages from
+# chasing "newest"
+view.json
 bridge.log
 server.log
 diag.log

@@ -48,6 +48,9 @@ UA_FILE = Path.home() / ".pi/eink/uas"
 UA_SEEN = Path.home() / ".pi/eink/ua_seen.log"
 DIAG_LOG = Path.home() / ".pi/eink/diag.log"
 MASK_FILE = Path.home() / ".pi/eink/masked_secrets"
+# the session the viewer last rendered; server-written, so a read-only client
+# cannot use it to reach a session it was not already shown
+VIEW_FILE = Path.home() / ".pi/eink/view.json"
 # written by the pi extension: which session and port actually accept actions
 STATE_FILE = Path.home() / ".pi/eink/bridge.json"
 BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid, cwd, sessionFile, updatedAt}
@@ -244,6 +247,48 @@ def session_selected(session_id: str) -> bool:
     return session_path_by_id(session_id) is not None
 
 
+def remembered_sid() -> str:
+    """The session the viewer last rendered, as written by the server itself.
+
+    A read-only network may not *choose* a session, but without this the page
+    followed "the newest live session" and hopped to another conversation whenever
+    a second pi heartbeat landed later. Written only server-side: a client cannot
+    use it to reach a session the network was not already shown.
+    """
+    try:
+        return str(json.loads(VIEW_FILE.read_text()).get("sid") or "")
+    except Exception:
+        return ""
+
+
+def remember_sid(session_id: str) -> None:
+    if not session_id or session_id == remembered_sid():
+        return
+    try:
+        atomic_write(VIEW_FILE, json.dumps({"sid": session_id}))
+    except Exception:
+        pass  # a lost hint must never break the page
+
+
+def resolve_view(requested_sid: str, caps: str) -> tuple:
+    """(path, sid, gone): what this request renders, and the id it lost.
+
+    One function for GET and for the POST routing, so a button can never target a
+    session other than the one on screen.
+    """
+    sid, gone = requested_sid, ""
+    if caps != "full" and sid:
+        # read-only: the network may not choose another project's history
+        sid = ""
+    elif sid and not session_selected(sid):
+        gone, sid = sid, ""
+    if not sid:
+        kept = remembered_sid()
+        if kept and session_selected(kept):
+            sid = kept
+    return newest_session(sid), sid, gone
+
+
 def sessions_html() -> str:
     """Picker: running bridges first, then the most recently used session files."""
     live = live_bridges()
@@ -295,9 +340,15 @@ def rendered_session_id() -> str:
     Actions used to fall back to `bridge.json` (whichever pi wrote it last), while
     the page renders the newest live bridge - with two sessions running, "stop" on
     one page halted the other. Resolving the id makes both sides agree.
+
+    It goes through `resolve_view()` with the read-only path forced, so the routing
+    follows the same remembered session the page displays instead of re-deriving
+    "newest" (which was the second half of the hopping bug).
     """
-    info = session_meta(newest_session("") or Path("/nonexistent"))
-    return str(info.get("id") or "")
+    path, sid, _gone = resolve_view("", "readonly")
+    if sid:
+        return sid
+    return str(session_meta(path or Path("/nonexistent")).get("id") or "")
 
 
 def bridge_port() -> int:
@@ -2020,20 +2071,18 @@ class Handler(BaseHTTPRequestHandler):
         if u.path in ("/favicon.ico", "/favicon.png"):
             self._send(FAVICON, "image/png", cache="public, max-age=86400")
             return
-        sid = (q.get("s") or [""])[0]
+        requested = (q.get("s") or [""])[0]
         caps = caps_for(self)
-        gone = ""
-        if caps != "full" and sid:
-            # A bookmark from a trusted network must not 403 every poll on a network
-            # that is not unlocked: show the default session instead. What read-only
-            # mode must not allow is *choosing* another project's history.
-            sid = ""
-        elif sid and not session_selected(sid):
-            # Say it out loud instead of swapping the page to another conversation.
-            gone, sid = sid, ""
+        # A bookmark from a trusted network must not 403 every poll on a network that
+        # is not unlocked, and a read-only network may not *choose* another project's
+        # history. Both drop ?s=; both then fall back to the session this viewer last
+        # rendered, so the page stops hopping between running sessions.
+        path, sid, gone = resolve_view(requested, caps)
         port = bridge_port_for(sid) if sid else bridge_port_for(rendered_session_id())
         live_here = (sid in live_bridges()) if sid else bool(live_bridges())
         keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
+        if caps != "full":
+            keep = [(k, v) for k, v in keep if k != "s"]   # never echo a dropped choice
         limit = qint(q, "n", 12, 1, 200)
         show_thinking = q.get("think", ["0"])[0] == "1"
         show_tools = q.get("tools", ["0"])[0] == "1"
@@ -2046,8 +2095,6 @@ class Handler(BaseHTTPRequestHandler):
                      % gone[:8]) if gone else ""
         dark = parse_cookies(self.headers.get("Cookie") or "").get("piedark") == "1"
         css = (CSS.replace("__FS__", str(fs)) + (DARK_CSS if dark else ""))
-
-        path = newest_session(sid)
 
         if os.environ.get("EINK_LOG_UA"):
             # log once per (ip, user-agent): the page polls every 2.5s, and logging
@@ -2062,6 +2109,11 @@ class Handler(BaseHTTPRequestHandler):
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
             return
+
+        # The only writer of view.json: whatever this page is about to show becomes
+        # "the session" for every later request that cannot name one itself.
+        if u.path == "/" and path is not None:
+            remember_sid(str(session_meta(path).get("id") or ""))
 
         # Opening the page without ?s= used to mean "whichever session heartbeats
         # last", re-resolved on every poll: with two pi sessions running, the whole

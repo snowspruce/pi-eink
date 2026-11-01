@@ -5,8 +5,12 @@ Every earlier test drove `caps_for()` / `action_allowed()` directly, so deleting
 viewer server against a fake bridge and check the wire behaviour.
 """
 
+import json
+import os
 import pathlib
+import shutil
 import sys
+import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
@@ -96,6 +100,8 @@ class ReadOnlyEnforcement(unittest.TestCase):
 
     def setUp(self):
         FakeBridge.seen = []
+        # the pin is server-side state: every test starts from "nothing remembered"
+        server.VIEW_FILE.unlink(missing_ok=True)
         self.caps = mock.patch.object(server, "caps_for", return_value="readonly")
         self.caps.start()
         self.route = mock.patch.object(server, "bridge_port_for", return_value=self.bridge_port)
@@ -154,6 +160,7 @@ class FullNetwork(unittest.TestCase):
 
     def setUp(self):
         FakeBridge.seen = []
+        server.VIEW_FILE.unlink(missing_ok=True)
         for name, value in (("caps_for", lambda _h: "full"),
                             ("bridge_port_for", lambda _sid: self.bridge_port),
                             ("rendered_session_id", lambda: "session-id")):
@@ -184,6 +191,59 @@ class FullNetwork(unittest.TestCase):
         status, data = request(self.viewer.port, "/data?s=ffffffff-0000-1111-2222-333333333333")
         self.assertEqual(status, 200)
         self.assertIn("\u5df2\u4e0d\u53ef\u7528", data.decode("utf-8"))
+
+
+class ReadOnlyPinnedView(unittest.TestCase):
+    """A read-only network may not choose a session, but it must not hop either:
+    the viewer remembers what it last rendered (~/.pi/eink/view.json) and keeps
+    rendering that, while still ignoring any ?s= the client sends."""
+
+    REMEMBERED = "aaaabbbb-1111-2222-3333-444455556666"   # the only session in the temp HOME
+    NEWER = "ccccdddd-1111-2222-3333-444477778888"        # added per test, newer on disk
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def setUp(self):
+        folder = server.SESSIONS / "--other--"
+        folder.mkdir(parents=True, exist_ok=True)
+        self.newer = folder / ("2026-02-02T00-00-00-000Z_%s.jsonl" % self.NEWER)
+        self.newer.write_text(json.dumps({"type": "session", "id": self.NEWER, "cwd": "/tmp/other"}) + "\n")
+        later = time.time() + 60
+        os.utime(self.newer, (later, later))
+        server.VIEW_FILE.write_text(json.dumps({"sid": self.REMEMBERED}))
+        self.addCleanup(mock.patch.stopall)
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        self.addCleanup(shutil.rmtree, folder, True)
+        mock.patch.object(server, "caps_for", lambda _h: "readonly").start()
+
+    def test_readonly_page_stays_on_the_remembered_session(self):
+        status, data = request(self.viewer.port, "/data")
+        self.assertEqual(status, 200)
+        foot = json.loads(data)["foot"]
+        self.assertIn("aaaabbbb", foot)
+        self.assertNotIn("ccccdddd", foot)
+
+    def test_readonly_still_cannot_choose_another_session(self):
+        status, data = request(self.viewer.port, "/data?s=" + self.NEWER)
+        self.assertEqual(status, 200)
+        self.assertNotIn("ccccdddd", json.loads(data)["foot"])
+
+    def test_readonly_actions_route_to_the_remembered_session(self):
+        seen = []
+
+        def port_for(sid):
+            seen.append(sid)
+            return 0
+
+        with mock.patch.object(server, "bridge_port_for", port_for):
+            request(self.viewer.port, "/act/stop", "POST", accept="application/json")
+        self.assertEqual(seen[-1], self.REMEMBERED)
 
 
 class Concurrency(unittest.TestCase):

@@ -13,7 +13,7 @@ Built for an e-ink device on the same LAN: one column, no JavaScript required,
 |---|---|---|
 | `extensions/eink-bridge.ts` | a pi extension (loaded inside every pi process) | Sending a prompt needs the in-process API (`pi.sendUserMessage()`, `ctx.abort()`); an outside process cannot do it |
 | `viewer/server.py` | its own process (launchd / systemd) | It only reads session `.jsonl` snapshots, so it survives pi restarts and keeps showing the last state |
-| `~/.pi/eink/` | runtime state + secrets, **never committed** | `token`, `pin`, `allow_ips`, `uas`, `bridge.json`, `bridges.json`, `pending.json`, `answer.json`, logs |
+| `~/.pi/eink/` | runtime state + secrets, **never committed** | `token`, `pin`, `allow_ips`, `uas`, `bridge.json`, `bridges.json`, `pending.json`, `answer.json`, `view.json`, logs |
 
 Each pi process binds **its own** bridge port (base `8010`, offset by a hash of the
 session id, walking forward on collision) and registers itself in
@@ -180,7 +180,7 @@ launchd unit keeps the machine awake while it is on AC power.
 
 ```sh
 npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
-npm run test:viewer  # viewer: unit + HTTP-level enforcement (59 tests, ~1.2s)
+npm run test:viewer  # viewer: unit + HTTP-level enforcement (62 tests, ~1.6s)
 ```
 
 The tests bind a fixed port (`18019`) so they never collide with a real bridge,
@@ -221,6 +221,7 @@ State files under `~/.pi/eink/` (all ignored by git):
 | `install-meta` | `install.sh` | label/port/os of the installed unit, read back by `--uninstall` |
 | `actions.log` | viewer | one line per action: time, peer IP, capability, action, result |
 | `bridge.json` | bridge | most recent heartbeat — "is any bridge alive" |
+| `view.json` | viewer | the session the page last rendered; re-rendered whenever a request cannot name one itself (`?s=`, read-only networks), so the page cannot hop between running sessions |
 | `bridges.json` | bridge | session id → `{port, pid, cwd, sessionFile, updatedAt}`, heartbeat 60 s, entries older than 10 min ignored |
 | `pending.json`, `answer.json` | safety-gate ↔ bridge | a parked risky command and the page's verdict |
 | `bridge.log` | bridge | why a session is not serving the page (busy port, etc.) |
@@ -281,10 +282,11 @@ session can be read. Stopping a runaway agent is kept available on purpose — i
 the one action that is safe without a secret. `readonly` decisions, pin unlocks and
 every proxied action land in `actions.log`.
 
-One consequence of dropping `?s=`: a read-only page always follows the *newest*
-live session, so with two pi sessions running the page can change under you when the
-other one writes. That is why the id is pinned only on an unlocked network — there
-`?s=` survives, and the page stays where you put it.
+Dropping `?s=` does not mean the page hops: the viewer records the session it last
+rendered in `~/.pi/eink/view.json` and keeps rendering that on every request that
+cannot name one itself, so a read-only page stays where it was instead of chasing
+whichever pi session heartbeat last. The file is written only by the server — a
+client cannot use it to reach a session the network was not already shown.
 
 What read-only still allows is reading the *current* conversation. On a network you
 do not control, that is a real exposure: treat the page as "assume the person next
@@ -321,10 +323,11 @@ which only the `safety-gate` extension writes. Check that `safety-gate` is loade
 (`~/.pi/agent/extensions/safety-gate`); with a gate loaded but no risky call pending,
 an empty block is the correct, silent state. `install.sh` prints what it found.
 
-**The page switched to another conversation by itself** — on an unlocked network
-that was a bug, fixed by pinning `?s=` on the first visit. On a read-only network it
-is by design: `?s=` is dropped there, so the page follows the newest live session.
-Enter the pin to unlock, then the page stays on the conversation you opened.
+**The page switched to another conversation by itself** — that was a bug: without
+`?s=` the page re-resolved "the newest live session" on every poll, so a second pi
+session's heartbeat swapped the whole page. Two fixes: the first visit pins `?s=`, and
+whenever no session can be named (read-only network, bookmark without `?s=`) the
+viewer re-renders what it recorded in `view.json` instead of re-deriving "newest".
 
 **A conversation is gone and the page says so** — the `?s=` in your URL no longer
 resolves (session file deleted, moved, or forked into a new id). The page falls back
