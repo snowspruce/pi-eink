@@ -27,10 +27,19 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlencode, urlparse
 
 PORT = int(os.environ.get("EINK_PORT", "8000"))
+# Bind one interface when the box has more (utun, docker bridges): 0.0.0.0 exposes
+# the page on every one of them.
+BIND = os.environ.get("EINK_BIND", "0.0.0.0")
 BRIDGE_PORT = int(os.environ.get("EINK_BRIDGE_PORT", "8001"))
 SESSIONS = Path.home() / ".pi/agent/sessions"
 TOKEN_FILE = Path.home() / ".pi/eink/token"
 ALLOW_FILE = Path.home() / ".pi/eink/allow_ips"
+# 7 days, refreshed on use. A month-long cookie on a Kindle carried between home,
+# office and cafés is a long time to have someone else's token in your pocket.
+COOKIE_MAX_AGE = 7 * 24 * 3600
+TRUST_FILE = Path.home() / ".pi/eink/trust.json"
+FAILS_FILE = Path.home() / ".pi/eink/fails.json"
+ACTION_LOG = Path.home() / ".pi/eink/actions.log"
 # short code for the Kindle's awful keyboard; the long token still works for scripts
 PIN_FILE = Path.home() / ".pi/eink/pin"
 PENDING_FILE = Path.home() / ".pi/eink/pending.json"
@@ -43,10 +52,10 @@ STATE_FILE = Path.home() / ".pi/eink/bridge.json"
 BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid, cwd, sessionFile, updatedAt}
 COOKIE = "pieink"
 DEFAULT_ALLOW = "127.0.0.1,::1"
-ALLOW = {x.strip() for x in os.environ.get("EINK_ALLOW_IPS", DEFAULT_ALLOW).split(",") if x.strip()}
 _UA_SEEN = set()
 _FAILS = {}    # ip -> (wrong guesses, window start)
 _BLOCKED = {}  # ip -> unix time until which auth is refused
+_COOKIE_REFRESH = {}  # ip -> unix time the cookie was last re-issued
 # Devices allowed to use the page: ~/.pi/eink/uas, one substring per line.
 # A UA is trivially spoofable: this is a speed bump in front of the token, not a boundary.
 
@@ -272,9 +281,15 @@ def local_ip(handler) -> str:
         return ""
 
 
+def same_subnet_allowed() -> bool:
+    """On by default: peers must live in the host's own /24 unless allow_ips
+    lists them. This is connectivity, not security - see caps_for()."""
+    return os.environ.get("EINK_ALLOW_SAME_SUBNET", "1") != "0"
+
+
 def ip_allowed(ip: str, host_ip: str) -> tuple:
-    """True when the peer is loopback, matches an allowlist entry, or - with
-    EINK_ALLOW_SAME_SUBNET=1 - lives in the same /24 as this machine."""
+    """True when the peer is loopback, matches an allowlist entry, or lives in the
+    same /24 as this machine (EINK_ALLOW_SAME_SUBNET=0 disables the last one)."""
     if is_loopback(ip):
         return True, ""
     try:
@@ -290,13 +305,204 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
                 return True, ""
         except ValueError:
             continue
-    if os.environ.get("EINK_ALLOW_SAME_SUBNET") == "1" and host_ip:
+    if same_subnet_allowed() and host_ip:
         try:
             if addr in ipaddress.ip_network(host_ip + "/24", strict=False):
                 return True, ""
         except ValueError:
             pass
     return False, "ip %s not allowed" % ip
+
+
+# Actions that stay available on a network nobody has unlocked yet. stop is here
+# on purpose: cutting a runaway agent loose from an untrusted LAN is the one
+# action that is safe without a secret.
+READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
+
+
+def action_allowed(caps: str, action: str) -> bool:
+    """The enforcement point for read-only networks, kept pure so the gate itself is
+    unit-tested and not only the decision that feeds it."""
+    return caps == "full" or action in READONLY_ACTIONS
+
+
+_TRUST_CACHE = [None, {}]
+
+
+def trust_state() -> dict:
+    """Cached by (mtime, size): this is read on every poll, and the page polls at
+    1.2s while the agent works."""
+    try:
+        st = TRUST_FILE.stat()
+        key = (st.st_mtime, st.st_size)
+    except Exception:
+        return {"confirmed": [], "peers": [], "readonly": False}
+    if _TRUST_CACHE[0] == key:
+        return _TRUST_CACHE[1]
+    try:
+        data = json.loads(TRUST_FILE.read_text())
+    except Exception:
+        return {"confirmed": [], "peers": [], "readonly": False}
+    state = {
+        "confirmed": [str(x) for x in (data.get("confirmed") or [])],
+        "peers": [str(x) for x in (data.get("peers") or [])],
+        "readonly": bool(data.get("readonly")),
+    }
+    _TRUST_CACHE[0] = key
+    _TRUST_CACHE[1] = state
+    return state
+
+
+def save_trust(state: dict) -> None:
+    try:
+        tmp = str(TRUST_FILE) + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(state, fh, indent=2)
+        os.replace(tmp, TRUST_FILE)
+        _TRUST_CACHE[0] = None   # a same-size write within one mtime tick must not stick
+    except Exception:
+        pass
+
+
+def confirm_network(handler) -> None:
+    """Remember the host's current /24 and the peer's /24 as unlocked.
+
+    Both are needed: office networks often put the wired host and the Wi-Fi Kindle
+    in different subnets, and only the peer address is visible per request.
+    """
+    host = host_subnet(handler)
+    peer = peer_subnet(handler)
+    state = trust_state()
+    state["readonly"] = False
+    if host and host not in state["confirmed"]:
+        state["confirmed"].append(host)
+    if peer and peer not in state["peers"]:
+        state["peers"].append(peer)
+    save_trust(state)
+
+
+def host_subnet(handler) -> str:
+    """The /24 this instance is serving on: the only thing that distinguishes
+    "home", "office" and "some café" when the peer is just another LAN client."""
+    try:
+        return str(ipaddress.ip_network(local_ip(handler) + "/24", strict=False))
+    except Exception:
+        return ""
+
+
+def peer_subnet(handler) -> str:
+    try:
+        return str(ipaddress.ip_network(client_ip(handler) + "/24", strict=False))
+    except Exception:
+        return ""
+
+
+def caps_for(handler) -> str:
+    """"full" or "readonly" for this peer.
+
+    The peer address cannot separate home from a café - both are simply the LAN
+    the laptop is on. So the capability follows the network the host itself is
+    attached to, and every network is unlocked once by entering the pin from it.
+    A network the viewer has never served on therefore opens read-only, and a peer
+    that is routed in from another subnet does not inherit the host's trust.
+    """
+    if is_loopback(client_ip(handler)):
+        return "full"
+    state = trust_state()
+    if state["readonly"]:
+        return "readonly"
+    host = host_subnet(handler)
+    if not host or host not in state["confirmed"]:
+        return "readonly"
+    return "full" if peer_subnet(handler) in state["peers"] else "readonly"
+
+
+# A small burst, because one tap sends two beacons within a second (submit, then
+# done) and dropping the second would hide exactly the signal this is here for.
+_DIAG_HITS = {}   # ip -> [hits, window start]
+_DIAG_BURST, _DIAG_WINDOW = 8, 10.0
+_DIAG_SEEN = None
+
+
+def _diag_allow(ip: str) -> bool:
+    now = time.time()
+    hits, start = _DIAG_HITS.get(ip, [0, now])
+    if now - start > _DIAG_WINDOW:
+        hits, start = 0, now
+    hits += 1
+    _DIAG_HITS[ip] = [hits, start]
+    return hits <= _DIAG_BURST
+
+
+def _diag_clean(value: str, limit: int) -> str:
+    """One log field: no tabs/newlines (they would forge a record) and bounded."""
+    return re.sub(r"[\x00-\x1f\x7f\t]", " ", str(value))[:limit]
+
+
+def _diag_seen() -> set:
+    """Read the log once, not once per beacon: a beacon costs a request."""
+    global _DIAG_SEEN
+    if _DIAG_SEEN is None:
+        _DIAG_SEEN = set()
+        try:
+            for line in DIAG_LOG.read_text(errors="replace").splitlines():
+                if "\t" in line:
+                    _DIAG_SEEN.add(line.split("\t", 1)[1])
+        except Exception:
+            pass
+    return _DIAG_SEEN
+
+
+def log_action(ip: str, caps: str, action: str, status: int, sid: str = "") -> None:
+    """One line per action: who drove the agent, from which kind of network, on
+    which session, and whether it worked. The only record after a stolen cookie."""
+    try:
+        if ACTION_LOG.exists() and ACTION_LOG.stat().st_size > 1_000_000:
+            os.replace(ACTION_LOG, str(ACTION_LOG) + ".1")
+        with ACTION_LOG.open("a") as fh:
+            fh.write("%s\tip=%s\tcaps=%s\tsid=%s\taction=%s\tstatus=%d\n" % (
+                time.strftime("%Y-%m-%d %H:%M:%S"), ip, caps, sid[:8], action, status))
+    except Exception:
+        pass
+
+
+def load_fails() -> None:
+    """Restart must not clear the lockout: 5 guesses per 10 minutes only means
+    something if a crash or a `kickstart -k` does not reset the counter."""
+    try:
+        data = json.loads(FAILS_FILE.read_text())
+    except Exception:
+        return
+    now = time.time()
+    for ip, row in (data.get("fails") or {}).items():
+        try:
+            fails, since = int(row[0]), float(row[1])
+        except Exception:
+            continue
+        if now - since <= 600:
+            _FAILS[ip] = (fails, since)
+    for ip, until in (data.get("blocked") or {}).items():
+        try:
+            until = float(until)
+        except Exception:
+            continue
+        if until > now:
+            _BLOCKED[ip] = until
+
+
+def save_fails() -> None:
+    now = time.time()
+    payload = {
+        "fails": {ip: [f, s] for ip, (f, s) in _FAILS.items() if now - s <= 600},
+        "blocked": {ip: until for ip, until in _BLOCKED.items() if until > now},
+    }
+    try:
+        tmp = str(FAILS_FILE) + ".tmp"
+        with open(tmp, "w") as fh:
+            json.dump(payload, fh)
+        os.replace(tmp, FAILS_FILE)
+    except Exception:
+        pass
 
 
 BRANCH_CACHE = {}
@@ -1166,7 +1372,8 @@ def build_row(row: dict, index: int, show_thinking: bool, show_tools: bool):
             % ("user" if role == "user" else "assistant", esc(label), "".join(parts)))
 
 
-def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: int = 0, dark: bool = False, sid: str = ""):
+def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: int = 0, dark: bool = False,
+           sid: str = "", caps: str = "full"):
     path_key = str(path) if path else ""
     if path and path.exists():
         rows, total = load_rows(path)
@@ -1259,12 +1466,14 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
     theme_link = ('<a href="/theme?d=0">\u65e5\u95f4</a>' if dark
                   else '<a href="/theme?d=1">\u591c\u95f4</a>')
     reload_link = '<a href="/%s">\u91cd\u7ed8</a>' % (("?s=" + quote(sid, safe="")) if sid else "")
-    foot = '<a href="/sessions">\u4f1a\u8bdd\u5217\u8868</a> \u00b7 ' + reload_link + ' \u00b7 ' + theme_link
+    picker = '<a href="/sessions">\u4f1a\u8bdd\u5217\u8868</a> \u00b7 ' if caps == "full" else ""
+    foot = picker + reload_link + " \u00b7 " + theme_link
     if path:
         stem = path.stem
         short = stem.rsplit("_", 1)[-1][:8] if "_" in stem else stem[-8:]
-        foot = (esc(short) + ' \u00b7 <a href="/sessions">\u4f1a\u8bdd</a> \u00b7 '
-                + reload_link + ' \u00b7 ' + theme_link)
+        # the picker lists every project on this machine: not on a read-only network
+        picker = '<a href="/sessions">\u4f1a\u8bdd</a> \u00b7 ' if caps == "full" else ""
+        foot = (esc(short) + " \u00b7 " + picker + reload_link + " \u00b7 " + theme_link)
     return digest, frag, status, foot, items, busy
 
 
@@ -1277,18 +1486,43 @@ ACTIONS = [
 ]
 
 
-def acts_html(live: bool = True, sid: str = "") -> str:
+def cookie_value(ttl: int = COOKIE_MAX_AGE) -> str:
+    return "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (COOKIE, token(), ttl)
+
+
+def cookie_refresh(ip: str) -> list:
+    """Rolling expiry: a page polled every few seconds must not ask for the pin
+    again, but a cookie left on a lost Kindle stops working within a week."""
+    now = time.time()
+    if now - _COOKIE_REFRESH.get(ip, 0) < 3600:
+        return []
+    _COOKIE_REFRESH[ip] = now
+    return [("Set-Cookie", cookie_value())]
+
+
+def acts_html(live: bool = True, sid: str = "", caps: str = "full") -> str:
     # relative URLs: the viewer proxies them, so one port covers actions too
     if not live:
         return ('<div class="body dim">该会话未在运行，只能查看（没有可用的动作按钮）</div>')
     suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    if caps != "full":
+        buttons = "".join(
+            '<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
+            % (name, suffix, label) for name, label in ACTIONS if name in READONLY_ACTIONS)
+        return buttons + (
+            '<div class="body dim">此网络为只读。输入 PIN 才能打字或执行：</div>'
+            '<form method="POST" action="/act/unlock%s" id="sayform">'
+            '<textarea name="k" rows="1" maxlength="64" placeholder="PIN"></textarea>'
+            '<button type="submit">\u89e3\u9501</button></form>' % suffix
+        )
     buttons = "".join('<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
                       % (name, suffix, label) for name, label in ACTIONS)
     return buttons + (
+        '<form method="POST" action="/act/readonly%s"><button type="submit">\u53ea\u8bfb</button></form>'
         '<form method="POST" action="/act/say%s" id="sayform">'
         '<textarea name="text" rows="1" maxlength="2000" '
         'placeholder="\u8f93\u5165\u6307\u4ee4\uff0c\u56de\u8f66\u53d1\u9001"></textarea>'
-        '<button type="submit">\u53d1\u9001</button></form>' % suffix
+        '<button type="submit">\u53d1\u9001</button></form>' % (suffix, suffix)
     )
 
 
@@ -1339,11 +1573,11 @@ class Handler(BaseHTTPRequestHandler):
         if not want:
             return False, extra, "token file missing or empty"
         if parse_cookies(self.headers.get("Cookie", "")).get(COOKIE) == want:
-            return True, extra, ""
+            return True, extra + cookie_refresh(ip), ""
         given = (q.get("k") or [""])[0]
         if given and given in (want, pin()):
-            extra.append(("Set-Cookie",
-                          "%s=%s; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax" % (COOKIE, want)))
+            _COOKIE_REFRESH[ip] = time.time()
+            extra.append(("Set-Cookie", cookie_value()))
             return True, extra, ""
 
         now = time.time()
@@ -1355,7 +1589,9 @@ class Handler(BaseHTTPRequestHandler):
         if fails >= 5:
             _FAILS[ip] = (0, now)
             _BLOCKED[ip] = now + 600
+            save_fails()
             return False, extra, "错误次数过多，等 10 分钟再试"
+        save_fails()
         return False, extra, "bad or missing token"
 
     def do_POST(self):
@@ -1380,6 +1616,54 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if 0 < length <= 8192 else b""
 
+        ip = client_ip(self)
+        caps = caps_for(self)
+        action = u.path.rsplit("/", 1)[-1]
+        sid_hint = (q.get("s") or [""])[0]
+        keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
+
+        def back(msg: str, status: int = 200) -> None:
+            """Answer a viewer-local action: JSON for the page's XHR, a redirect for a
+            plain form post. A 3xx with a JSON body would be followed by the XHR and
+            the page handler would then parse the HTML it lands on."""
+            log_action(ip, caps, action, status, sid_hint)
+            if "json" in (self.headers.get("Accept") or "").lower():
+                self._send(json.dumps({"ok": status < 400, "msg": msg}, ensure_ascii=False).encode("utf-8"),
+                           "application/json; charset=utf-8", status if status >= 400 else 200, extra=extra)
+                return
+            self._send(b"", "text/html; charset=utf-8", 303,
+                       extra=extra + [("Location", "/?" + urlencode(keep + [("msg", msg[:60])]))])
+
+        # Both of these belong to the viewer, not to the bridge: they change what
+        # this network is allowed to do, they do not touch the agent.
+        if action == "unlock":
+            given = (parse_qs(body.decode("utf-8", "replace")).get("k") or [""])[0].strip()
+            give = given or (q.get("k") or [""])[0]
+            if not give or give not in (pin(), token()):
+                now = time.time()
+                fails, since = _FAILS.get(ip, (0, now))
+                if now - since > 600:
+                    fails, since = 0, now
+                _FAILS[ip] = (fails + 1, since)
+                if fails + 1 >= 5:
+                    _FAILS[ip] = (0, now)
+                    _BLOCKED[ip] = now + 600
+                save_fails()
+                back("PIN 不对", 403)
+                return
+            confirm_network(self)
+            back("\u5df2\u5728\u8fd9\u4e2a\u7f51\u7edc\u89e3\u9501\uff0c\u53ef\u4ee5\u6253\u5b57\u4e86")
+            return
+        if action == "readonly":
+            state = trust_state()
+            state["readonly"] = True
+            save_trust(state)
+            back("\u5df2\u5207\u4e3a\u53ea\u8bfb")
+            return
+        if not action_allowed(caps, action):
+            back("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c", 403)
+            return
+
         post_sid = (q.get("s") or [""])[0]
         if not post_sid:
             # approval requests belong to whichever session parked them: match its pid
@@ -1391,7 +1675,6 @@ class Handler(BaseHTTPRequestHandler):
                 if parked and info.get("pid") == parked:
                     post_sid = live_sid
                     break
-        keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
         target = "http://127.0.0.1:%d%s" % ((bridge_port_for(post_sid) or bridge_port()) if post_sid else bridge_port(), u.path)
         req = urllib.request.Request(target, data=body, method="POST")
         # forward credentials: the bridge gates on the same cookie
@@ -1425,6 +1708,7 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as err:
             resp_body = ("bridge 未激活：%s" % err).encode("utf-8")
             status = 502
+        log_action(ip, caps, action, status, post_sid)
 
         # A plain form post (no JS, or a page cached before the inline handler
         # existed) must not land on the bridge's own page with a manual 返回:
@@ -1469,6 +1753,12 @@ class Handler(BaseHTTPRequestHandler):
             self._send(FAVICON, "image/png", cache="public, max-age=86400")
             return
         sid = (q.get("s") or [""])[0]
+        caps = caps_for(self)
+        if caps != "full" and sid:
+            # A bookmark from a trusted network must not 403 every poll on a network
+            # that is not unlocked: show the default session instead. What read-only
+            # mode must not allow is *choosing* another project's history.
+            sid = ""
         port = bridge_port_for(sid) if sid else bridge_port()
         live_here = (sid in live_bridges()) if sid else bool(live_bridges())
         keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
@@ -1476,6 +1766,8 @@ class Handler(BaseHTTPRequestHandler):
         show_thinking = q.get("think", ["0"])[0] == "1"
         show_tools = q.get("tools", ["0"])[0] == "1"
         fs = qint(q, "fs", 18, 10, 48)
+        hint = ('<div class="body dim">\u8be5\u7f51\u7edc\u53ea\u8bfb\uff1a\u53ea\u80fd\u67e5\u770b\u4e0e\u505c\u4e0b\u3002</div>'
+                if caps != "full" else "")
         dark = parse_cookies(self.headers.get("Cookie") or "").get("piedark") == "1"
         css = (CSS.replace("__FS__", str(fs)) + (DARK_CSS if dark else ""))
 
@@ -1493,6 +1785,10 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
+            return
+        if caps != "full" and u.path == "/sessions":
+            self._send(auth_page("只读网络：会话列表要先解锁（页面上输入 PIN）", self._dark()).encode("utf-8"),
+                       "text/html; charset=utf-8", 403, extra=extra)
             return
         if u.path == "/theme":
             want = (q.get("d") or ["1"])[0] == "1"
@@ -1539,27 +1835,35 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/diag":
-            # any query key: the page reports taps, post outcomes and JS errors here,
-            # because a Kindle has no console to look at
+            # Any query key: the page reports taps, outcomes and JS errors here, since
+            # a Kindle has no console. Everything in it is attacker-controlled text,
+            # so values are stripped of control characters (a %0A would forge log
+            # lines) and one peer can only add a line every few seconds.
+            ip = client_ip(self)
+            if not _diag_allow(ip):
+                self._send(b"slow down", "text/plain; charset=utf-8", 429, extra=extra)
+                return
             vals = {}
             for k, v in list(q.items())[:10]:
-                vals[k] = str((v or [""])[0])[:80]
+                vals[_diag_clean(k, 20)] = _diag_clean((v or [""])[0], 60)
             line = "%s\tip=%s\t%s\tua=%s" % (
-                time.strftime("%H:%M:%S"), client_ip(self),
+                time.strftime("%H:%M:%S"), ip,
                 " ".join("%s=%s" % (k, v) for k, v in vals.items()),
-                (self.headers.get("User-Agent") or "")[:60])
-            try:
-                existing = DIAG_LOG.read_text(errors="replace") if DIAG_LOG.exists() else ""
-                if line.split("\t", 1)[1] not in existing:
+                _diag_clean(self.headers.get("User-Agent") or "", 60))
+            seen = _diag_seen()
+            key = line.split("\t", 1)[1]
+            if key not in seen:
+                seen.add(key)
+                try:
                     with DIAG_LOG.open("a") as fh:
                         fh.write(line + "\n")
-            except Exception:
-                pass
+                except Exception:
+                    pass
             self._send(b"ok", "text/plain; charset=utf-8", extra=extra)
             return
 
         if u.path == "/data":
-            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid)
+            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps)
             payload = json.dumps({"v": digest, "html": frag, "status": status, "foot": foot,
                                   "items": [{"k": k, "h": h} for k, h in items],
                                   "busy": busy},
@@ -1585,7 +1889,7 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path == "/static":
-            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid)
+            digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps)
             page = ("<!DOCTYPE html><html><head>"
                     '<meta http-equiv="refresh" content="15">'
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
@@ -1593,18 +1897,21 @@ class Handler(BaseHTTPRequestHandler):
                     "<style>%(css)s</style></head><body>"
                     '<div id="top">%(status)s</div><div id="wrap">%(frag)s<div id="acts">%(acts)s</div></div>'
                     '<div id="foot">%(foot)s</div></body></html>')
-            self._send((page % {"css": css, "status": status, "acts": note_html + acts_html(live_here, sid),
+            self._send((page % {"css": css, "status": status,
+                               "acts": note_html + hint + acts_html(live_here, sid, caps),
                                "frag": frag, "foot": foot}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
             return
 
-        self._send((SHELL % {"css": css, "acts": note_html + acts_html(live_here, sid), "qs": qs}).encode("utf-8"),
+        self._send((SHELL % {"css": css, "acts": note_html + hint + acts_html(live_here, sid, caps),
+                            "qs": qs}).encode("utf-8"),
                    "text/html; charset=utf-8", extra=extra)
 
 
 def main():
-    srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
-    print("listening on http://0.0.0.0:%d/ (session: %s)" % (PORT, newest_session()), flush=True)
+    load_fails()
+    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    print("listening on http://%s:%d/ (session: %s)" % (BIND, PORT, newest_session()), flush=True)
     srv.serve_forever()
 
 
