@@ -4,7 +4,7 @@
 在哪儿 —— 大多数不是"写错了代码"，而是"以为改好了但没生效"和"从症状猜错层"。
 
 规模参考：`viewer/server.py` 约 2160 行、`extensions/eink-bridge.ts` 约 720 行、
-`install.sh` 约 370 行；测试 20 条（Node）+ 62 条（Python，含 HTTP 级用例）。
+`install.sh` 约 370 行；测试 20 条（Node）+ 67 条（Python，含 HTTP 级用例）。
 
 ---
 

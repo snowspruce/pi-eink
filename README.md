@@ -1,5 +1,7 @@
 # pi-eink
 
+**English** · [简体中文](README.zh.md)
+
 ![A hand holding a Kindle showing the pi-eink page](docs/hero.jpg)
 
 Use a Kindle — or any browser that barely renders HTML — as a second screen for a
@@ -246,7 +248,7 @@ just run the page).
 
 ```sh
 npm test             # extension: stubbed pi API, temp HOME, real HTTP handler
-npm run test:viewer  # viewer: unit + HTTP-level enforcement (62 tests, ~1.6s)
+npm run test:viewer  # viewer: unit + HTTP-level enforcement (67 tests, ~2.1s)
 ```
 
 The tests bind a fixed port (`18019`) so they never collide with a real bridge, and
