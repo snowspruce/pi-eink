@@ -877,7 +877,14 @@ def usage_totals(rows: list) -> dict:
     return total
 
 
-SPIN = ("[-]", "[\\]", "[|]", "[/]")  # ASCII box; braille/quadrant/half-circle are missing from the Kindle font
+# ASCII box, kept as the default: it is the only set that is certainly present on any
+# client. Measured on the device (Voyage / ED060TC1) by rendering each candidate and
+# screenshotting it: braille U+2800 comes out as *tofu boxes*, and quarter blocks, half
+# circles, quadrant circles and corner arcs (the U+2596, U+25D0, U+25F4, U+259C families)
+# render as nothing at all - not even a placeholder, which looks like a broken page.
+# What does render: the eight-way arrows, block fills (U+2581-U+2588, U+258F-U+2588),
+# up/down triangles but not left/right, circles, dots, and box drawing U+2500-U+2524.
+SPIN = ("[-]", "[\\]", "[|]", "[/]")
 
 
 def agent_state(port: int = 0):
