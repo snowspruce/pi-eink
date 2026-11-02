@@ -1032,10 +1032,13 @@ body {
 #top {
   position: fixed; top: 0; left: 0; right: 0;
   background: #fff; border-bottom: 1px solid #000;
-  padding: 0 8px; font-size: 9px; line-height: 18px; height: 18px;
+  /* 10px of top padding, not 0: with the browser's quick-controls mode (the only way
+     to hide the URL bar on the Kindle) the WebView is positioned ~9px above the
+     physical top, so a top:0 element renders with its first half off-screen. */
+  padding: 10px 8px 0; font-size: 9px; line-height: 18px; height: 18px;
   white-space: nowrap; overflow: hidden;
 }
-#wrap { padding: 24px 14px 8px 14px; }
+#wrap { padding: 34px 14px 8px 14px; }   /* clears #top: 18px line + 10px offset + 6px */
 .msg { margin: 0 0 26px 0; }
 .role {
   font-size: 11px; letter-spacing: 1px; text-transform: uppercase;

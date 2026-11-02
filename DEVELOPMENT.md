@@ -274,6 +274,28 @@ p90 那 1.18s 不能全算卡顿：这组间隔混入了「没内容变化就不
 - 那个几何 beacon 不能当容器宽度用：首次加载阶段会报 `w=0 h=0 sw=28`（早于布局），
   正常加载后 `window.innerWidth` 会报 **980**（默认布局宽度）而 `iw`/`sw` 是 511。
 
+把浏览器自己的三条 UI 去掉（**不用写 app**，全靠设备侧配置，重启后仍生效）：
+
+- `快速控制`（浏览器 设置 → 实验室）= 隐藏地址栏 + 工具栏，改为边缘滑动唤出。
+  **这是唯一能藏地址栏的开关**；`全屏` 那一项只隐藏系统状态栏。
+- `settings put global policy_control immersive.full=com.android.browser` = 隐藏状态栏
+  （时间/信号/电池）和导航栏，页面占满 1072×1448。
+- 改浏览器设置只能改 prefs 文件：`/data/data/com.android.browser/shared_prefs/`
+  `com.android.browser_preferences.xml`。三个前提：先 `am force-stop`；文件的
+  owner 必须是 **uid 10018**（`dumpsys package com.android.browser | grep userId`
+  查，不是 `u0_aXX` 猜的，猜错浏览器的设置会被重置）；设备上没有 `sed`，
+  得 pull → 本机改 → push 回去。
+
+同一轮踩到的三个坑：
+
+- **`enable_hardware_accel_skia=true` 会毁掉布局**：viewport 被撑成 980 CSS px，正文右
+  侧整片被切。它确实能让 `dumpsys gfxinfo` 出现 DisplayList，但页面没法看，所以别开。
+- **快速控制会把 WebView 顶出屏幕约 9px**，`#top`（`position:fixed; top:0`）上半截被切。
+  这不是沉浸模式的锅（`immersive.status` 也一样切），只能在页面侧让位 —— 见 CSS 里
+  `#top` 的 10px 顶部内边距。
+- 浏览器设置页自己（`com.android.browser` 的 SettingsActivity）不受 `policy_control`
+  影响，状态栏和导航栏会回来，别误判成"配置没生效"。
+
 ---
 
 ## 四、仍然开着的
