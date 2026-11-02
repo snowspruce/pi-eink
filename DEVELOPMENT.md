@@ -249,6 +249,21 @@ p90 那 1.18s 不能全算卡顿：这组间隔混入了「没内容变化就不
   行级节点复用（`NODES[k]` + `__h` 比对）、忙碌 spinner 限频到 4.8s。
 - 硬件侧无法通过开发改善：**无蓝牙**、**单个 USB 口**、6 寸触屏软键盘。
 
+开机自启（把设备当第二屏，不想每次手点书签）：
+
+- `/system/etc/init.d/` 在这台 ROM 上是**死目录**：`grep init.d /init*.rc` 一条不命中，
+  里面那个 `99SuperSUDaemon` 从来不会被执行。别信目录存在。
+- 真正会被执行的钩子是 SuperSU 的 `/system/etc/install-recovery-2.sh`
+  （`install-recovery.sh` 结尾显式调它，而 `/init.rc:634` 的 `service flash_recovery` 跑
+  install-recovery.sh）。
+- 写进去的脚本必须**自己后台等 `sys.boot_completed` 再 `am start`，并且立刻 exit**：
+  `flash_recovery` 是 oneshot 且会等它返回，卡住会拖慢整台机的开机（实测 `time sh` = 0.02s）。
+- `am start -a VIEW -d <url>` 在浏览器**已在运行时会被忽略**，只把 task 提到前台
+  （输出 `Warning: Activity not started, its current task has been brought to the front`）。
+  改完 URL 要验证必须先 `am force-stop com.android.browser`。
+- 那个几何 beacon 不能当容器宽度用：首次加载阶段会报 `w=0 h=0 sw=28`（早于布局），
+  正常加载后 `window.innerWidth` 会报 **980**（默认布局宽度）而 `iw`/`sw` 是 511。
+
 ---
 
 ## 四、仍然开着的
