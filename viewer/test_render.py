@@ -227,6 +227,15 @@ class RenderPage(unittest.TestCase):
         self.assertTrue(busy)
         self.assertTrue(any(frame in frag for frame in server.SPIN))
 
+    def test_busy_digest_is_stable_so_the_client_animates_the_spinner(self):
+        # The frame used to be baked in, which made every tick a server round trip plus a
+        # whole-card rewrite. If the digest starts changing with time again, this breaks.
+        with mock.patch.object(server, "agent_state", lambda _p=0: {"idle": False}):
+            d1, frag, _s, _f, _i, _b = server.render(self.path, 20, False, False, port=1)
+            d2 = server.render(self.path, 20, False, False, port=1)[0]
+        self.assertEqual(d1, d2)
+        self.assertIn('class="spin"', frag)
+
     def test_busy_with_no_agent_card_yet_appends_one(self):
         path = write_session("--render2--", "s.jsonl", [
             {"type": "session", "id": SID, "cwd": "/tmp/demo"},

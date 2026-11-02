@@ -1186,6 +1186,7 @@ function atBottom() {
 }
 window.addEventListener("scroll", function () { STICK = atBottom(); }, false);
 function paint(j) {
+  setSpin(!!j.busy, j.spin);
   if (j.v === V) { return; }
   V = j.v;
   var stick = STICK;   // decided before the DOM grows
@@ -1228,6 +1229,23 @@ function paint(j) {
   }
 }
 var POLL_MS_BUSY = 1200, POLL_MS_IDLE = 3000, POLL_MS = POLL_MS_IDLE;
+// The working indicator is animated here, not on the server: a server-side frame had to
+// travel through /data and rewrite the whole card, so it could not go faster than a few
+// seconds. This only touches one span's text, and the glyphs are all the same width, so
+// the ghosting is confined to that box.
+var SPIN = ["[-]", "[\\]", "[|]", "[/]"], SPIN_MS = 700, SPIN_I = 0, SPIN_T = null;
+function spinTick() {
+  SPIN_I = SPIN_I + 1;
+  if (SPIN_I >= SPIN.length) { SPIN_I = 0; }
+  var el = document.getElementsByClassName("spin")[0];
+  if (!el) { return; }   // the card was replaced or the turn ended: nothing to animate
+  el.innerHTML = SPIN[SPIN_I];
+}
+function setSpin(busy, list) {
+  if (list && list.length) { SPIN = list; }
+  if (busy && !SPIN_T) { SPIN_T = setInterval(spinTick, SPIN_MS); }
+  if (!busy && SPIN_T) { clearInterval(SPIN_T); SPIN_T = null; SPIN_I = 0; }
+}
 function fetchData(done) {
   var x = new XMLHttpRequest();
   x.open("GET", "/data%(qs)st=" + (new Date().getTime()), true);
@@ -1762,10 +1780,11 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
     state = agent_state(port)
     busy = bool(state) and state.get("idle") is False
     if busy:
-        # E-ink ghosts a little with every partial repaint, and the frame index is
-        # part of the page digest: a 1.2s tick meant a repaint every poll while the
-        # agent works. 4.8s keeps the "still running" signal at a quarter the cost.
-        frame = SPIN[int(time.time() / 4.8) % len(SPIN)]
+        # The frame is NOT baked into the HTML any more: it used to be part of the page
+        # digest, so every tick rewrote the whole card (server round trip + row
+        # innerHTML). The client animates a dedicated span locally instead, which keeps
+        # the digest stable while the agent works and makes the rate a client constant.
+        spin = '<span class="spin">%s</span>' % esc(SPIN[0])
         # only the current turn's card may spin: everything above the last user
         # message belongs to earlier turns
         last_user = -1
@@ -1781,11 +1800,11 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
             key, html = out[target]
             out[target] = (key, html.replace(
                 'class="role assistant">agent</span>',
-                'class="role assistant">agent %s</span>' % esc(frame), 1))
+                'class="role assistant">agent %s</span>' % spin, 1))
         else:
             # agent has not produced anything yet this turn: show a fresh card
             out.append(("working", '<div class="msg"><span class="role assistant">agent %s</span></div>'
-                        % esc(frame)))
+                        % spin))
     pend = pending_html(sid, port, caps, lang)
     if note:
         # inside the fragment, before the approval block: the reader must see that
@@ -2351,7 +2370,7 @@ class Handler(BaseHTTPRequestHandler):
                                                               note=gone_note, lang=lang)
             payload = json.dumps({"v": digest, "html": frag, "status": status, "foot": foot,
                                   "items": [{"k": k, "h": h} for k, h in items],
-                                  "busy": busy},
+                                  "busy": busy, "spin": list(SPIN)},
                                  ensure_ascii=False)
             self._send(payload.encode("utf-8"), "application/json; charset=utf-8", extra=extra)
             return
