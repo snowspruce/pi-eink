@@ -483,7 +483,9 @@ class ProxyBehaviour(unittest.TestCase):
         self.assertEqual(status, 200)
         payload = json.loads(data)
         self.assertTrue(payload["busy"])
-        self.assertIn("200k", payload["status"])
+        # percent, not the raw window size: the window total was dropped from the
+        # one-line status (see render()); the percentage is what the reader acts on.
+        self.assertIn("4%", payload["status"])
 
 
 class UnlockFlow(unittest.TestCase):

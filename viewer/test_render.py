@@ -764,7 +764,10 @@ class BridgeRegistry(unittest.TestCase):
             server.BRANCH_CACHE.clear()
             _d, _f, status, _ft, _i, _b = server.render(p, 20, False, False)
             self.assertIn("feature", status)
-            self.assertIn("W4", status)
+            # cacheWrite/cacheRead/cache-hit were dropped from the status line: it is
+            # one 9px line that also carries the footer links, and those numbers never
+            # changed a decision. See render().
+            self.assertNotIn("W4", status)
         finally:
             clean("--branch--")
             shutil.rmtree(repo, ignore_errors=True)

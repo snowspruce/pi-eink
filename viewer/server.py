@@ -1035,11 +1035,15 @@ body {
    an amount that changes with the toolbar state, so a fixed top:0 element either
    lost its first half or vanished entirely - and no padding value worked for both.
    In flow at the end of the document it is drawn where the geometry is known. */
-#top {
+#bar {
   background: #fff; border-top: 1px solid #000;
-  padding: 1px 8px 0; font-size: 9px; line-height: 14px; height: 15px;
-  white-space: nowrap; overflow: hidden;
+  padding: 1px 8px 2px; font-size: 9px; line-height: 13px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  color: #777;
 }
+#bar #status { color: #000; }
+/* separated by space, not a character: links must not run into the numbers */
+#bar #foottxt { margin-left: 10px; }
 #wrap { padding: 16px 12px 6px 12px; }   /* clears #top: 18px line + 10px offset + 6px */
 .msg { margin: 0 0 26px 0; }
 .role {
@@ -1127,18 +1131,15 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 .sess a { color: #000; }
 #note { font-size: 20px; font-weight: bold; padding: 6px 0 0; }
 #result { padding: 3px 8px; font-size: 14px; font-weight: bold; color: #000; min-height: 20px; }
-#foot {
-  padding: 0 8px 2px; margin: 0; font-size: 9px; line-height: 12px;
-  color: #777; border-top: 0;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
+
 """
 
 # Night mode: the Kindle frontlight plus a white page is painful in the dark.
 # Inverted, high-contrast rules appended after the base sheet so they win.
 DARK_CSS = """
 body { background: #000; color: #fff; }
-#top { background: #000; border-top-color: #fff; color: #fff; }
+#bar { background: #000; border-top-color: #fff; color: #999; }
+#bar #status { color: #fff; }
 .role { border-color: #fff; }
 .role.user { background: #fff; color: #000; }
 .role.assistant, .role.tool { background: #000; color: #fff; }
@@ -1163,7 +1164,6 @@ hr { border-top-color: #fff; }
 .sess { border-bottom-color: #fff; }
 .sess a { color: #fff; }
 #note, #result { color: #fff; }
-#foot { color: #999; border-top-color: #555; }
 a { color: #fff; }
 """
 
@@ -1212,8 +1212,7 @@ SHELL = r"""<!DOCTYPE html>
 <style>%(css)s</style>
 </head><body>
 <div id="wrap"><div id="content"></div><div id="acts">%(acts)s</div></div>
-<div id="top"><span id="status">loading</span></div>
-<div id="foot"><span id="foottxt"></span></div>
+<div id="bar"><span id="status">loading</span><span id="foottxt"></span></div>
 <script>
 var T = %(i18n)s;
 var V = "", KEYS = [], NODES = {};
@@ -1909,21 +1908,17 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
     if branch:
         line1 += " (%s)" % esc(branch)
 
-    cache_hit = 0.0
-    denom = total["cacheRead"] + total["input"]
-    if denom:
-        cache_hit = 100.0 * total["cacheRead"] / denom
-    parts = ["\u2191%s" % human(total["input"]), "\u2193%s" % human(total["output"]),
-             "R%s" % human(total["cacheRead"])]
-    if total["cacheWrite"]:
-        parts.append("W%s" % human(total["cacheWrite"]))
-    parts.append("CH%.1f%%" % cache_hit)
+    # One short line, not three: the reader glances at this, so it keeps only what
+    # changes a decision - how much context is left and what it has cost. Dropped:
+    # cache-read total, cache-hit ratio, cache-write, and the raw window size - all
+    # of them were noise on a 9px line that also had to carry the footer links.
+    parts = ["\u2191%s" % human(total["input"]), "\u2193%s" % human(total["output"])]
     if total["cost"]:
         parts.append("$%.3f" % total["cost"] if total["cost"] < 10 else "$%.2f" % total["cost"])
-    if state and state.get("context") and state["context"].get("window"):
-        ctxinfo = state["context"]
-        pct = ctxinfo.get("percent")
-        parts.append("%s/%s" % ("%.1f%%" % pct if pct is not None else "?", human(ctxinfo["window"])))
+    if state and state.get("context"):
+        pct = state["context"].get("percent")
+        if pct is not None:
+            parts.append("%.0f%%" % pct)
 
     if bridge_state():
         bridge_note = ""
@@ -1935,8 +1930,14 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         bridge_note = tr("bridge_off", lang)
     if pend:
         bridge_note += tr("pending_note", lang)
+    short = ""
+    if path:
+        stem = path.stem
+        short = stem.rsplit("_", 1)[-1][:8] if "_" in stem else stem[-8:]
     line2 = " ".join(parts) + bridge_note
-    status = (line1 + " " + line2) if line1 else line2
+    status = (line1 + " \u00b7 " + line2) if line1 else line2
+    if short:
+        status = esc(short) + " \u00b7 " + status
     # hash both: the page repaints only when this changes, and the status line
     # carries the Working spinner
     digest = hashlib.sha1((frag + status).encode("utf-8")).hexdigest()[:12]
@@ -1952,12 +1953,9 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         esc(tr("lang_switch", lang)))
     foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     if path:
-        stem = path.stem
-        short = stem.rsplit("_", 1)[-1][:8] if "_" in stem else stem[-8:]
         # the picker lists every project on this machine: not on a read-only network
         picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions_short", lang))) if caps == "full" else ""
-        foot = (esc(short) + " \u00b7 " + picker + reload_link + " \u00b7 " + theme_link
-                + " \u00b7 " + lang_link)
+        foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     return digest, frag, status, foot, items, busy
 
 
