@@ -188,6 +188,13 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(len(FakeBridge.seen), 1)
         self.assertEqual(FakeBridge.seen[0][2], "text=hello")
 
+    def test_say_is_recorded_where_the_recall_button_reads_it(self):
+        server.HISTORY_FILE.unlink(missing_ok=True)
+        request(self.viewer.port, "/act/say", "POST", "text=hello", accept="application/json")
+        status, data = request(self.viewer.port, "/hist")
+        self.assertEqual(status, 200, data[:200])
+        self.assertEqual(json.loads(data)["items"], ["hello"])
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")

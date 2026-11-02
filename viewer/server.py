@@ -54,6 +54,7 @@ VIEW_FILE = Path.home() / ".pi/eink/view.json"
 # written by the pi extension: which session and port actually accept actions
 STATE_FILE = Path.home() / ".pi/eink/bridge.json"
 BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid, cwd, sessionFile, updatedAt}
+HISTORY_FILE = Path.home() / ".pi/eink/history.json"  # sessionId -> commands sent from the box
 COOKIE = "pieink"
 LANG_COOKIE = "pielang"
 # Page furniture only (~35 strings). Conversation content is never translated.
@@ -123,6 +124,7 @@ STRINGS = {
     "glyphs_triangle": ("\u4e09\u89d2\u5f69", "Triangles"),
     "js_timeout": ("\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5", "Timed out, try again"),
     "js_net_error": ("\u7f51\u7edc\u9519\u8bef", "network error"),
+    "js_no_history": ("\u6ca1\u6709\u5386\u53f2\u6307\u4ee4", "no history yet"),
 }
 DEFAULT_LANG = "en" if os.environ.get("EINK_LANG", "").lower().startswith("en") else "zh"
 
@@ -503,8 +505,6 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 # on purpose: cutting a runaway agent loose from an untrusted LAN is the one
 # action that is safe without a secret.
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
-
-
 def action_allowed(caps: str, action: str) -> bool:
     """The enforcement point for read-only networks, kept pure so the gate itself is
     unit-tested and not only the decision that feeds it."""
@@ -529,6 +529,45 @@ def atomic_write(path: Path, text: str) -> None:
         fh.flush()
         os.fsync(fh.fileno())
     os.replace(tmp, path)
+
+
+HISTORY_MAX = 10
+
+
+def _history_all() -> dict:
+    try:
+        data = json.loads(HISTORY_FILE.read_text())
+    except Exception:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def history_list(sid: str) -> list:
+    """Commands sent from this session's box, newest first.
+
+    Server side on purpose: `localStorage` is a per-app switch in Android WebView
+    (`setDomStorageEnabled`) and this browser is not guaranteed to have it, which
+    showed up as a history button that did nothing at all.
+    """
+    items = _history_all().get(sid or "")
+    return [str(x) for x in items] if isinstance(items, list) else []
+
+
+def history_push(sid: str, text: str) -> None:
+    text = (text or "").strip()
+    if not text or not sid:
+        return
+    with _WRITE_LOCK:
+        data = _history_all()
+        items = [str(x) for x in (data.get(sid) or []) if str(x) != text]
+        items.insert(0, text)
+        data[sid] = items[:HISTORY_MAX]
+        if len(data) > 50:      # bounded: one entry per session ever opened
+            data = dict(sorted(data.items(), key=lambda kv: len(kv[1]), reverse=True)[:50])
+        try:
+            atomic_write(HISTORY_FILE, json.dumps(data, indent=2, ensure_ascii=False))
+        except Exception:
+            pass
 
 
 def trust_hours() -> float:
@@ -1347,31 +1386,46 @@ document.addEventListener("submit", function (e) {
 // The on-screen keyboard is the slowest part of this page, so "\u2191" refills the box with a
 // previous command instead of retyping it. Deliberately not focused: focusing opens the
 // keyboard, which is exactly what this button exists to avoid.
+// The list lives on the server, not in localStorage: DOM storage is a per-app switch in
+// Android WebView and this browser may not have it on - a dead button was the result.
 var HIST = [], HPOS = -1;
-try { HIST = JSON.parse(window.localStorage.getItem("eink_hist") || "[]") || []; } catch (e) { HIST = []; }
+function histRender() {
+  var box = document.querySelector("#sayform textarea");
+  if (!box) { return; }
+  if (!HIST.length) { showResult(T.noHistory); return; }   // never a silent no-op
+  HPOS = HPOS + 1;
+  if (HPOS >= HIST.length) { HPOS = 0; }   // no modulo: SHELL is a formatted template
+  box.value = HIST[HPOS];
+  try { box.setSelectionRange(box.value.length, box.value.length); } catch (e) {}
+}
+function histFetch(done) {
+  try {
+    var x = new XMLHttpRequest();
+    x.open("GET", "/hist%(qs)st=" + (new Date().getTime()), true);
+    x.onreadystatechange = function () {
+      if (x.readyState !== 4) { return; }
+      if (x.status === 200) {
+        try { HIST = JSON.parse(x.responseText).items || []; } catch (e) { HIST = []; }
+      }
+      if (done) { done(); }
+    };
+    x.send(null);
+  } catch (e) { if (done) { done(); } }
+}
 function histRemember(text) {
   text = String(text || "").replace(/^\s+/, "").replace(/\s+$/, "");
   if (!text) { return; }
-  var at = -1, i;
-  for (i = 0; i < HIST.length; i++) { if (HIST[i] === text) { at = i; } }
-  if (at === 0) { return; }          // same as last time: keep it at the top
-  if (at > 0) { HIST.splice(at, 1); }
+  var i;
+  for (i = 0; i < HIST.length; i++) { if (HIST[i] === text) { HIST.splice(i, 1); break; } }
   HIST.unshift(text);
   if (HIST.length > 10) { HIST.length = 10; }
   HPOS = -1;
-  try { window.localStorage.setItem("eink_hist", JSON.stringify(HIST)); } catch (e) {}
 }
 (function () {
   var b = document.getElementById("hist");
   if (!b) { return; }   // read-only networks get a PIN box instead
-  b.onclick = function () {
-    var box = document.querySelector("#sayform textarea");
-    if (!box || !HIST.length) { return; }
-    HPOS = HPOS + 1;
-    if (HPOS >= HIST.length) { HPOS = 0; }   // no modulo: SHELL is a formatted template
-    box.value = HIST[HPOS];
-    try { box.setSelectionRange(box.value.length, box.value.length); } catch (e) {}
-  };
+  b.onclick = function () { histRender(); };
+  histFetch(null);      // fill on load so the list survives a reload
 })();
 
 var resultTimer = null;
@@ -2182,6 +2236,14 @@ class Handler(BaseHTTPRequestHandler):
             resp_body = tr("bridge_not_running", lang, err).encode("utf-8")
             status = 502
         log_action(ip, caps, action, status, post_sid)
+        if action == "say" and status < 400 and body:
+            # Recorded here, not in the browser: the page may be reloaded, or read on
+            # another device, and the box's history should still be there.
+            try:
+                hist_text = (parse_qs(body.decode("utf-8", "replace")).get("text") or [""])[0]
+            except Exception:
+                hist_text = ""
+            history_push(post_sid, hist_text)
 
         # A plain form post (no JS, or a page cached before the inline handler
         # existed) must not land on the bridge's own page with a manual 返回:
@@ -2365,6 +2427,16 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b"ok", "text/plain; charset=utf-8", extra=extra)
             return
 
+        if u.path == "/hist":
+            # The reader's own past commands for this session, newest first. Served
+            # from disk so it survives a reload and is identical on every device.
+            # Same notion of "the session on screen" as the POST routing below, or the
+            # list read back would not be the list the box wrote.
+            hist_sid = ((q.get("s") or [""])[0] if caps_for(self) == "full" else "") or rendered_session_id()
+            self._send(json.dumps({"items": history_list(hist_sid)}, ensure_ascii=False).encode("utf-8"),
+                       "application/json; charset=utf-8", extra=extra)
+            return
+
         if u.path == "/data":
             digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps,
                                                               note=gone_note, lang=lang)
@@ -2411,7 +2483,8 @@ class Handler(BaseHTTPRequestHandler):
 
         i18n = json.dumps({"sent": tr("sent", lang), "failed": tr("failed", lang),
                            "timeout": tr("js_timeout", lang),
-                           "netError": tr("js_net_error", lang)}, ensure_ascii=False)
+                           "netError": tr("js_net_error", lang),
+                           "noHistory": tr("js_no_history", lang)}, ensure_ascii=False)
         self._send((SHELL % {"css": css, "acts": note_html + hint + acts_html(live_here, sid, caps, lang),
                             "qs": qs, "i18n": i18n}).encode("utf-8"),
                    "text/html; charset=utf-8", extra=extra)

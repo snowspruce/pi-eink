@@ -52,6 +52,44 @@ class FakeHandler:
         self.request = types.SimpleNamespace(getsockname=lambda: (local, 8000))
 
 
+class History(unittest.TestCase):
+    """The box's own command history lives on disk, not in the browser's localStorage:
+    DOM storage is a per-app switch in Android WebView, and a disabled one made the
+    recall button do nothing at all."""
+
+    def setUp(self):
+        try:
+            server.HISTORY_FILE.unlink()
+        except FileNotFoundError:
+            pass
+
+    def test_newest_first_and_deduped(self):
+        server.history_push("s1", "a")
+        server.history_push("s1", "b")
+        server.history_push("s1", "a")
+        self.assertEqual(server.history_list("s1"), ["a", "b"])
+
+    def test_bounded(self):
+        for i in range(server.HISTORY_MAX + 5):
+            server.history_push("s1", "cmd%d" % i)
+        self.assertEqual(len(server.history_list("s1")), server.HISTORY_MAX)
+
+    def test_sessions_do_not_share_history(self):
+        server.history_push("s1", "a")
+        server.history_push("s2", "b")
+        self.assertEqual(server.history_list("s1"), ["a"])
+        self.assertEqual(server.history_list("s2"), ["b"])
+
+    def test_blank_and_sidless_are_dropped(self):
+        server.history_push("s1", "")
+        server.history_push("s1", "   ")
+        server.history_push("", "x")
+        self.assertEqual(server.history_list("s1"), [])
+
+    def test_missing_file_reads_as_empty(self):
+        self.assertEqual(server.history_list("never"), [])
+
+
 class IpGate(unittest.TestCase):
     def setUp(self):
         os.environ.pop("EINK_ALLOW_SAME_SUBNET", None)
