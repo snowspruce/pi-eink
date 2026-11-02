@@ -1037,10 +1037,10 @@ body {
    In flow at the end of the document it is drawn where the geometry is known. */
 #top {
   background: #fff; border-top: 1px solid #000;
-  padding: 2px 8px 0; font-size: 9px; line-height: 18px; height: 20px;
+  padding: 1px 8px 0; font-size: 9px; line-height: 14px; height: 15px;
   white-space: nowrap; overflow: hidden;
 }
-#wrap { padding: 24px 14px 8px 14px; }   /* clears #top: 18px line + 10px offset + 6px */
+#wrap { padding: 16px 12px 6px 12px; }   /* clears #top: 18px line + 10px offset + 6px */
 .msg { margin: 0 0 26px 0; }
 .role {
   font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
@@ -1083,12 +1083,15 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 }
 #pending form { display: inline-block; margin: 8px 10px 0 0; line-height: 1; }
 #acts {
-  margin: 8px 0 0 0; padding: 3px 0 0 0;
-  border-top: 2px solid #000;
+  margin: 6px 0 0 0; padding: 3px 0 0 0;
+  border-top: 1px solid #000;
   line-height: 1; height: auto;
   white-space: nowrap; overflow: hidden;
 }
-#acts form { display: inline-block; vertical-align: top; margin: 0 8px 0 0; line-height: 1; }
+#acts form { display: inline-block; vertical-align: top; margin: 0 6px 0 0; line-height: 1; }
+#more { display: none; }
+#acts #more.open { display: inline; }
+#acts #morebtn { min-width: 0; width: auto; padding: 1px 8px; }
 /* One row: field then button. `-webkit-box` is the 2009 flexbox that the older
    Kindle browser understands, `flex` the one Chromium 30 uses; both are written so
    neither engine falls back to stacked block boxes. No `gap`: neither has it, so the
@@ -1096,7 +1099,7 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 #acts #sayform {
   display: -webkit-box; display: flex;
   -webkit-box-align: stretch; align-items: stretch;
-  margin-top: 6px; white-space: normal;
+  margin-top: 4px; white-space: normal;
   width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
 }
 #acts #sayform textarea, #acts #sayform input {
@@ -1116,17 +1119,17 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
    rule above forces min-width 64px, which would eat a tenth of a 511px screen. */
 #acts #sayform #hist { min-width: 0; width: auto; margin: 0 8px 0 0; padding: 4px 8px; }
 #acts button, .btn {
-  font-family: inherit; font-size: 12px; min-height: 30px;
+  font-family: inherit; font-size: 12px; min-height: 26px;
   background: #fff; color: #000; border: 2px solid #000;
-  padding: 2px 10px; margin: 0;
+  padding: 1px 9px; margin: 0;
 }
 .sess { border-bottom: 1px solid #000; padding: 8px 0; }
 .sess a { color: #000; }
 #note { font-size: 20px; font-weight: bold; padding: 6px 0 0; }
 #result { padding: 3px 8px; font-size: 14px; font-weight: bold; color: #000; min-height: 20px; }
 #foot {
-  padding: 0 8px 3px; margin: 0; font-size: 9px; line-height: 11px;
-  color: #777; border-top: 1px solid #bbb;
+  padding: 0 8px 2px; margin: 0; font-size: 9px; line-height: 12px;
+  color: #777; border-top: 0;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
 """
@@ -1438,6 +1441,20 @@ function histRemember(text) {
   if (!b) { return; }   // read-only networks get a PIN box instead
   b.onclick = function () { histRender(); };
   histFetch(null);      // fill on load so the list survives a reload
+})();
+
+// The hidden action buttons: one tap to show them, one to put them away. No storage -
+// the previous attempt to keep state in localStorage failed silently on this WebView.
+(function () {
+  var b = document.getElementById("morebtn");
+  if (!b) { return; }
+  b.onclick = function () {
+    var m = document.getElementById("more");
+    if (!m) { return; }
+    var open = m.className.indexOf("open") >= 0;
+    m.className = open ? "" : "open";
+    b.innerHTML = open ? "\u25bc" : "\u25b2";   // down = more below, up = put away
+  };
 })();
 
 var resultTimer = null;
@@ -1980,16 +1997,28 @@ def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = 
             'autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false">'
             '<button type="submit">%s</button></form>'
         ) % (esc(tr("readonly_prompt", lang)), suffix, esc(tr("unlock", lang)))
-    buttons = "".join('<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
-                      % (name, suffix, esc(tr(name, lang))) for name in ACTIONS)
-    return buttons + (
-        '<form method="POST" action="/act/readonly%s"><button type="submit">%s</button></form>'
-        '<form method="POST" action="/act/say%s" id="sayform">'
+    def form(name: str) -> str:
+        return ('<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
+                % (name, suffix, esc(tr(name, lang))))
+
+    # Two always-visible buttons, the rest behind a tap: seven buttons filled the whole
+    # 511px row and still wrapped the eye around a wall of borders. The hidden ones stay
+    # in the markup (display:none), so a no-JS client still has them and read-only
+    # networks keep their own, shorter row.
+    primary = "".join(form(name) for name in ("stop", "continue"))
+    more = "".join(form(name) for name in ACTIONS if name not in ("stop", "continue"))
+    more += form("readonly")
+    return (primary
+            + '<span id="more">' + more + '</span>'
+            # U+22EF (midline ellipsis) is NOT in this font: it rendered as an empty box.
+            # U+25BC is one of the shapes measured to be present on the device.
+            + '<button type="button" id="morebtn">\u25bc</button>'
+            + '<form method="POST" action="/act/say%s" id="sayform">'
         '<button type="button" id="hist">\u2191</button>'
         '<textarea name="text" rows="1" maxlength="2000" '
         'placeholder="%s"></textarea>'
         '<button type="submit">%s</button></form>'
-    ) % (suffix, esc(tr("readonly", lang)), suffix, esc(tr("say_placeholder", lang)), esc(tr("send", lang)))
+    ) % (suffix, esc(tr("say_placeholder", lang)), esc(tr("send", lang)))
 
 
 

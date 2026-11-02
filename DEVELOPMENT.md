@@ -304,6 +304,15 @@ p90 那 1.18s 不能全算卡顿：这组间隔混入了「没内容变化就不
   几何是确定的，永远看得见。
 - 浏览器设置页自己（`com.android.browser` 的 SettingsActivity）不受 `policy_control`
   影响，状态栏和导航栏会回来，别误判成"配置没生效"。
+- **页面的缩放倍数按 URL 记忆**：同一个地址被放大过之后，清 app 数据、重写 prefs、
+  重启都不复位（`browser2.db` 里没有 zoom 列，`app_webview/` 只有 Cookies/Web Data，
+  没找到它存在哪儿）。换一个带新参数的 URL 立刻恢复正常 —— 所以排查渲染异常时，
+  先换 URL 试一次，那是 3 秒的事。
+- **`pm clear` 会把 prefs 清得只剩你手动设的几项**，缺失的键回落到代码默认值
+  （`autofit_pages` / `default_zoom` 缺了就渲染异常）。要重置就写一份完整的 prefs，
+  不要只 patch 想改的那几个键。
+- 字体又踩一次：`\u22ef`（⋯，U+22EF）**不在字体里**，渲染成空方块。展开按钮最后用
+  `\u25bc` / `\u25b2`（实测可用）。
 
 ---
 
