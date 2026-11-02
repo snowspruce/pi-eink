@@ -213,6 +213,42 @@ cat ~/.pi/eink/trust.json                               # confirmed/peers/stamp/
 - 网段是 **172.20.10.0/28**（只有 `.1`–`.14` 十四个地址），不是 /24；本项目的
   白名单/信任按 /24 聚合，兼容这个更小的网段，但手工写 CIDR 时别写成 `/24` 之外的值。
 
+### 设备侧能测什么、上限在哪（2026-11 实测，CrackDroid / Voyage）
+
+`adb` 可用（`product:kindlemod model:Kindle device:kindlemod`），但 adbd 是 Android 4.4
+的版本，两个常用能力**不支持**，报错都是同一句 `adb: error: closed`：
+
+- `adb exec-out screencap -p > x.png` → 产出 **0 字节**文件（这个坑会静默成功）
+- `adb reverse tcp:8000 tcp:8000` → 失败，所以**USB 不能当网络通道**，页面只能走 WiFi
+
+截屏必须写文件再拉：`adb shell screencap -p /data/local/tmp/k.png && adb pull /data/local/tmp/k.png`
+（实测 1072×1448 PNG）。`adb logcat -d` 可用 —— 「Kindle 没有控制台」这个前提只在
+adbd 不可用时成立。
+
+量到的上限（决定了「要不要为这块屏重写前端」）：
+
+| 项 | 实测 |
+|---|---|
+| 面板刷新节拍 | `dumpsys SurfaceFlinger` 里 `refresh=58823529` ns = **58.8ms/帧，约 17Hz** |
+| 滑动时帧间隔 | min 58.8 / p50 58.8 / p90 1176 / max 4941 ms（46 帧） |
+| 渲染路径 | `dumpsys gfxinfo` 无 Profile data、`DisplayList: 0.00 kB` → **软件渲染**，无硬件加速 |
+| 内存 | MemTotal 396MB（MemFree 31MB / Cached 182MB） |
+| EPDC 控制面 | `/proc/eink/panel/{id,bcd,waveform,working_buffer,readonly,data}` **只读面板信息，没有刷新触发** |
+| 面板波形 | `320_G144_AC6202_ED060TC1C1_TC`（Voyage 的 ED060TC1） |
+
+p90 那 1.18s 不能全算卡顿：这组间隔混入了「没内容变化就不重绘」的空闲段。能确定的只有
+「贴得住 58.8ms 节拍的时候能跟上，跟不上时会停顿」。
+
+结论，用来挡掉重复投资：
+
+- **帧率天花板是面板节拍（17Hz）**，换前端框架/换语言都突破不了。
+- 浏览器是**软件渲染**，这是长尾卡顿的来源；改它只能上原生，而原生唯一的收益是
+  **`MXCFB_SEND_UPDATE` 的 A2 局部刷新**（消整屏黑闪、减残影），**不是变流畅**。
+  做它需要 NDK + 与 SurfaceFlinger 共存，且 `/proc/eink` 这条路走不通。
+- 前端**已经**做过三层优化，不要再做一遍：`paint()` 首行 `if (j.v === V) return` 短路、
+  行级节点复用（`NODES[k]` + `__h` 比对）、忙碌 spinner 限频到 4.8s。
+- 硬件侧无法通过开发改善：**无蓝牙**、**单个 USB 口**、6 寸触屏软键盘。
+
 ---
 
 ## 四、仍然开着的
