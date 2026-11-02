@@ -1029,16 +1029,18 @@ body {
   -webkit-text-size-adjust: none;
   text-size-adjust: none;
 }
+/* The status line sits at the BOTTOM, above the footer, not pinned to the top.
+   Pinned to the top it was unusable: with the browser's quick-controls mode (the
+   only way to hide the URL bar on the Kindle) the WebView is offset vertically by
+   an amount that changes with the toolbar state, so a fixed top:0 element either
+   lost its first half or vanished entirely - and no padding value worked for both.
+   In flow at the end of the document it is drawn where the geometry is known. */
 #top {
-  position: fixed; top: 0; left: 0; right: 0;
-  background: #fff; border-bottom: 1px solid #000;
-  /* 10px of top padding, not 0: with the browser's quick-controls mode (the only way
-     to hide the URL bar on the Kindle) the WebView is positioned ~9px above the
-     physical top, so a top:0 element renders with its first half off-screen. */
-  padding: 10px 8px 0; font-size: 9px; line-height: 18px; height: 18px;
+  background: #fff; border-top: 1px solid #000;
+  padding: 2px 8px 0; font-size: 9px; line-height: 18px; height: 20px;
   white-space: nowrap; overflow: hidden;
 }
-#wrap { padding: 34px 14px 8px 14px; }   /* clears #top: 18px line + 10px offset + 6px */
+#wrap { padding: 24px 14px 8px 14px; }   /* clears #top: 18px line + 10px offset + 6px */
 .msg { margin: 0 0 26px 0; }
 .role {
   font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
@@ -1133,7 +1135,7 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 # Inverted, high-contrast rules appended after the base sheet so they win.
 DARK_CSS = """
 body { background: #000; color: #fff; }
-#top { background: #000; border-bottom: 1px solid #fff; color: #fff; }
+#top { background: #000; border-top-color: #fff; color: #fff; }
 .role { border-color: #fff; }
 .role.user { background: #fff; color: #000; }
 .role.assistant, .role.tool { background: #000; color: #fff; }
@@ -1206,8 +1208,8 @@ SHELL = r"""<!DOCTYPE html>
 <title>pi / eink</title>
 <style>%(css)s</style>
 </head><body>
-<div id="top"><span id="status">loading</span></div>
 <div id="wrap"><div id="content"></div><div id="acts">%(acts)s</div></div>
+<div id="top"><span id="status">loading</span></div>
 <div id="foot"><span id="foottxt"></span></div>
 <script>
 var T = %(i18n)s;
