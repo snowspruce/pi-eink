@@ -1061,6 +1061,9 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
   -webkit-box-flex: 0; flex: 0 0 auto;
   width: auto; min-width: 64px; margin: 0 0 0 8px; padding: 4px 12px;
 }
+/* History recall sits left of the box, so it needs its own rule: the generic button
+   rule above forces min-width 64px, which would eat a tenth of a 511px screen. */
+#acts #sayform #hist { min-width: 0; width: auto; margin: 0 8px 0 0; padding: 4px 8px; }
 #acts button, .btn {
   font-family: inherit; font-size: 12px; min-height: 30px;
   background: #fff; color: #000; border: 2px solid #000;
@@ -1301,7 +1304,10 @@ document.addEventListener("submit", function (e) {
     showResult(msg);
     if (ok) {
       var ta = form.querySelector("textarea");
-      if (ta) { ta.value = ""; }
+      if (ta) {
+        if (/\/act\/say/.test(action)) { histRemember(ta.value); }
+        ta.value = "";
+      }
     }
     if (ok && /\/act\/(unlock|readonly)/.test(action)) {
       // #acts comes from the shell, not from /data: without a reload the reader
@@ -1319,6 +1325,36 @@ document.addEventListener("submit", function (e) {
   };
   x.send(body);
 }, false);
+
+// The on-screen keyboard is the slowest part of this page, so "\u2191" refills the box with a
+// previous command instead of retyping it. Deliberately not focused: focusing opens the
+// keyboard, which is exactly what this button exists to avoid.
+var HIST = [], HPOS = -1;
+try { HIST = JSON.parse(window.localStorage.getItem("eink_hist") || "[]") || []; } catch (e) { HIST = []; }
+function histRemember(text) {
+  text = String(text || "").replace(/^\s+/, "").replace(/\s+$/, "");
+  if (!text) { return; }
+  var at = -1, i;
+  for (i = 0; i < HIST.length; i++) { if (HIST[i] === text) { at = i; } }
+  if (at === 0) { return; }          // same as last time: keep it at the top
+  if (at > 0) { HIST.splice(at, 1); }
+  HIST.unshift(text);
+  if (HIST.length > 10) { HIST.length = 10; }
+  HPOS = -1;
+  try { window.localStorage.setItem("eink_hist", JSON.stringify(HIST)); } catch (e) {}
+}
+(function () {
+  var b = document.getElementById("hist");
+  if (!b) { return; }   // read-only networks get a PIN box instead
+  b.onclick = function () {
+    var box = document.querySelector("#sayform textarea");
+    if (!box || !HIST.length) { return; }
+    HPOS = HPOS + 1;
+    if (HPOS >= HIST.length) { HPOS = 0; }   // no modulo: SHELL is a formatted template
+    box.value = HIST[HPOS];
+    try { box.setSelectionRange(box.value.length, box.value.length); } catch (e) {}
+  };
+})();
 
 var resultTimer = null;
 function showResult(msg) {
@@ -1864,6 +1900,7 @@ def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = 
     return buttons + (
         '<form method="POST" action="/act/readonly%s"><button type="submit">%s</button></form>'
         '<form method="POST" action="/act/say%s" id="sayform">'
+        '<button type="button" id="hist">\u2191</button>'
         '<textarea name="text" rows="1" maxlength="2000" '
         'placeholder="%s"></textarea>'
         '<button type="submit">%s</button></form>'
