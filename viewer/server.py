@@ -31,6 +31,10 @@ PORT = int(os.environ.get("EINK_PORT", "8000"))
 # Bind one interface when the box has more (utun, docker bridges): 0.0.0.0 exposes
 # the page on every one of them.
 BIND = os.environ.get("EINK_BIND", "0.0.0.0")
+# Public ingress (reverse tunnel / TLS terminator) must not accept the 6-digit pin:
+# it is a LAN convenience, and on an internet-facing endpoint the 32-char token is
+# the only credential strong enough to guard a shell-capable agent.
+NO_PIN = os.environ.get("EINK_NO_PIN") == "1"
 BRIDGE_PORT = int(os.environ.get("EINK_BRIDGE_PORT", "8001"))
 SESSIONS = Path.home() / ".pi/agent/sessions"
 TOKEN_FILE = Path.home() / ".pi/eink/token"
@@ -125,6 +129,8 @@ STRINGS = {
     "js_timeout": ("\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5", "Timed out, try again"),
     "js_net_error": ("\u7f51\u7edc\u9519\u8bef", "network error"),
     "js_no_history": ("\u6ca1\u6709\u5386\u53f2\u6307\u4ee4", "no history yet"),
+    "readonly_no_pin": ("\u672c\u7f51\u7edc\u53ea\u8bfb\uff0c\u4e14 PIN \u89e3\u9501\u5df2\u5173\u95ed",
+                        "read-only, and pin unlock is disabled"),
 }
 DEFAULT_LANG = "en" if os.environ.get("EINK_LANG", "").lower().startswith("en") else "zh"
 
@@ -1985,6 +1991,10 @@ def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = 
         buttons = "".join(
             '<form method="POST" action="/act/%s%s"><button type="submit">%s</button></form>'
             % (name, suffix, esc(tr(name, lang))) for name in ACTIONS if name in READONLY_ACTIONS)
+        if NO_PIN:
+            # No pin form at all: rendering one that can never succeed is the "fake
+            # control" this project keeps warning about.
+            return buttons + '<div class="body dim">%s</div>' % esc(tr("readonly_no_pin", lang))
         return buttons + (
             '<div class="body dim">%s</div>'
             # <input>, not <textarea>: Android WebView capitalises the first letter of
@@ -2106,7 +2116,7 @@ class Handler(BaseHTTPRequestHandler):
             self._clear_fails(ip)
             return True, extra + cookie_refresh(ip), ""
         given = (q.get("k") or [""])[0]
-        if given and given in (want, pin()):
+        if given and given in ((want,) if NO_PIN else (want, pin())):
             self._clear_fails(ip)
             _COOKIE_REFRESH[ip] = time.time()
             extra.append(("Set-Cookie", cookie_value()))
@@ -2199,7 +2209,7 @@ class Handler(BaseHTTPRequestHandler):
             # Only the pin unlocks a network. The cookie's value *is* the token, so
             # accepting the token here let anyone who sniffed a cookie upgrade an
             # unknown network to full and write it into trust.json.
-            expected = pin()
+            expected = "" if NO_PIN else pin()
             if not give or not expected or give != expected:
                 self._note_fail(ip, guess=True)
                 back(tr("bad_pin", lang), 403)

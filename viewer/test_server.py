@@ -487,3 +487,27 @@ class Credentials(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class NoPinMode(unittest.TestCase):
+    """EINK_NO_PIN=1: the public entry only accepts the 32-char token.
+
+    The pin is a six digit LAN convenience; on an internet-facing endpoint it is a
+    credential for driving a shell-capable agent, so it must not be accepted at all -
+    and the read-only page must not render a pin form that can never succeed.
+    """
+
+    def setUp(self):
+        self._old = server.NO_PIN
+        server.NO_PIN = True
+        self.addCleanup(setattr, server, "NO_PIN", self._old)
+
+    def test_readonly_page_has_no_pin_form(self):
+        html = server.acts_html(True, "", "readonly")
+        self.assertNotIn("/act/unlock", html)
+        self.assertNotIn('name="k"', html)
+        self.assertIn("只读", html)
+
+    def test_full_page_unchanged(self):
+        html = server.acts_html(True, "", "full")
+        self.assertIn('name="text"', html)
