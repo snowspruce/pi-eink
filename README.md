@@ -315,6 +315,17 @@ is needed.
 
 ## Troubleshooting
 
+**A black strip sits between the status bar and the page** that is the browser, not the
+page: with quick controls the toolbar container collapses to 0 height but the page area is
+not moved up, so the window background shows through ~42 CSS px of space and the page gets
+that much less height. The page can neither see nor paint there (`#wrap`'s padding scrolls
+away; nothing in the document is full-width black at the top). Fix by restarting the
+browser with `enable_quick_controls=true` - `~/bin/eink-addr off` does exactly that
+(force-stop, patch the pref, relaunch). Verify with `adb shell dumpsys activity top`:
+`main_content` must start at `0,` and `BrowserWebView` must be the full height
+(`0,0-1072,1332` here); a `main_content` starting at `0,89` is the half-applied state.
+Full measurements in `DEVELOPMENT.md` §18.
+
 **`/reload` hangs on "Reloading keybindings, extensions, skills…"** pi awaits
 `session_start`, and the bridge binds a port there. An unbounded `EADDRINUSE` retry blocks
 the whole reload with no error anywhere. The retry is bounded on purpose: keep it that way.

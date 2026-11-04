@@ -274,6 +274,14 @@ token 不要留在聊天记录与截图里，页面本身就是泄漏面。轮�
 
 ## 排查
 
+**状态栏和页面之间有一条黑带** 那是浏览器，不是页面：quick-controls 隐藏地址栏时把工具栏容器
+压成 0 高度，却没有把页面区上移，于是中间约 42 CSS px 露出窗口背景（黑），页面也少了同样的高度。
+页面既看不到也画不到那里（`#wrap` 的内边距会随滚动走，文档顶部没有任何满宽黑块）。修法是**干净
+重启**浏览器并保持 `enable_quick_controls=true`：设备上 `~/bin/eink-addr off` 就是这件事
+（force-stop → 改 prefs → 重启）。用 `adb shell dumpsys activity top` 验证：`main_content`
+必须从 `0,` 开始、`BrowserWebView` 必须是全高（这台设备是 `0,0-1072,1332`）；`main_content`
+从 `0,89` 开始就是那个半应用状态。完整测量见 `DEVELOPMENT.md` §18。
+
 **`/reload` 卡在 "Reloading keybindings, extensions, skills…"** pi 会 await `session_start`，
 而 bridge 在那里绑端口。无上限的 `EADDRINUSE` 重试会把整个 reload 阻塞住，且任何地方都没有报错。
 重试是有意设上限的，不要拆掉。

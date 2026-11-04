@@ -284,6 +284,52 @@ reload/恢复、正常文本/命令文本、缺字段/坏字段。上面的 2 �
 
 ---
 
+### 18. 顶部黑带：浏览器 quick-controls 的"半应用"状态
+
+症状：地址栏已隐藏，但页面顶部有一条满宽黑带，看起来像把内容挡住了。
+
+**先量，别猜。** 真机截屏（`adb shell screencap -p /sdcard/x.png` + `adb pull`）逐像素量：
+状态栏白色 0..43，黑带 44..132（89 px @ dpr 2.1 = 42 CSS px），页面内容从 133 开始。
+再读 View 层级（`adb shell dumpsys activity top`）：
+
+```
+# 坏状态（有黑带）
+fixed_titlebar_container  0,0-1072,0        ← 地址栏容器高度被压成 0
+NavigationBarPhone        0,0-1072,109      ← 地址栏控件本身还在，仍然绘制
+main_content              0,89-1072,1312    ← 页面区从 89 开始，上方 89px 是窗口背景（黑）
+BrowserWebView            0,0-1072,1223     ← 页面比可用高度少 42 CSS px
+
+# 好状态（重启后）
+fixed_titlebar_container  0,0-1072,20
+taburlbar                 0,0-0,0           ← 真的没了
+main_content              0,-20-1072,1312   ← 页面区回到顶端
+BrowserWebView            0,0-1072,1332     ← 页面拿到全部高度
+```
+
+结论：**黑带在 WebView 外面**——浏览器把地址栏容器压成 0 高度，却没把页面区上移，中间
+89px 露的是窗口背景（黑）。页面从头到尾没参与：`#wrap` 的 16px 内边距在文档顶部，滚动后
+根本不在视野里，`body` 日间是白底。
+
+修法（只有这一条）：用 `enable_quick_controls=true` **干净重启**浏览器。设备上就是
+`~/bin/eink-addr off`（`am force-stop` → 改 prefs → `am start`）。重启后 `main_content`
+回到 0，页面多出 42 CSS px；重启会回到 `https://eink.blueberry.cafe/` 并再弹一次证书警告，
+点"继续"即可。
+
+走过的弯路，值得记下来：
+
+- 先量了仓库截图和 CSS，确认页面顶部没有任何满宽黑块——这一步是对的，但**不够**：接着凭
+  截图推出"内容钻到带子底下"，于是加了 `EINK_TOP_PAD` / `?top=<px>` 旋钮和 `/diag` 的 `bt`
+  字段。真机 `dumpsys` 一看，页面根本没被盖住：那个旋钮解决的是一个不存在的问题，已 revert
+  （79d8560）。`bt`（`body.getBoundingClientRect().top`）也测不出这类问题——WebView 整体被
+  挪下去时，页面内部坐标依然是 0。
+- 真正管用的是三个数：**截图里黑带的像素范围**、`main_content` 起始 y、`BrowserWebView` 高度。
+  放在一起，"页面被盖住"和"页面被挤下去"一眼分得清。
+- `adb shell input swipe` 默认时长（300ms）会被当成**长按选中文本**，量到的"黑带"其实是选中
+  工具栏。要么给 `swipe` 加时长参数（<100ms），要么改用 `input keyevent`。这一条害我白读了
+  一张截图。
+
+教训：**"看起来盖住了"和"真的盖住了"是两件事**，只有层级几何能区分。
+
 ## 三、排查阶梯（设备打不开时按顺序）
 
 ```sh
