@@ -8,7 +8,9 @@ GET /static -> plain page with meta refresh (JS-less fallback)
 Env: PI_SESSION_FILE (default: newest *.jsonl under ~/.pi/agent/sessions)
 """
 
+import base64
 import hashlib
+import hmac
 import html
 import ipaddress
 import datetime
@@ -131,6 +133,10 @@ STRINGS = {
     "js_timeout": ("\u8d85\u65f6\uff0c\u8bf7\u91cd\u8bd5", "Timed out, try again"),
     "js_net_error": ("\u7f51\u7edc\u9519\u8bef", "network error"),
     "js_no_history": ("\u6ca1\u6709\u5386\u53f2\u6307\u4ee4", "no history yet"),
+    "otp_prompt": ("\u8f93\u5165 6 \u4f4d\u52a8\u6001\u7801", "Enter the 6-digit code"),
+    "otp_submit": ("\u786e\u8ba4", "Verify"),
+    "otp_bad": ("\u52a8\u6001\u7801\u4e0d\u5bf9", "wrong code"),
+    "otp_needed": ("\u9700\u8981\u52a8\u6001\u7801", "2FA code required"),
     "readonly_no_pin": ("\u672c\u7f51\u7edc\u53ea\u8bfb\uff0c\u4e14 PIN \u89e3\u9501\u5df2\u5173\u95ed",
                         "read-only, and pin unlock is disabled"),
 }
@@ -2049,6 +2055,83 @@ def pin_session_ok(value) -> bool:
     return at is not None and time.time() - at <= COOKIE_MAX_AGE
 
 
+# base32 secret; absent = 2FA off. Overridable so the secret can live next to the
+# TLS material instead of inside the pi state dir.
+TOTP_FILE = Path(os.environ.get("EINK_TOTP_FILE") or (Path.home() / ".pi/eink/totp"))
+OTP_COOKIE = "pieink_otp"
+_OTP_SESSIONS: dict = {}
+_OTP_LOCK = threading.Lock()
+_OTP_CACHE = [None, None]      # (mtime, secret)
+
+
+def totp_secret() -> str:
+    """base32 secret from ~/.pi/eink/totp, or "" when 2FA is not configured.
+
+    Second factor for an internet-facing deployment: the Basic Auth password alone
+    must not be enough, because that password is also what a browser remembers for
+    us and what a shoulder-surfer can read.
+    """
+    try:
+        st = TOTP_FILE.stat()
+        key = (st.st_mtime, st.st_size)
+    except Exception:
+        return ""
+    if _OTP_CACHE[0] == key:
+        return _OTP_CACHE[1] or ""
+    try:
+        secret = TOTP_FILE.read_text().strip().replace(" ", "").upper()
+    except Exception:
+        return ""
+    _OTP_CACHE[0] = key
+    _OTP_CACHE[1] = secret
+    return secret
+
+
+def totp_code(secret: str, at: float = 0.0, step: int = 30) -> str:
+    """RFC 6238, 6 digits, SHA1 - what every authenticator app shows."""
+    if not secret:
+        return ""
+    counter = int((at or time.time()) // step)
+    key = base64.b32decode(secret + "=" * ((8 - len(secret) % 8) % 8), casefold=True)
+    digest = hmac.new(key, struct.pack(">Q", counter), hashlib.sha1).digest()
+    off = digest[-1] & 0x0F
+    return "%06d" % ((struct.unpack(">I", digest[off:off + 4])[0] & 0x7FFFFFFF) % 1000000)
+
+
+def totp_verify(code: str) -> bool:
+    """+-1 step of drift, constant time. Empty secret never matches."""
+    secret = totp_secret()
+    if not secret or not code or not code.strip().isdigit():
+        return False
+    given = code.strip()
+    now = time.time()
+    for drift in (-1, 0, 1):
+        want = totp_code(secret, now + drift * 30)
+        if want and hmac.compare_digest(want, given):
+            return True
+    return False
+
+
+def otp_session_value() -> str:
+    now = time.time()
+    with _OTP_LOCK:
+        for stale in [k for k, at in _OTP_SESSIONS.items() if now - at > COOKIE_MAX_AGE]:
+            _OTP_SESSIONS.pop(stale, None)
+        if len(_OTP_SESSIONS) > 256:
+            _OTP_SESSIONS.pop(min(_OTP_SESSIONS, key=_OTP_SESSIONS.get), None)
+        value = secrets.token_hex(16)
+        _OTP_SESSIONS[value] = now
+    return value
+
+
+def otp_session_ok(value) -> bool:
+    if not value:
+        return False
+    with _OTP_LOCK:
+        at = _OTP_SESSIONS.get(value)
+    return at is not None and time.time() - at <= COOKIE_MAX_AGE
+
+
 def cookie_refresh(ip: str, current: str = "") -> list:
     """Rolling expiry: a page polled every few seconds must not ask for the pin
     again, but a cookie left on a lost Kindle stops working within a week."""
@@ -2107,6 +2190,30 @@ def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = 
         '<button type="submit">%s</button></form>'
     ) % (suffix, esc(tr("say_placeholder", lang)), esc(tr("send", lang)))
 
+
+
+def otp_page(sid: str = "", dark: bool = False, err: str = "", lang: str = "") -> str:
+    """Six-digit prompt. Shown only after the password/token gates pass, so the second
+    factor cannot be reached by anyone who has not already got past the first."""
+    fg, bg = ("#fff", "#000") if dark else ("#000", "#fff")
+    style = ("font-family:-apple-system,sans-serif;font-size:26px;padding:20px;"
+             "background:%s;color:%s" % (bg, fg))
+    errhtml = ('<p style="font-size:20px">%s</p>' % esc(err)) if err else ""
+    return (
+        '<!DOCTYPE html><html><head><meta name="viewport" content="width=device-width">'
+        "<style>body{%s} input{font-size:28px;width:60%%;padding:8px;"
+        "border:2px solid %s;background:%s;color:%s}"
+        " button{font-size:24px;padding:8px 18px;border:2px solid %s;"
+        "background:%s;color:%s}</style></head><body>"
+        "<p>%s</p>%s"
+        '<form method="POST" action="/otp">'
+        '<input type="hidden" name="s" value="%s">'
+        '<input name="c" inputmode="numeric" maxlength="8" autocomplete="off" '
+        'autocapitalize="off" spellcheck="false" placeholder="000000"> '
+        '<button type="submit">%s</button></form></body></html>'
+        % (style, fg, bg, fg, fg, bg, fg,
+           esc(tr("otp_prompt", lang)), errhtml, esc(sid), esc(tr("otp_submit", lang)))
+    )
 
 
 def auth_page(msg: str, dark: bool = False) -> str:
@@ -2179,6 +2286,22 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
+    def _otp_gate(self, q) -> bool:
+        """Second factor. True when satisfied (or when 2FA is not configured)."""
+        if not totp_secret():
+            return True
+        if otp_session_ok(parse_cookies(self.headers.get("Cookie", "")).get(OTP_COOKIE)):
+            return True
+        lang = lang_of(self)
+        if self.command == "POST":
+            self._send(auth_page(tr("otp_needed", lang), self._dark()).encode("utf-8"),
+                       "text/html; charset=utf-8", 403)
+            return False
+        sid = (q.get("s") or [""])[0]
+        self._send(otp_page(sid, self._dark(), "", lang).encode("utf-8"),
+                   "text/html; charset=utf-8")
+        return False
+
     def _authorized(self, q) -> tuple[bool, list, str]:
         """Return (ok, headers-to-set, reason). Cookie, or ?k=<token> which sets the cookie."""
         extra = []
@@ -2204,6 +2327,13 @@ class Handler(BaseHTTPRequestHandler):
             return False, extra, "token file missing or empty"
         have = parse_cookies(self.headers.get("Cookie", "")).get(COOKIE)
         given = (q.get("k") or [""])[0]
+        # The TLS terminator (nginx on this machine) injects the token, so the URL a
+        # reader bookmarks holds no secret at all. nginx overwrites any client-sent
+        # value, and it is the only process that can reach this port.
+        hdr = (self.headers.get("X-Eink-Token") or "").strip()
+        if hdr and hmac.compare_digest(hdr, want):
+            self._clear_fails(ip)
+            return True, extra, ""
         if have and have == want:
             self._clear_fails(ip)
             return True, extra + cookie_refresh(ip, have), ""
@@ -2269,6 +2399,27 @@ class Handler(BaseHTTPRequestHandler):
     def _do_post(self):
         u = urlparse(self.path)
         q = parse_qs(u.query)
+        if u.path == "/otp":
+            raw_len = (self.headers.get("Content-Length") or "").strip()
+            length = int(raw_len) if raw_len.isdigit() else 0
+            body = self.rfile.read(length) if 0 < length <= 512 else b""
+            form = parse_qs(body.decode("utf-8", "replace"))
+            code = (form.get("c") or [""])[0]
+            sid = (form.get("s") or [""])[0]
+            if totp_verify(code):
+                self._clear_fails(client_ip(self))
+                cookie = "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (
+                    OTP_COOKIE, otp_session_value(), COOKIE_MAX_AGE)
+                loc = "/" + (("?s=" + quote(sid, safe="")) if sid else "")
+                self._send(b"", "text/html; charset=utf-8", 303,
+                           extra=[("Set-Cookie", cookie), ("Location", loc)])
+                return
+            self._note_fail(client_ip(self), guess=True)
+            self._send(otp_page(sid, self._dark(), tr("otp_bad", lang_of(self)),
+                                lang_of(self)).encode("utf-8"),
+                       "text/html; charset=utf-8", 403)
+            return
+
         if not u.path.startswith("/act/"):
             self._send(b"not found", "text/plain; charset=utf-8", 404)
             return
@@ -2285,6 +2436,8 @@ class Handler(BaseHTTPRequestHandler):
                                                   client_ip(self), reason), flush=True)
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
+            return
+        if not self._otp_gate(q):
             return
 
         raw_len = (self.headers.get("Content-Length") or "").strip()
@@ -2494,6 +2647,8 @@ class Handler(BaseHTTPRequestHandler):
         if not ok:
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
+            return
+        if not self._otp_gate(q):
             return
 
         # The only writer of view.json: whatever this page is about to show becomes

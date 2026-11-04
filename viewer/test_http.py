@@ -10,6 +10,7 @@ import os
 import pathlib
 import shutil
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
@@ -488,6 +489,108 @@ class ProxyBehaviour(unittest.TestCase):
         self.assertIn("4%", payload["status"])
 
 
+class SecondFactor(unittest.TestCase):
+    """P1: a password alone must not open a page that can drive a shell-capable agent.
+
+    The code prompt appears only after the password/token gates pass, and the cookie it
+    sets is a session secret - not the token.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def setUp(self):
+        server._OTP_SESSIONS.clear()
+        self.secret = "JBSWY3DPEHPK3PXP"
+        self.pdir = pathlib.Path(tempfile.mkdtemp(prefix="pi-eink-totp-"))
+        (self.pdir / "totp").write_text(self.secret)
+        for name, value in (("TOTP_FILE", self.pdir / "totp"),
+                            ("caps_for", lambda _h: "full"),
+                            ("bridge_port_for", lambda _s: 0),
+                            ("rendered_session_id", lambda: "session-id")):
+            p = mock.patch.object(server, name, value)
+            p.start()
+            self.addCleanup(p.stop)
+        self.addCleanup(server._OTP_SESSIONS.clear)
+        server._OTP_CACHE[0] = None
+        server._OTP_CACHE[1] = None
+        self.addCleanup(shutil.rmtree, self.pdir, True)
+
+    def _req(self, path, method="GET", body=None, otp=None, header_token=None, cookie=True):
+        import http.client
+
+        conn = http.client.HTTPConnection("127.0.0.1", self.viewer.port, timeout=5)
+        headers = {"User-Agent": KINDLE_UA}
+        ck = []
+        if cookie:
+            ck.append("pieink=" + TOKEN)
+        if otp:
+            ck.append("pieink_otp=" + otp)
+        if ck:
+            headers["Cookie"] = "; ".join(ck)
+        if header_token:
+            headers["X-Eink-Token"] = header_token
+        payload = body.encode() if body is not None else None
+        if payload is not None:
+            headers["Content-Type"] = "application/x-www-form-urlencoded"
+        conn.request(method, path, body=payload, headers=headers)
+        res = conn.getresponse()
+        data = res.read()
+        hdrs = dict(res.getheaders())
+        conn.close()
+        return res.status, data, hdrs
+
+    def test_page_asks_for_the_code_instead_of_rendering(self):
+        status, data, _h = self._req("/")
+        self.assertEqual(status, 200)
+        self.assertIn("动态码".encode("utf-8"), data)
+
+    def test_wrong_code_is_refused(self):
+        status, data, _h = self._req("/otp", "POST", "c=000000")
+        self.assertEqual(status, 403)
+        self.assertIn("动态码".encode("utf-8"), data)
+
+    def test_correct_code_opens_the_page(self):
+        code = server.totp_code(self.secret)
+        status, _d, hdrs = self._req("/otp", "POST", "c=" + code)
+        self.assertEqual(status, 303)
+        cookie = hdrs.get("Set-Cookie", "")
+        self.assertIn("pieink_otp=", cookie)
+        otp = cookie.split("pieink_otp=", 1)[1].split(";", 1)[0]
+        # the session secret must not be the master token
+        self.assertNotEqual(otp, TOKEN)
+        # "/" without ?s= answers 303 (it pins the session id into the URL)
+        status, data, _h = self._req("/", otp=otp)
+        self.assertIn(status, (200, 303))
+        self.assertNotIn("动态码".encode("utf-8"), data)
+
+    def test_otp_cookie_alone_does_not_replace_the_password(self):
+        code = server.totp_code(self.secret)
+        _s, _d, hdrs = self._req("/otp", "POST", "c=" + code)
+        otp = hdrs.get("Set-Cookie", "").split("pieink_otp=", 1)[1].split(";", 1)[0]
+        status, _d, _h = self._req("/", otp=otp, cookie=False)
+        self.assertEqual(status, 403)
+
+    def test_token_in_a_header_is_accepted_without_any_query_secret(self):
+        code = server.totp_code(self.secret)
+        _s, _d, hdrs = self._req("/otp", "POST", "c=" + code)
+        otp = hdrs.get("Set-Cookie", "").split("pieink_otp=", 1)[1].split(";", 1)[0]
+        status, _d, _h = self._req("/", otp=otp, cookie=False, header_token=TOKEN)
+        self.assertEqual(status, 200)
+
+    def test_wrong_header_token_is_refused(self):
+        code = server.totp_code(self.secret)
+        _s, _d, hdrs = self._req("/otp", "POST", "c=" + code)
+        otp = hdrs.get("Set-Cookie", "").split("pieink_otp=", 1)[1].split(";", 1)[0]
+        status, _d, _h = self._req("/", otp=otp, cookie=False, header_token="nope")
+        self.assertEqual(status, 403)
+
+
 class UnlockFlow(unittest.TestCase):
     """The two viewer-local actions: /act/unlock and /act/readonly."""
 
@@ -745,6 +848,94 @@ class EndpointPages(unittest.TestCase):
             status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi", out=seen)
         self.assertEqual(status, 303)
         self.assertIn("msg=", seen.get("Location", ""))
+
+
+class ProxyHardening(unittest.TestCase):
+    """The proxy is the only thing between a credential holder and the agent
+    process: it forwards what it validated, never the raw request line."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        cls.bridge_port = cls.bridge.server_address[1]
+        threading.Thread(target=cls.bridge.serve_forever, daemon=True).start()
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+        cls.bridge.shutdown()
+        cls.bridge.server_close()
+
+    def setUp(self):
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(server, "caps_for", lambda _h: "full").start()
+        mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port).start()
+        mock.patch.object(server, "rendered_session_id", lambda: "session-id").start()
+
+    def test_an_unknown_action_is_refused_before_the_bridge(self):
+        status, data = request(self.viewer.port, "/act/nosuch", "POST", "x=1",
+                               accept="application/json")
+        self.assertEqual(status, 404, data[:200])
+        self.assertEqual(FakeBridge.seen, [])
+
+    def test_the_proxied_path_is_rebuilt_not_forwarded(self):
+        # %2F keeps the slash out of the viewer's action segment; the bridge must
+        # never see it either, whatever the bridge would do with it
+        for path in ("/act/say%2F..%2F..%2Fstate", "/act/a/b/c", "/act/say/"):
+            FakeBridge.seen = []
+            status, _data = request(self.viewer.port, path, "POST", "text=hi",
+                                    accept="application/json")
+            self.assertEqual(status, 404, path)
+            self.assertEqual(FakeBridge.seen, [], path)
+
+    def test_a_known_action_is_forwarded_on_a_rebuilt_path(self):
+        status, _data = request(self.viewer.port, "/act/say", "POST", "text=hi",
+                                accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertEqual(FakeBridge.seen[0][1], "/act/say")
+
+    def test_an_action_cannot_target_a_session_the_page_is_not_showing(self):
+        # one credential must not steer a different project's agent
+        status, _data = request(self.viewer.port, "/act/say?s=other-project", "POST",
+                                "text=hi", accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertEqual(FakeBridge.seen[0][1], "/act/say")
+        self.assertEqual(FakeBridge.seen[0][3].get("Cookie"),
+                         "pieink=" + server.token())
+
+    def test_the_client_cookie_is_not_relayed_to_the_bridge(self):
+        request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json")
+        self.assertEqual(FakeBridge.seen[0][3].get("Cookie"),
+                         "pieink=" + server.token())
+
+    def test_done_rebuilds_its_request_and_never_follows_a_redirect(self):
+        with mock.patch.object(server, "bridge_port", lambda: self.bridge_port):
+            FakeBridge.reply_status = 302
+            FakeBridge.reply_headers = [("Location", "http://127.0.0.1:1/harvest")]
+            status, _data = request(self.viewer.port, "/done/say?m=ok&k=secret-token")
+            self.assertEqual(status, 502)   # the redirect is not followed
+            # only m travels; k never reaches the bridge
+            self.assertEqual(FakeBridge.seen[0][1], "/done/say?m=ok")
+            # the cookie is the server's own, not the client header relayed
+            self.assertEqual(FakeBridge.seen[0][3].get("Cookie"),
+                             "pieink=" + server.token())
+
+    def test_agent_state_does_not_follow_a_redirect(self):
+        # a hostile or colliding service on a bridge port must not be able to
+        # bounce the viewer's credentialed request somewhere else
+        FakeBridge.reply_status = 302
+        FakeBridge.reply_headers = [("Location", "http://127.0.0.1:1/harvest")]
+        with mock.patch.object(server, "bridge_port", lambda: self.bridge_port):
+            self.assertIsNone(server.agent_state(self.bridge_port))
+        self.assertEqual(FakeBridge.seen[0][1], "/state")
+        # the request carried only the viewer's own token, built by the server
+        self.assertEqual(FakeBridge.seen[0][3].get("Cookie"),
+                          "pieink=" + server.token())
 
 
 if __name__ == "__main__":
