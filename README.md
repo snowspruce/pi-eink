@@ -169,7 +169,7 @@ State files under `~/.pi/eink/`, all ignored by git:
 | `install-meta` | `install.sh` | label, port and os of the installed unit, read back by `--uninstall` |
 | `actions.log` | viewer | one line per action: time, peer IP, capability, action, result |
 | `bridge.json` | bridge | most recent heartbeat, "is any bridge alive" |
-| `view.json` | viewer | the session the page last rendered; re-rendered whenever a request cannot name one itself (`?s=`, read-only networks), so the page cannot hop between running sessions |
+| `view.json` | viewer | the session a page with no id of its own lands on (a bookmark, the first open after a restart); every page pins its own session after that |
 | `bridges.json` | bridge | session id to `{port, pid, cwd, sessionFile, updatedAt}`, heartbeat 60 s, entries older than 10 min ignored |
 | `pending.json`, `answer.json` | safety-gate and bridge | a parked risky command and the page's verdict |
 | `bridge.log` | bridge | why a session is not serving the page, for example a busy port |
@@ -181,15 +181,17 @@ State files under `~/.pi/eink/`, all ignored by git:
 Viewer on `:8000`: `/` page shell (a first visit without `?s=` is redirected once to
 `/?s=<id>`, so the poll stays on the conversation you opened), `/data` JSON fragment,
 `/static` no-JS fallback (a form POST from a browser without JS lands here), `/sessions`
-picker, `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`, `/diag`, `/glyphs`,
-`/favicon.png`, `/done/<key>` relayed from the bridge's confirmation page, and
-`POST /act/<action>` proxied to the session's bridge. Two actions are viewer-local:
-`/act/unlock` enters the pin to unlock a network, `/act/readonly` drops back to read-only.
+picker (each running session carries a `+ New session` button), `/theme?d=0|1` day or
+night cookie, `/lang?l=zh|en`, `/diag`, `/glyphs`, `/favicon.png`, `/done/<key>` relayed
+from the bridge's confirmation page, and `POST /act/<action>` proxied to the session's
+bridge. Three actions are viewer-local: `/act/unlock` enters the pin to unlock a network,
+`/act/readonly` drops back to read-only, `/act/new` creates a session inside that
+session's pi process (and lands on it; refused while that session is running).
 
 Bridge on `:8010`+ or `EINK_BRIDGE_PORT`: `GET /`, `/state`, and
-`POST /act/{stop,continue,review,execute,status,say,approve,deny}`. Only `stop` and
-`status` are accepted from a non-loopback peer; free text, approvals and prompts must come
-through the viewer's proxy.
+`POST /act/{stop,continue,review,execute,status,say,approve,deny,new}`. Only `stop` and
+`status` are accepted from a non-loopback peer; free text, approvals, prompts and new
+sessions must come through the viewer's proxy.
 
 ### Interface language
 
@@ -287,11 +289,15 @@ only `safety-gate` writes. Check that it is loaded in `~/.pi/agent/extensions/sa
 With a gate loaded but no risky call pending, an empty block is the correct, silent state.
 `install.sh` prints what it found.
 
-**The page switched to another conversation by itself** that was a bug: without `?s=` the
-page re-resolved "the newest live session" on every poll, so a second pi session's
-heartbeat swapped the whole page. Two fixes: the first visit pins `?s=`, and whenever no
-session can be named (read-only network, bookmark without `?s=`) the viewer re-renders what
-it recorded in `view.json` instead of re-deriving "newest".
+**The page switched to another conversation by itself** that was a bug, with three
+separate causes. The page re-resolved "the newest live session" on every poll; the session
+id was looked up by guessing from the file name, which is wrong for every session written
+into an existing file, and a failed lookup was read as "that session is gone" and answered
+by showing the newest one - that is why tapping a session in the picker came back to the
+running conversation; and `view.json` was the single "the session" for every device. Now
+each page pins the id it resolved into every request it makes (poll, buttons, footer
+links), a first visit always answers `303 /?s=<id>`, ids are read from the session file's
+header row, and buttons are routed by the id the page names.
 
 **A conversation is gone and the page says so** the `?s=` in your URL no longer resolves:
 session file deleted, moved, or forked into a new id. The page falls back to the current

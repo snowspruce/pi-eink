@@ -9,6 +9,7 @@ page would show), not on call counts.
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import time
@@ -323,6 +324,102 @@ class SessionPicker(unittest.TestCase):
              mock.patch.object(server, "SESSIONS", pathlib.Path("/nonexistent")):
             html = server.sessions_html("en")
         self.assertIn("(no sessions)", html)
+
+    def test_only_a_running_session_offers_a_new_session(self):
+        """The button belongs on the running rows: a file has no process to create a
+        session in, so a page-wide button would be a control that cannot work."""
+        entry = {"port": 8123, "pid": os.getpid(), "cwd": "/tmp/live",
+                 "sessionFile": "/tmp/live.jsonl", "updatedAt": "2026-01-01T00:00:00Z"}
+        with mock.patch.object(server, "live_bridges", lambda: {SID: entry}):
+            html = server.sessions_html()
+        self.assertIn('action="/act/new?s=%s"' % SID, html)
+        self.assertEqual(html.count("/act/new"), 1)
+
+    def test_files_without_a_session_header_are_not_listed(self):
+        """`*_transcript.jsonl` (subagent artifacts) have no session row: listing them
+        produced a row whose id was the file stem, and tapping it could only fall back
+        to another conversation."""
+        path = write_session("--picker--", "aaaa_abc_transcript.jsonl", [
+            {"type": "message", "id": "m", "timestamp": "t",
+             "message": {"role": "user", "content": "subagent log"}},
+        ])
+        self.addCleanup(clean, "--picker--")
+        self.assertTrue(path.exists())
+        with mock.patch.object(server, "live_bridges", lambda: {}):
+            html = server.sessions_html()
+        self.assertNotIn("transcript", html)
+        self.assertNotIn("subagent log", html)
+
+    def test_every_row_a_reader_can_tap_resolves(self):
+        """The picker is only useful if `?s=` from it renders that session: a row whose
+        id cannot be resolved answers "gone" and shows the running conversation again,
+        which is what "tapping a session does nothing" looked like."""
+        # the header id and the file name disagree here, the way they do for real
+        # sessions that were written into an existing file, and this id appears in no
+        # file name at all
+        unique = "99990000-1111-2222-3333-444488889999"
+        write_session("--picker--", "2026-01-01T00-00-00-000Z_ffffffff-0000-1111-2222-333333333333.jsonl", [
+            {"type": "session", "id": unique, "cwd": "/tmp/picker"},
+        ])
+        self.addCleanup(clean, "--picker--")
+        with mock.patch.object(server, "live_bridges", lambda: {}):
+            html = server.sessions_html()
+        links = re.findall(r'href="/\?s=([^"]+)"', html)
+        self.assertIn(unique, links)
+        for sid in links:
+            self.assertTrue(server.session_selected(sid), sid)
+
+
+class NewSessionDiscovery(unittest.TestCase):
+    """`/act/new` answers from the instance that is about to be replaced, so the new
+    session is read from the registry: the replacement registers itself under the same
+    pid with a fresh id."""
+
+    def setUp(self):
+        self.saved = server.BRIDGES_FILE.read_text() if server.BRIDGES_FILE.exists() else None
+        self.addCleanup(self._restore)
+
+    def _restore(self):
+        if self.saved is None:
+            server.BRIDGES_FILE.unlink(missing_ok=True)
+        else:
+            server.BRIDGES_FILE.write_text(self.saved)
+
+    def _registry(self, entries):
+        server.BRIDGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        server.BRIDGES_FILE.write_text(json.dumps(entries))
+
+    def test_returns_the_session_that_registered_under_the_same_pid(self):
+        self._registry({"old-session": {"pid": 4242, "updatedAt": "2026-01-01T00:00:00Z"},
+                        "new-session": {"pid": 4242, "updatedAt": "2026-01-01T00:00:05Z"},
+                        "someone-else": {"pid": 9999, "updatedAt": "2026-01-01T00:00:09Z"}})
+        self.assertEqual(server.wait_for_new_session(4242, "old-session", timeout=0), "new-session")
+
+    def test_gives_up_instead_of_pointing_at_the_old_session(self):
+        self._registry({"old-session": {"pid": 4242, "updatedAt": "2026-01-01T00:00:00Z"}})
+        self.assertEqual(server.wait_for_new_session(4242, "old-session", timeout=0.2), "")
+
+
+class SessionResolutionById(unittest.TestCase):
+    def test_a_running_session_counts_before_its_file_lands(self):
+        """A session created from the picker has a bridge and no jsonl for a second or
+        two; answering "gone" would bounce the reader back where they came from."""
+        new_sid = "99999999-8888-7777-6666-555555555555"
+        entry = {"port": 8123, "pid": os.getpid(), "sessionFile": "/tmp/not-written-yet.jsonl"}
+        with mock.patch.object(server, "live_bridges", lambda: {new_sid: entry}):
+            self.assertTrue(server.session_selected(new_sid))
+            self.assertEqual(server.newest_session(new_sid), pathlib.Path("/tmp/not-written-yet.jsonl"))
+
+    def test_id_is_found_even_when_the_file_name_says_otherwise(self):
+        """A session written into an existing file keeps the old name; the header row is
+        the only authority. Resolving by `id[-8:] in name` missed these, so the picker's
+        link fell through to "gone" and the page showed the running session instead."""
+        write_session("--resolve--", "2026-01-01T00-00-00-000Z_ffffffff-1111-2222-3333-444455556666.jsonl", [
+            {"type": "session", "id": SID, "cwd": "/tmp/resolve"},
+        ])
+        self.addCleanup(clean, "--resolve--")
+        self.assertIsNotNone(server.session_path_by_id(SID))
+        self.assertIsNone(server.session_path_by_id("ffffffff-1111-2222-3333-444455556666"))
 
 
 class PendingBlock(unittest.TestCase):

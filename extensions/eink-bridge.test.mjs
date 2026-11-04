@@ -169,6 +169,32 @@ describe("eink bridge", () => {
 		assert.equal(sent.length, 0);
 	});
 
+	it("starts a new session through the extension command", async () => {
+		sent = [];
+		const res = await post("/act/new");
+		assert.equal(res.status, 200);
+		assert.equal(res.json.msg, "已新建会话");
+		// the command goes out after the reply: creating a session replaces this
+		// extension instance, and the reply is written by the server it closes
+		await new Promise((r) => setTimeout(r, 300));
+		assert.deepEqual(sent, [{ text: "/eink:new", opts: { expandPromptTemplates: true } }]);
+	});
+
+	it("refuses a new session while this one is running", async () => {
+		// a stray tap on a 511px button must not throw away a turn in progress
+		const idle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			sent = [];
+			const res = await post("/act/new");
+			assert.equal(res.status, 409);
+			await new Promise((r) => setTimeout(r, 200));
+			assert.equal(sent.length, 0);
+		} finally {
+			ctx.isIdle = idle;
+		}
+	});
+
 	it("redirects the bare bridge port to the viewer", async () => {
 		const res = await fetch(`http://127.0.0.1:${port}/`, {
 			redirect: "manual",
@@ -408,7 +434,7 @@ describe("loopbackOnly", () => {
 	it("keeps only read/stop reachable from the LAN", () => {
 		assert.equal(mod.loopbackOnly("stop"), false);
 		assert.equal(mod.loopbackOnly("status"), false);
-		for (const action of ["say", "approve", "deny", "continue", "review", "execute"]) {
+		for (const action of ["say", "approve", "deny", "continue", "review", "execute", "new"]) {
 			assert.equal(mod.loopbackOnly(action), true, action);
 		}
 		// no action at all is not an action: the handler gates on `action &&`
@@ -437,7 +463,7 @@ describe("gate", () => {
 	it("lets a LAN peer stop and read status, but nothing else", () => {
 		assert.equal(mod.gate("192.168.3.9", "stop", "", "192.168.3.45"), null);
 		assert.equal(mod.gate("192.168.3.9", "status", "", "192.168.3.45"), null);
-		for (const action of ["say", "approve", "deny", "continue", "review", "execute"]) {
+		for (const action of ["say", "approve", "deny", "continue", "review", "execute", "new"]) {
 			assert.notEqual(mod.gate("192.168.3.9", action, "", "192.168.3.45"), null, action);
 		}
 	});

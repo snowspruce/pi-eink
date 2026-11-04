@@ -4,6 +4,32 @@ All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`+ New session` in the picker** — one tap on a running session's row starts a new
+  session in that session's pi process (`POST /act/new` → the extension's `eink:new`
+  command) and lands the page on it. Refused while that session is running, so a stray tap
+  cannot throw away a turn. The new id is read from `bridges.json` (same pid, new id),
+  because the bridge that answers is the instance being replaced.
+
+### Fixed
+
+- **Tapping a session in the picker showed the running conversation again.** Session ids
+  were resolved by guessing from the file name (`id[-8:] in name`), which is wrong for
+  every session written into an existing file; the miss was read as "that session is
+  gone", and the page fell back to the newest live session.
+- **The page jumped to another conversation when a second agent started.** Same root cause
+  plus one global "current session" slot: a page that did not name a session re-derived it
+  on every poll. Each page now pins the id it resolved into every request it makes, a bare
+  `/` always answers `303 /?s=<id>` (the old pin only fired when `view.json` was empty, so
+  it never fired in daily use), and buttons are routed by the id the page names.
+- The picker is built from session files that actually have a `session` header, so subagent
+  `*_transcript.jsonl` artifacts no longer appear as sessions.
+- A session created seconds ago counts as live before its `.jsonl` exists, instead of being
+  reported as "gone".
+
 ## [1.0.0] — 2026-11-01
 
 First tagged release: a Kindle (or any barely-rendering browser) as a second screen

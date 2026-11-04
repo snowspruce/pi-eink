@@ -157,7 +157,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 | `install-meta` | `install.sh` | 已装单元的 label、端口、系统，`--uninstall` 读回 |
 | `actions.log` | viewer | 每个动作一行：时间、对端 IP、权限、动作、结果 |
 | `bridge.json` | bridge | 最近一次心跳，"有没有活着的 bridge" |
-| `view.json` | viewer | 页面最后渲染的会话；任何无法自己指认会话的请求（`?s=`、只读网络）都按它重渲染，所以页面不会在会话间乱跳 |
+| `view.json` | viewer | 页面最后渲染的会话；没有自己 id 的新页面（书签、重启后第一次打开）落到它上面，之后每个页面都钉住自己解析出的会话 |
 | `bridges.json` | bridge | 会话 id → `{port, pid, cwd, sessionFile, updatedAt}`，60 秒心跳，超过 10 分钟的条目不认 |
 | `pending.json`、`answer.json` | safety-gate 与 bridge | 停住等确认的危险命令，以及页面的裁决 |
 | `bridge.log` | bridge | 某个会话为什么不提供页面，例如端口被占 |
@@ -168,14 +168,15 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 
 viewer 在 `:8000`：`/` 页面骨架（首次访问没有 `?s=` 时会被重定向一次到 `/?s=<id>`，轮询因此停在你
 打开的那个会话上）、`/data` JSON 片段、`/static` 无 JS 兜底（没有 JS 的浏览器表单 POST 落到这里）、
-`/sessions` 选择器、`/theme?d=0|1` 昼夜 cookie、`/lang?l=zh|en`、`/diag`、`/glyphs`、
-`/favicon.png`、`/done/<key>`（从 bridge 的确认页转来），以及代理到该会话 bridge 的
-`POST /act/<action>`。两个动作是 viewer 本地的：`/act/unlock` 输 pin 解锁当前网络，
-`/act/readonly` 退回只读。
+`/sessions` 选择器（每个运行中的会话后面带一个 `＋新会话` 按钮）、`/theme?d=0|1` 昼夜 cookie、
+`/lang?l=zh|en`、`/diag`、`/glyphs`、`/favicon.png`、`/done/<key>`（从 bridge 的确认页转来），
+以及代理到该会话 bridge 的 `POST /act/<action>`。三个动作是 viewer 本地的：`/act/unlock` 输 pin
+解锁当前网络，`/act/readonly` 退回只读，`/act/new` 在该会话的 pi 进程里新建一个会话（建完直接跳到
+它，会话运行中则拒绝）。
 
 bridge 在 `:8010`+ 或 `EINK_BRIDGE_PORT`：`GET /`、`/state`，以及
-`POST /act/{stop,continue,review,execute,status,say,approve,deny}`。非 loopback 对端只接受 `stop`
-与 `status`；自由文本、审批与提示词必须走 viewer 的代理。
+`POST /act/{stop,continue,review,execute,status,say,approve,deny,new}`。非 loopback 对端只接受
+`stop` 与 `status`；自由文本、审批、提示词与新建会话必须走 viewer 的代理。
 
 ### 界面语言
 
@@ -253,9 +254,11 @@ token 不要留在聊天记录与截图里，页面本身就是泄漏面。轮�
 确认它在 `~/.pi/agent/extensions/safety-gate` 里被加载。装了门禁但没有危险调用待确认时，空块是
 正确且静默的状态。`install.sh` 会打印它找到了什么。
 
-**页面自己切到了别的对话** 那是个 bug：没有 `?s=` 时页面每次轮询都重新解析"最新的活会话"，于是
-第二个 pi 会话的心跳把整页换掉了。两处修复：首次访问钉住 `?s=`；凡是无法指认会话的时候（只读网络、
-没带 `?s=` 的书签）viewer 按 `view.json` 里记的会话重渲染，不再重新推导"最新"。
+**页面自己切到了别的对话** 那是个 bug，三层原因各修一次：没有 `?s=` 时页面每次轮询都重新
+解析"最新的活会话"；会话 id 靠文件名尾部猜（写进已有文件的会话，文件名和 id 不一致），猜不中就被
+当成"会话没了"再回退到最新；view.json 只有一份，任何设备都能改。现在：页面把自己解析出的 id 钉进
+每次请求（轮询、按钮、页脚链接都是），首次访问一律 303 到 `/?s=<id>`，id 一律从会话文件的头行读
+取，按钮按页面自己的 id 路由。
 
 **某个对话没了，页面也这么说** URL 里的 `?s=` 解析不出来了：会话文件被删、被移走，或被 fork 成
 新 id。页面退回当前会话，并说明它丢了哪个 id。

@@ -284,6 +284,7 @@ const TEXT: Record<string, [string, string]> = {
 	nothing_running: ["当前没有运行", "Nothing is running"],
 	empty_input: ["没有输入内容", "Nothing to send"],
 	new_session: ["已新建会话", "New session created"],
+	new_busy: ["当前会话正在运行，先停下再新建", "This session is running - stop it before starting a new one"],
 	reloading: ["正在重载扩展与配置", "Reloading extensions and config"],
 	compacting: ["开始压缩上下文", "Compacting the context"],
 	quitting: ["正在退出该 pi 会话", "Quitting this pi session"],
@@ -413,6 +414,23 @@ export default function einkBridge(pi: ExtensionAPI) {
 					// already gone
 				}
 				reply(res, action, tt(lang, action === "approve" ? "allowed" : "denied"), req);
+				return;
+			}
+			if (action === "new") {
+				// Only a running pi process can create a session in its own project, and only
+				// through the command context. Refused while busy on purpose: a stray tap on a
+				// 511px button must not throw away a run in progress.
+				if (!ctx) throw new Error("no session context");
+				if (!ctx.isIdle()) {
+					reply(res, "new", tt(lang, "new_busy"), req, 409);
+					return;
+				}
+				// Answer first: creating the session replaces this extension instance,
+				// which closes the HTTP server this response is being written from.
+				reply(res, "new", tt(lang, "new_session"), req);
+				setTimeout(() => {
+					void pi.sendUserMessage("/eink:new", { expandPromptTemplates: true });
+				}, 100);
 				return;
 			}
 			if (action === "stop") {

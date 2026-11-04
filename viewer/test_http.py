@@ -196,6 +196,32 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(status, 200, data[:200])
         self.assertEqual(json.loads(data)["items"], ["hello"])
 
+    def test_new_session_lands_on_the_session_that_replaces_it(self):
+        """The bridge answers from the instance being replaced, so the new id is read
+        from the registry (same pid, new id). Landing back on the old conversation -
+        or on a page with no id - is the failure this guards."""
+        old, new = "aaaabbbb-1111-2222-3333-444455556666", "eeeeffff-1111-2222-3333-444455556666"
+        pid = os.getpid()
+        live = {old: {"pid": pid, "port": self.bridge_port, "updatedAt": "2026-04-04T00:00:00Z"}}
+        saved = server.BRIDGES_FILE.read_text() if server.BRIDGES_FILE.exists() else None
+        self.addCleanup(lambda: server.BRIDGES_FILE.write_text(saved) if saved is not None
+                        else server.BRIDGES_FILE.unlink(missing_ok=True))
+        FakeBridge.reply_body = json.dumps({"ok": True, "msg": "\u5df2\u65b0\u5efa\u4f1a\u8bdd"}).encode()
+
+        def register():
+            time.sleep(0.3)   # the replacement registers after the old one answered
+            server.BRIDGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+            server.BRIDGES_FILE.write_text(json.dumps(
+                {new: {"pid": pid, "updatedAt": "2026-04-04T00:00:01Z"}}))
+
+        threading.Thread(target=register, daemon=True).start()
+        with mock.patch.object(server, "live_bridges", lambda: live):
+            seen = {}
+            status, _d = request(self.viewer.port, "/act/new?s=" + old, "POST", out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("s=" + new, seen.get("Location", ""))
+        self.assertEqual(FakeBridge.seen[0][1], "/act/new")
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")
@@ -275,6 +301,100 @@ class ReadOnlyPinnedView(unittest.TestCase):
         with mock.patch.object(server, "bridge_port_for", port_for):
             request(self.viewer.port, "/act/stop", "POST", accept="application/json")
         self.assertEqual(seen[-1], self.REMEMBERED)
+
+
+class PerPageSession(unittest.TestCase):
+    """Each page follows its own session.
+
+    The viewer used to keep one "the session" slot for everybody, so a page that did
+    not name a session re-derived it on every poll: browsing on the laptop, or a new pi
+    session starting there, swapped the conversation under the Kindle. The page now
+    pins the id it resolved into every request it makes, and actions follow that id.
+    """
+
+    A = "aaaabbbb-1111-2222-3333-444455556666"
+    B = "ccccdddd-1111-2222-3333-444477778888"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def setUp(self):
+        folder = server.SESSIONS / "--perpage--"
+        folder.mkdir(parents=True, exist_ok=True)
+        for sid, cwd in ((self.A, "/tmp/aaa"), (self.B, "/tmp/bbb")):
+            (folder / ("2026-03-03T00-00-00-000Z_%s.jsonl" % sid)).write_text(
+                json.dumps({"type": "session", "id": sid, "cwd": cwd}) + "\n")
+        self.addCleanup(shutil.rmtree, folder, True)
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(server, "live_bridges", lambda: {}).start()
+        mock.patch.object(server, "caps_for", lambda _h: "full").start()
+
+    def test_the_shell_polls_the_session_it_shows(self):
+        status, data = request(self.viewer.port, "/?s=" + self.B)
+        self.assertEqual(status, 200)
+        self.assertIn(b"/data?s=" + self.B.encode(), data)
+
+    def test_a_page_keeps_its_own_session_while_another_device_picks_one(self):
+        server.VIEW_FILE.write_text(json.dumps({"sid": self.B}))
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        status, data = request(self.viewer.port, "/data?s=" + self.A)
+        self.assertEqual(status, 200)
+        foot = json.loads(data)["foot"]
+        self.assertIn(self.A, foot)
+        self.assertNotIn(self.B, foot)
+
+    def test_a_first_visit_pins_what_it_renders(self):
+        server.VIEW_FILE.unlink(missing_ok=True)
+        seen = {}
+        status, _d = request(self.viewer.port, "/", out=seen)
+        self.assertEqual(status, 303)
+        self.assertRegex(seen.get("Location", ""), r"/\?s=[0-9a-f-]{8,}")
+
+    def test_a_bare_visit_pins_even_when_a_session_is_already_remembered(self):
+        """The old pin only fired when view.json was empty, i.e. never on a viewer in
+        daily use: every page then re-derived its session from that one global slot."""
+        server.VIEW_FILE.write_text(json.dumps({"sid": self.A}))
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        seen = {}
+        status, _d = request(self.viewer.port, "/", out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("s=" + self.A, seen.get("Location", ""))
+
+    def test_another_devices_pick_does_not_move_an_open_page(self):
+        server.VIEW_FILE.write_text(json.dumps({"sid": self.A}))
+        self.addCleanup(server.VIEW_FILE.unlink, missing_ok=True)
+        seen = {}
+        request(self.viewer.port, "/", out=seen)          # bare entry: pinned to A
+        poll = seen["Location"]                            # what that page now polls
+        server.VIEW_FILE.write_text(json.dumps({"sid": self.B}))   # the laptop browsed
+        status, data = request(self.viewer.port, poll.replace("/?", "/data?", 1))
+        self.assertEqual(status, 200)
+        foot = json.loads(data)["foot"]
+        self.assertIn(self.A, foot)
+        self.assertNotIn(self.B, foot)
+
+    def test_actions_route_to_the_session_the_page_names(self):
+        seen = []
+
+        def port_for(sid):
+            seen.append(sid)
+            return 0
+
+        with mock.patch.object(server, "bridge_port_for", port_for), \
+             mock.patch.object(server, "rendered_session_id", lambda: self.A):
+            request(self.viewer.port, "/act/stop?s=" + self.B, "POST", accept="application/json")
+        self.assertEqual(seen[-1], self.B)
+
+    def test_the_picker_links_back_to_the_session_it_was_opened_from(self):
+        status, data = request(self.viewer.port, "/sessions?s=" + self.B)
+        self.assertEqual(status, 200)
+        head = data.decode("utf-8").split('<div class="sess">', 1)[0]   # the back link only
+        self.assertIn('href="/?s=%s"' % self.B, head)
 
 
 class Language(unittest.TestCase):
@@ -585,8 +705,10 @@ class SecondFactor(unittest.TestCase):
         code = server.totp_code(self.secret)
         _s, _d, hdrs = self._req("/otp", "POST", "c=" + code)
         otp = hdrs.get("Set-Cookie", "").split("pieink_otp=", 1)[1].split(";", 1)[0]
-        status, _d, _h = self._req("/", otp=otp, cookie=False, header_token=TOKEN)
-        self.assertEqual(status, 200)
+        status, data, _h = self._req("/", otp=otp, cookie=False, header_token=TOKEN)
+        # 303 on a first visit with no ?s=: the page pins the session id into the URL
+        self.assertIn(status, (200, 303))
+        self.assertNotIn("动态码".encode("utf-8"), data)
 
     def test_session_survives_a_restart(self):
         """A viewer restart used to invalidate every 2FA session, so each device had
@@ -918,14 +1040,27 @@ class ProxyHardening(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(FakeBridge.seen[0][1], "/act/say")
 
-    def test_an_action_cannot_target_a_session_the_page_is_not_showing(self):
-        # one credential must not steer a different project's agent
-        status, _data = request(self.viewer.port, "/act/say?s=other-project", "POST",
-                                "text=hi", accept="application/json")
+    def test_an_action_routes_to_the_session_its_page_names(self):
+        """A page carries its own session in every form, so the button has to follow it -
+        routing from one global "rendered" slot sent taps into the other conversation.
+        Not a widening of authority: the same credential can open that session with
+        `?s=` anyway."""
+        entry = {"port": self.bridge_port, "pid": os.getpid(), "sessionFile": "/tmp/x.jsonl"}
+        with mock.patch.object(server, "live_bridges", lambda: {"other-project": entry}):
+            status, _data = request(self.viewer.port, "/act/say?s=other-project", "POST",
+                                    "text=hi", accept="application/json")
         self.assertEqual(status, 200)
         self.assertEqual(FakeBridge.seen[0][1], "/act/say")
         self.assertEqual(FakeBridge.seen[0][3].get("Cookie"),
                          "pieink=" + server.token())
+
+    def test_an_action_naming_a_gone_session_is_refused_not_retargeted(self):
+        # the page says which session it is about; quietly steering the one the viewer
+        # happens to render is the "tapped 停下, another project stopped" bug
+        status, data = request(self.viewer.port, "/act/say?s=this-session-is-gone", "POST",
+                               "text=hi", accept="application/json")
+        self.assertEqual(status, 502, data[:200])
+        self.assertEqual(FakeBridge.seen, [])
 
     def test_the_client_cookie_is_not_relayed_to_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json")
