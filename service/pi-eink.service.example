@@ -8,6 +8,12 @@
 #
 # Point ExecStart at a directory you control (a git clone), never at
 # ~/.pi/agent/git/... — pi owns that tree and rewrites it on updates.
+#
+# The server binds 0.0.0.0 by default so a LAN Kindle can reach it. When an
+# ingress proxy (nginx, an ssh -R tunnel, ...) forwards to 127.0.0.1, pin the
+# listener to loopback too — otherwise it also answers on every other interface
+# (VPN, docker bridges, utun) and bypasses that proxy's TLS/auth:
+#   Environment=EINK_BIND=127.0.0.1
 [Unit]
 Description=pi eink viewer
 After=network-online.target

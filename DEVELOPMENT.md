@@ -274,40 +274,14 @@ p90 那 1.18s 不能全算卡顿：这组间隔混入了「没内容变化就不
 - 那个几何 beacon 不能当容器宽度用：首次加载阶段会报 `w=0 h=0 sw=28`（早于布局），
   正常加载后 `window.innerWidth` 会报 **980**（默认布局宽度）而 `iw`/`sw` 是 511。
 
-把浏览器自己的三条 UI 去掉（**不用写 app**，全靠设备侧配置，重启后仍生效）：
-
-- `快速控制`（浏览器 设置 → 实验室）= 隐藏地址栏 + 工具栏，改为边缘滑动唤出。
-  **这是唯一能藏地址栏的开关**；`全屏` 那一项只隐藏系统状态栏。
-  唤出方式不可靠：触发带只有最右边缘约 20dp，实测**从右边缘往左滑**能唤出
-  （唤出后 URL 全选，直接打字即可换地址），但手指很难每次都命中；
-  点屏幕顶部无效，从左边缘往右滑也无效。要稳定地显示/隐藏地址栏用
-  `scripts/eink-addr.sh on|off`（改 `enable_quick_controls` 后重启浏览器，停在 off 时省约 100px）。
-  旧的实测记录：
-  点屏幕顶部**不会**唤出，从左边缘往右滑也不唤出（那一下被内容滚动吃掉）。
-  收起点页面空白处；返回键是退出浏览器，别用它。
-- `settings put global policy_control immersive.full=com.android.browser` 理论上能隐藏状态栏
-  + 导航栏，**但这台机器上实测不能用**：加上后 WebView 被撑得比屏幕更高，页面底部的
-  按钮行/输入框/页脚全被挤出屏幕下方（截屏里 `#acts` 的上边框正好卡在屏幕最下沿）。
-  最后清空了这个设置（`settings put global policy_control ""`；4.4 没有 `settings delete`）。
-- 实际采用的组合：**快速控制 on + 全屏(Labs) off**，即地址栏隐藏、状态栏和导航栏都留着。
-  导航栏不值钱（~100px），而它一隐藏页面底部就不可用。
-- 改浏览器设置只能改 prefs 文件：`/data/data/com.android.browser/shared_prefs/`
-  `com.android.browser_preferences.xml`。三个前提：先 `am force-stop`；文件的
-  owner 必须是 **uid 10018**（`dumpsys package com.android.browser | grep userId`
-  查，不是 `u0_aXX` 猜的，猜错浏览器的设置会被重置）；设备上没有 `sed`，
-  得 pull → 本机改 → push 回去。
-
 同一轮踩到的三个坑：
 
 - **`enable_hardware_accel_skia=true` 会毁掉布局**：viewport 被撑成 980 CSS px，正文右
   侧整片被切。它确实能让 `dumpsys gfxinfo` 出现 DisplayList，但页面没法看，所以别开。
-- **不要把重要信息固定在页面顶部**。快速控制下 WebView 的垂直偏移量会随工具栏状态变化：
-  给 `#top` 加 10px 顶部内边距只露出半截，加 24px 整条消失。这不是沉浸模式的锅
-  （`immersive.status` 也一样），也没有一个 padding 能同时适配两种工具栏状态。
-  最后把状态行从 `position:fixed` 的顶部挪到**文档末尾**（页脚上方）：那里在滚动流里，
-  几何是确定的，永远看得见。
-- 浏览器设置页自己（`com.android.browser` 的 SettingsActivity）不受 `policy_control`
-  影响，状态栏和导航栏会回来，别误判成"配置没生效"。
+- **不要把重要信息固定在页面顶部**。浏览器工具栏显隐时 WebView 会整体
+  上下平移，`position:fixed; top:0` 的元素会随之被切掉一半或整条跑出屏幕，而且偏移量
+  不是常数 —— 补 10px 露出半截，补 24px 整条消失，没有一个 padding 能同时适配。
+  所以状态行放在**文档末尾**（页脚上方）：在滚动流里，几何是确定的。
 - **页面的缩放倍数按 URL 记忆**：同一个地址被放大过之后，清 app 数据、重写 prefs、
   重启都不复位（`browser2.db` 里没有 zoom 列，`app_webview/` 只有 Cookies/Web Data，
   没找到它存在哪儿）。换一个带新参数的 URL 立刻恢复正常 —— 所以排查渲染异常时，

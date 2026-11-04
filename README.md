@@ -359,10 +359,14 @@ Two different questions, answered separately: **who are you** (the cookie) and
 **Identity**
 
 1. User-Agent matches a `uas` entry — spoofable, so it is only a speed bump
-2. HttpOnly cookie `pieink` equals `token`; `?k=<token|pin>` seeds it
+2. HttpOnly cookie `pieink`: `?k=<token>` seeds it with the token, `?k=<pin>`
+   seeds it with a random session secret (never the token, which also
+   authenticates the bridge and `install.sh` and survives a pin change)
 3. The cookie lives 7 days and is re-issued on use, so a Kindle left in a bag
    stops working on its own
-4. five wrong guesses from one IP block it for 10 minutes; the counters live in
+4. five wrong guesses from one IP block it for 10 minutes — and the block holds
+   for the pin and stale cookies; only the full token is accepted during a
+   block, so a rotated token always recovers. The counters live in
    `fails.json`, so restarting the viewer does not clear them
 
 **Capability** (`full` or `readonly`)

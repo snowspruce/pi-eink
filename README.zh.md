@@ -327,9 +327,13 @@ EINK_LANG=en python3 ~/pi-eink/viewer/server.py    # 前台
 **身份**
 
 1. User-Agent 命中 `uas` 里的某条——可伪造，所以它只是一道减速带
-2. HttpOnly cookie `pieink` 等于 `token`；`?k=<token|pin>` 可以种下它
+2. HttpOnly cookie `pieink`：`?k=<token>` 种下 token 本身，`?k=<pin>` 种下的是
+   随机会话密钥（不会给 token——它还同时被 bridge 和 `install.sh` 使用，且换
+   PIN 不会换 token）
 3. cookie 有效期 7 天，使用时续期，所以被塞进包里的 Kindle 会自己失效
-4. 同一 IP 猜错五次锁定 10 分钟；计数存在 `fails.json`，所以重启 viewer 不会清掉
+4. 同一 IP 猜错五次锁定 10 分钟，锁定期内 PIN 和旧 cookie 都不再比较，只接受
+   完整 token（换 token 后总能立即恢复）；计数存在 `fails.json`，重启 viewer
+   不会清掉
 
 **能力**（`full` 或 `readonly`）
 

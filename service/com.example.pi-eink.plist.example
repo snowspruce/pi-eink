@@ -14,6 +14,14 @@
   Add <key>EINK_UA_STRICT</key><string>1</string> to also apply the User-Agent
   allowlist to loopback. Off by default: it blocks `curl` and unusual desktop
   browsers from the computer itself, which mostly confuses first-time setup.
+
+  The server binds 0.0.0.0 by default so a LAN Kindle can reach it. When an
+  ingress proxy (nginx, an ssh -R tunnel, ...) forwards to 127.0.0.1, pin the
+  listener to loopback too — otherwise the listener also answers on every other
+  interface (VPN, docker bridges, utun) and bypasses that proxy's TLS/auth:
+
+    <key>EINK_BIND</key>
+    <string>127.0.0.1</string>
 -->
 <plist version="1.0">
 <dict>
