@@ -385,6 +385,11 @@ export default function einkBridge(pi: ExtensionAPI) {
 	// steer), which no extension can read. The page says so instead of pretending.
 	let queue: { i: number; text: string; at: number }[] = [];
 	let delivering = false;
+	// Did a run actually start? The retry below must not pipeline the next message
+	// into the same run just because `isIdle()` had not flipped yet (a slow provider
+	// preflight or a delaying hook is enough). `agent_start` is the fact; a timer is a
+	// guess, so the retry asks this instead of the clock.
+	let runStarted = false;
 	// Whether this process is allowed to deliver the queue by itself. Set by anything
 	// that queues here, and by a reload (so `/reload` is transparent). NOT set when a
 	// session is merely resumed: three messages queued before a crash must not fire by
@@ -478,6 +483,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 	const deliverNext = async () => {
 		if (!armed || delivering || !ctx || queue.length === 0 || !ctx.isIdle()) return;
 		delivering = true;
+		runStarted = false;
 		const item = queue[0];
 		try {
 			try {
@@ -494,8 +500,12 @@ export default function einkBridge(pi: ExtensionAPI) {
 		} finally {
 			delivering = false;
 		}
-		if (queue.length > 0 && ctx?.isIdle()) {
-			setTimeout(() => void deliverNext(), 400);
+		// Only when nothing started: a hook may swallow the message and no run would
+		// ever settle to pump the rest, which would stall the queue for ever.
+		if (queue.length > 0 && !runStarted && ctx?.isIdle()) {
+			setTimeout(() => {
+				if (!runStarted) void deliverNext();
+			}, 400);
 		}
 	};
 
@@ -1030,7 +1040,12 @@ export default function einkBridge(pi: ExtensionAPI) {
 	// The queue's delivery point: one message per settled run. `aborted` is ignored on
 	// purpose - an abort clears the queue in the stop handler, and pi's own abort rule
 	// ("continue queued messages") is not what a panic button should do here.
+	pi.on("agent_start", async () => {
+		runStarted = true;
+	});
+
 	pi.on("agent_settled", async () => {
+		runStarted = false;
 		await deliverNext();
 	});
 

@@ -437,6 +437,44 @@ describe("eink bridge", () => {
 		assert.deepEqual(await queued(), []);
 	});
 
+	it("does not pipeline a second message into a run that already started", async () => {
+		// the retry that keeps a swallowed message from stalling the queue must not turn
+		// "one per run" into "two at once" when a run starts slowly
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=" + encodeURIComponent("one"));
+			await post("/act/qadd", "text=" + encodeURIComponent("two"));
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+		sent = [];
+		await handlers.agent_settled({ aborted: false }, ctx);   // delivers "one"
+		await handlers.agent_start({}, ctx);                     // the run is now real
+		await new Promise((r) => setTimeout(r, 700));
+		assert.deepEqual(sent.map((s) => s.text), ["one"], "the rest waits for the next settle");
+		assert.deepEqual((await queued()).map((x) => x.text), ["two"]);
+		await post("/act/qclear");
+	});
+
+	it("keeps going when a hook swallows the message and no run starts", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=" + encodeURIComponent("one"));
+			await post("/act/qadd", "text=" + encodeURIComponent("two"));
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+		sent = [];
+		await handlers.agent_settled({ aborted: false }, ctx);
+		await new Promise((r) => setTimeout(r, 700));   // no agent_start: nothing ran
+		assert.deepEqual(sent.map((s) => s.text), ["one", "two"]);
+		assert.deepEqual(await queued(), []);
+	});
+
 	it("drops the queue when the run is stopped, and says how many", async () => {
 		await post("/act/qclear");
 		const wasIdle = ctx.isIdle;

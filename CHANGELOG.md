@@ -33,6 +33,9 @@ All notable changes to this project. The format follows
   empty `qadd` answered 500 instead of 400. Also: a missing timestamp rendered as 08:00, and
   the page had no way to refresh (no meta refresh on purpose - it would wipe the add box),
   and "Removed #5" reported the internal id of the second row instead of its position.
+  The 400 ms retry that keeps a swallowed message from stalling the queue is now gated on the
+  `agent_start` event instead of on the clock: with a slow run start it used to pipeline two
+  queued messages into one run.
 
 ### Changed
 

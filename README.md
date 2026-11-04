@@ -155,7 +155,8 @@ event goes to those clients too. So the box keeps **its own** queue
   first message, no 下移 on the last;
 - one message is delivered per settled run (`agent_settled`), so the queue is a run-after-run
   plan, not a mid-run interruption. A queued `/skill:` or prompt template expands exactly as
-  an immediate send would;
+  an immediate send would. If a hook swallows the message and no run starts at all, the next
+  one follows 400 ms later instead of the queue stalling;
 - 停下 clears the queue along with aborting (the same thing Escape does in the TUI) and says
   how many were dropped;
 - the page is a snapshot, not a live list: it shares the page with the add box, so a

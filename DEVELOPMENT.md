@@ -7,7 +7,7 @@
 在哪儿 —— 大多数不是"写错了代码"，而是"以为改好了但没生效"和"从症状猜错层"。
 
 规模参考：`viewer/server.py` 约 3300 行、`extensions/eink-bridge.ts` 约 1060 行、
-`install.sh` 约 390 行；测试 55 条（Node）+ 252 条（Python，含 HTTP 级用例）。
+`install.sh` 约 390 行；测试 57 条（Node）+ 252 条（Python，含 HTTP 级用例）。
 覆盖率：`npm run test:cov` / `npm run test:cov:viewer`，两边都在 90% 行覆盖以上（2026-11 时为
 90.8%、91.4%）；数字以命令输出为准，这里不留快照。
 
@@ -246,8 +246,10 @@ README 曾有 5 处与代码不符：`PI_SESSION_FILE` 写成"优先"（实际�
   （也是为什么电脑端的排队消息“看不到”——真的看不到，不是没做）；
 - 投递点是 `agent_settled`：每一轮结束投一条。`agent_end` 不行，它后面还可能有自动重试 /
   自动压缩 / 继续，`agent_settled` 才是“pi 不会自己再跑了”；
-- 投递不是 `await` 完就算完：`pi.sendUserMessage()` 返回 void，运行开始是异步的，所以送完
-  一条后 400ms 再查一次忙闲，否则一个被 hook 吃掉的输入会让整个队列永久卡住；
+- 投递不是 `await` 完就算完：`pi.sendUserMessage()` 返回 void，运行开始是异步的。第一版用
+  “400ms 后再查一次忙闲”，复审时探针打出来它的另一面：运行起得慢时会把第二条并进同一轮
+  （README 承诺的“一条一轮”就不成立了）。现在以 `agent_start` 事件为准——只有确实没起运行
+  （被 hook 吃掉）才在 400ms 后投下一条；
 - 停下 连带清空队列（并报告丢了几条）。理由不是设计偏好：pi 自己的客户端拦截 Esc 的做法就是
   先 `clear_queue` 再 `abort`，而 pi 的 abort 会继续投递队列——对一个“把活儿全停掉”的按钮来说
   这是反直觉的；
