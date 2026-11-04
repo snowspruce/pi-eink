@@ -1985,11 +1985,15 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         if pct is not None:
             parts.append("%.0f%%" % pct)
 
-    if bridge_state():
+    # The note must describe the session this page SHOWS. `bridge.json` holds whichever
+    # pi process registered last, so with two sessions running (a normal day) the page
+    # claimed "bridge 未激活" while its own bridge was answering every poll - the
+    # buttons worked, the line just lied. `port` is this session's bridge port
+    # (resolved in _do_get) and `state` is what that port answered.
+    if state is not None:
         bridge_note = ""
-    elif bridge_alive():
-        # reachable but not reporting its session: an older extension build, so the
-        # page may be showing a different session than the buttons act on
+    elif port:
+        # the session has a registered bridge that is not answering
         bridge_note = tr("bridge_stale", lang)
     else:
         bridge_note = tr("bridge_off", lang)

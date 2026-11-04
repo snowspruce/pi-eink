@@ -37,6 +37,35 @@ def clean(folder: str) -> None:
     shutil.rmtree(server.SESSIONS / folder, ignore_errors=True)
 
 
+class BridgeNote(unittest.TestCase):
+    """The status line must describe the session the page shows, not the bridge that
+    registered last (bridge.json) - two parallel pi sessions made it lie."""
+
+    def setUp(self):
+        self.path = write_session("--bridgenote--", "s.jsonl", [
+            {"type": "session", "id": SID, "cwd": "/tmp/demo"},
+            {"type": "message", "id": "m", "timestamp": "t",
+             "message": {"role": "user", "content": [{"type": "text", "text": "hi"}]}},
+        ])
+
+    def tearDown(self):
+        clean("--bridgenote--")
+
+    def _status(self, port, agent_state):
+        with mock.patch.object(server, "agent_state", lambda _p=0: agent_state):
+            return server.render(self.path, 20, False, False, port=port)[2]
+
+    def test_live_bridge_for_this_session_says_nothing(self):
+        status = self._status(8123, {"idle": True})
+        self.assertNotIn("bridge", status)
+
+    def test_no_bridge_for_this_session_is_reported(self):
+        self.assertIn("bridge 未激活", self._status(0, None))
+
+    def test_registered_but_silent_bridge_is_reported_as_stale(self):
+        self.assertIn("bridge 旧版", self._status(8123, None))
+
+
 class Markdown(unittest.TestCase):
     def test_bold_italic_strike_and_code(self):
         out = server.md("**b** *i* ~~s~~ `c`")

@@ -464,14 +464,19 @@ class ProxyBehaviour(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertIn("pielang=en", seen.get("Set-Cookie", ""))
 
-    def test_footer_reports_a_stale_bridge(self):
-        live = {"aaaabbbb-1111-2222-3333-444455556666": {"port": 1}}
-        with mock.patch.object(server, "live_bridges", lambda: live), \
-             mock.patch.object(server, "bridge_state", lambda: None), \
-             mock.patch.object(server, "bridge_alive", lambda: True):
+    def test_footer_reports_a_bridge_that_does_not_answer(self):
+        # registered for this session, but nothing is listening on that port
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: 1):
             status, data = request(self.viewer.port, "/data?s=aaaabbbb-1111-2222-3333-444455556666")
         self.assertEqual(status, 200)
         self.assertIn("bridge", json.loads(data)["status"])
+
+    def test_footer_says_nothing_when_this_sessions_bridge_answers(self):
+        # the fake bridge serves /state, so this session is fine - and the line must
+        # not complain just because some OTHER session registered last (bridge.json)
+        status, data = request(self.viewer.port, "/data?s=aaaabbbb-1111-2222-3333-444455556666")
+        self.assertEqual(status, 200)
+        self.assertNotIn("bridge", json.loads(data)["status"])
 
     def test_busy_page_carries_the_spinner_into_the_digest(self):
         live = {"aaaabbbb-1111-2222-3333-444455556666": {"port": 1}}
