@@ -194,6 +194,7 @@ starts `pi`: the bridge is an in-process extension and never sees the unit's env
 | `PI_SESSION_FILE` | viewer | unset | last-resort fallback, used only when no live bridge and no `bridge.json` name a session |
 | `EINK_TRUST_HOURS` | viewer | `0` | `N` expires a network confirmation after N hours, `0` means until the network changes |
 | `EINK_LANG` | viewer | `zh` | default interface language; `en` makes the page English, a device can still override it from the footer or `/lang?l=` |
+| `EINK_TOP_PAD` | viewer | `16` | blank strip above the content, in CSS px. With the address bar hidden the WebView still starts below a strip the **browser** draws, and a page cannot see or remove it - it can only keep its first line out from under it. Dial it in per device with `/top?n=<px>` (year-long cookie, no restart) |
 
 State files under `~/.pi/eink/`, all ignored by git:
 
@@ -221,6 +222,7 @@ Viewer on `:8000`: `/` page shell (a first visit without `?s=` is redirected onc
 `/static` no-JS fallback (a form POST from a browser without JS lands here), `/sessions`
 picker (each running session carries a `+ New session` button), `/queue` and
 `/queue/edit` (the queue, see above), `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`,
+`/top?n=<px>` the strip above the content,
 `/diag`, `/glyphs`, `/favicon.png`, `/done/<key>` relayed from the bridge's confirmation
 page, and `POST /act/<action>` proxied to the session's bridge. Three actions are
 viewer-local: `/act/unlock` enters the pin to unlock a network, `/act/readonly` drops back

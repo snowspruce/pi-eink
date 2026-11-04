@@ -173,6 +173,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 | `PI_SESSION_FILE` | viewer | 空 | 最后兜底，只在没有活 bridge、也没有 `bridge.json` 指认会话时用 |
 | `EINK_TRUST_HOURS` | viewer | `0` | `N` 表示网络确认在 N 小时后过期，`0` = 直到网络变化 |
 | `EINK_LANG` | viewer | `zh` | 默认界面语言；`en` 让页面说英文，设备仍可在页脚或 `/lang?l=` 覆盖 |
+| `EINK_TOP_PAD` | viewer | `16` | 内容上方的空白条高度（CSS px）。地址栏隐藏后 WebView 仍从**浏览器**自己画的一条带子下方开始，页面既看不到也删不掉它，只能让第一行不去它下面。用 `/top?n=<px>` 按设备调（一年 cookie，无需重启） |
 
 `~/.pi/eink/` 下的状态文件，全部被 git 忽略：
 
@@ -198,7 +199,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 viewer 在 `:8000`：`/` 页面骨架（首次访问没有 `?s=` 时会被重定向一次到 `/?s=<id>`，轮询因此停在你
 打开的那个会话上）、`/data` JSON 片段、`/static` 无 JS 兜底（没有 JS 的浏览器表单 POST 落到这里）、
 `/sessions` 选择器（每个运行中的会话后面带一个 `＋新会话` 按钮）、`/queue` 与 `/queue/edit`（排队，
-见上）、`/theme?d=0|1` 昼夜 cookie、`/lang?l=zh|en`、`/diag`、`/glyphs`、`/favicon.png`、
+见上）、`/theme?d=0|1` 昼夜 cookie、`/lang?l=zh|en`、`/top?n=<px>` 上方空白条、`/diag`、`/glyphs`、`/favicon.png`、
 `/done/<key>`（从 bridge 的确认页转来），以及代理到该会话 bridge 的 `POST /act/<action>`。三个动作
 是 viewer 本地的：`/act/unlock` 输 pin 解锁当前网络，`/act/readonly` 退回只读，`/act/new` 在该会话
 的 pi 进程里新建一个会话（建完直接跳到它，会话运行中则拒绝）。

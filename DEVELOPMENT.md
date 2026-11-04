@@ -7,7 +7,7 @@
 在哪儿 —— 大多数不是"写错了代码"，而是"以为改好了但没生效"和"从症状猜错层"。
 
 规模参考：`viewer/server.py` 约 3300 行、`extensions/eink-bridge.ts` 约 1060 行、
-`install.sh` 约 390 行；测试 57 条（Node）+ 252 条（Python，含 HTTP 级用例）。
+`install.sh` 约 390 行；测试 57 条（Node）+ 258 条（Python，含 HTTP 级用例）。
 覆盖率：`npm run test:cov` / `npm run test:cov:viewer`，两边都在 90% 行覆盖以上（2026-11 时为
 90.8%、91.4%）；数字以命令输出为准，这里不留快照。
 
@@ -284,6 +284,33 @@ reload/恢复、正常文本/命令文本、缺字段/坏字段。上面的 2 �
 
 ---
 
+### 18. 页面顶部那条黑带不是页面画的
+
+“Kindle 顶部地址栏隐藏了，但有一条黑条挡着内容。”先把能核实的量出来：
+
+- 当前页面在顶部**没有**任何会画黑块的东西：`body` 日间是白底，`#wrap` 只有 16px 上内边距，
+  文档流里第一个元素是消息框；全项目里满宽黑色只有 `.role.user` 徽标（inline-block）、`hr` 2px、
+  `.mono` 的 5px 左边框、`#pending` 的 3px 边框，且都在文档中部或底部。
+- 仓库里那张实机截图（`docs/kindle-page.png`，511×573）逐像素量了一遍：**只有 y=17 这一行是
+  满宽纯黑**，那是旧版 `#top` 状态行的 `border-bottom: 1px`（状态行后来挪到页尾了）。页面里
+  没有“横条”。
+
+所以那条带子在 **WebView 外面**：地址栏被隐藏后，浏览器仍从自己画的一条带子下方开始渲染页面。
+页面看不到它、删不掉它（JS 拿不到浏览器自己绘制的像素），能做的只有**别把第一行塞到它底下**——
+就是这个 16px 内边距的来历（前身是 `#top` 的 `10px offset`）。
+
+因此它不是常量而是**设备属性**，改成了可调：`EINK_TOP_PAD`（默认 16）/ `?top=<px>`（按设备种
+一年 cookie，改完立刻生效，不用 `kickstart`）。诊断靠 `/diag` 新增的三个字段：
+
+| 字段 | 含义 |
+|---|---|
+| `top` | 这个页面是按多少 px 内边距发的（排除“改的不是那份代码”） |
+| `bt` | `document.body.getBoundingClientRect().top`：为负说明 WebView 整体上移，内容钻到带子底下 |
+| `ch` | `documentElement.clientHeight`：比 `innerHeight` 小说明浏览器给自己留了空间 |
+
+`~/.pi/eink/diag.log` 里设备发来的那一行同时有 `w/h/dpr` 和这三个字段。**别凭截图猜像素**：
+截图里看到的“黑条”可能是设备画的、也可能是页面画的，两者修法完全不同，而 `bt < 0` 能一句话分清。
+
 ## 三、排查阶梯（设备打不开时按顺序）
 
 ```sh
@@ -423,7 +450,7 @@ Node 22+ 跑扩展测试，Python 3 跑 viewer（只是打开页面不需要这�
 
 ```sh
 npm test                 # 扩展：桩化 pi API、临时 HOME、真实 HTTP handler
-npm run test:viewer      # viewer：单元 + HTTP 级强制点（252 条，约 10s）
+npm run test:viewer      # viewer：单元 + HTTP 级强制点（258 条，约 11s）
 npm run test:cov         # 扩展覆盖率（node 自带 reporter）
 npm run test:cov:viewer  # viewer 覆盖率（需 `pip install coverage`）
 ```

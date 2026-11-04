@@ -64,6 +64,14 @@ BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid,
 HISTORY_FILE = Path.home() / ".pi/eink/history.json"  # sessionId -> commands sent from the box
 COOKIE = "pieink"
 LANG_COOKIE = "pielang"
+# Blank strip above the content, in CSS px. With the Kindle's address bar hidden the
+# WebView still starts below a device-drawn strip, and the strip's height is a property
+# of the device/browser, not of the page - the page cannot see it (JS has no access to
+# what the browser draws over it) and cannot remove it. All it can do is keep the first
+# line out from under it, so this is a per-device number: EINK_TOP_PAD for the default,
+# `?top=<px>` to dial it in from the device itself (a year-long cookie, like the theme).
+TOP_COOKIE = "pietop"
+TOP_PAD = int(os.environ.get("EINK_TOP_PAD", "16"))
 # Page furniture only (~35 strings). Conversation content is never translated.
 # Default is Chinese: that is what the reader uses daily; English is opt-in with
 # ?lang or /lang?l=en, because an English README reader should still be able to
@@ -1330,7 +1338,7 @@ body {
 #bar #status { color: #000; }
 /* separated by space, not a character: links must not run into the numbers */
 #bar #foottxt { margin-left: 10px; }
-#wrap { padding: 16px 12px 6px 12px; }   /* clears #top: 18px line + 10px offset + 6px */
+#wrap { padding: __TOP__px 12px 6px 12px; }   /* __TOP__ = the strip above the page, see TOP_PAD */
 .msg { margin: 0 0 26px 0; }
 .role {
   font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
@@ -1628,9 +1636,16 @@ poll();
 (function () {
   try {
     var x = new XMLHttpRequest();
+    // bt: where the document's top edge actually is (negative = the WebView is shifted
+    // up, so content hides under a strip the browser draws itself), ch: the layout
+    // viewport height (smaller than innerHeight = the browser reserved chrome space),
+    // top: the padding this page was served with.
     x.open("GET", "/diag?w=" + window.innerWidth + "&h=" + window.innerHeight +
       "&sw=" + document.body.scrollWidth + "&dpr=" + (window.devicePixelRatio || 1) +
-      "&iw=" + document.documentElement.clientWidth, true);
+      "&iw=" + document.documentElement.clientWidth +
+      "&bt=" + Math.round(document.body.getBoundingClientRect().top) +
+      "&ch=" + document.documentElement.clientHeight +
+      "&top=%(top)d", true);
     x.send(null);
   } catch (e) {}
 })();
@@ -3012,8 +3027,14 @@ class Handler(BaseHTTPRequestHandler):
         # Carried into render() so it lands inside the polled fragment: /data never
         # repaints #acts, so a notice only in the shell would not show up.
         gone_note = tr("gone_notice", lang, gone[:8]) if gone else ""
-        dark = parse_cookies(self.headers.get("Cookie") or "").get("piedark") == "1"
-        css = (CSS.replace("__FS__", str(fs)) + (DARK_CSS if dark else ""))
+        cookies = parse_cookies(self.headers.get("Cookie") or "")
+        dark = cookies.get("piedark") == "1"
+        try:
+            top = max(0, min(200, int(cookies.get(TOP_COOKIE) or TOP_PAD)))
+        except Exception:
+            top = TOP_PAD
+        css = (CSS.replace("__FS__", str(fs)).replace("__TOP__", str(top))
+               + (DARK_CSS if dark else ""))
 
         if os.environ.get("EINK_LOG_UA"):
             # log once per (ip, user-agent): the page polls every 2.5s, and logging
@@ -3058,6 +3079,18 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
                 ("Location", back),
                 ("Set-Cookie", "%s=%s; Path=/; Max-Age=31536000; SameSite=Lax" % (LANG_COOKIE, want)),
+            ])
+            return
+
+        if u.path == "/top":
+            # `?n=24` from the device's own address bar: the strip is device-specific, and
+            # dialling it in has to be faster than a redeploy.
+            want = qint(q, "n", TOP_PAD, 0, 200)
+            keep_top = [(k, q[k][0]) for k in ("think", "tools", "s") if k in q]
+            back = "/?" + urlencode(keep_top) if keep_top else "/"
+            self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
+                ("Location", back),
+                ("Set-Cookie", "%s=%d; Path=/; Max-Age=31536000; SameSite=Lax" % (TOP_COOKIE, want)),
             ])
             return
 
@@ -3244,7 +3277,7 @@ class Handler(BaseHTTPRequestHandler):
                            "netError": tr("js_net_error", lang),
                            "noHistory": tr("js_no_history", lang)}, ensure_ascii=False)
         self._send((SHELL % {"css": css, "acts": note_html + hint + acts_html(live_here, sid, caps, lang),
-                            "qs": qs, "i18n": i18n}).encode("utf-8"),
+                            "qs": qs, "i18n": i18n, "top": top}).encode("utf-8"),
                    "text/html; charset=utf-8", extra=extra)
 
 
