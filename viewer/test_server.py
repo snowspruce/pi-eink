@@ -215,6 +215,13 @@ class Authorized(unittest.TestCase):
         ok, extra, _reason = fake_handler()._authorized({"k": ["123456"]})
         self.assertTrue(ok)
         self.assertIn("Set-Cookie", extra[0][0])
+        # the seeded cookie must NOT be the master token: the pin is a
+        # convenience factor, and the token also unlocks install.sh and the
+        # bridge and survives a pin change
+        self.assertNotIn("a" * 32, extra[0][1])
+        minted = extra[0][1].split("=", 1)[1].split(";", 1)[0]
+        ok, _extra, reason = fake_handler(cookie="pieink=" + minted)._authorized({})
+        self.assertTrue(ok, reason)   # and the session secret keeps working
 
     def test_wrong_cookie_costs_one_failure_per_minute(self):
         # the same stale cookie is repeated by every poll; counting each repeat is
@@ -232,15 +239,22 @@ class Authorized(unittest.TestCase):
         self.assertIn("127.0.0.1", server._BLOCKED)
 
     def test_a_valid_credential_recovers_from_a_lockout(self):
-        # credentials are checked before the lockout on purpose: after a token
-        # rotation the reader must not be locked out of their own page
+        # the token is checked before the lockout on purpose: after a token
+        # rotation the reader must not be locked out of their own page. The pin
+        # is six digits, so it waits the block out like any other guess: letting
+        # it through mid-block turned the lockout into a speed bump.
         server._BLOCKED["127.0.0.1"] = time.time() + 600
         ok, _extra, reason = fake_handler(cookie="pieink=" + "a" * 32)._authorized({})
         self.assertTrue(ok, reason)
         self.assertNotIn("127.0.0.1", server._BLOCKED)
         server._BLOCKED["127.0.0.1"] = time.time() + 600
-        ok, _extra, reason = fake_handler()._authorized({"k": ["123456"]})
+        ok, _extra, reason = fake_handler()._authorized({"k": ["a" * 32]})
         self.assertTrue(ok, reason)
+        server._BLOCKED["127.0.0.1"] = time.time() + 600
+        ok, _extra, reason = fake_handler()._authorized({"k": ["123456"]})
+        self.assertFalse(ok)
+        self.assertIn("错误次数过多", reason)
+        self.assertIn("127.0.0.1", server._BLOCKED)
 
     def test_a_blocked_peer_with_a_bad_credential_is_still_refused(self):
         server._BLOCKED["127.0.0.1"] = time.time() + 600
