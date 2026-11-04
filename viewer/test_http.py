@@ -583,6 +583,20 @@ class SecondFactor(unittest.TestCase):
         status, _d, _h = self._req("/", otp=otp, cookie=False, header_token=TOKEN)
         self.assertEqual(status, 200)
 
+    def test_session_survives_a_restart(self):
+        """A viewer restart used to invalidate every 2FA session, so each device had
+        to be handed a fresh code by whoever ran the box."""
+        store = pathlib.Path(tempfile.mkdtemp(prefix="pi-eink-otpstore-"))
+        self.addCleanup(shutil.rmtree, store, True)
+        with mock.patch.object(server, "OTP_STORE", store / "s.json"):
+            code = server.totp_code(self.secret)
+            _s, _d, hdrs = self._req("/otp", "POST", "c=" + code)
+            otp = hdrs.get("Set-Cookie", "").split("pieink_otp=", 1)[1].split(";", 1)[0]
+            self.assertTrue((store / "s.json").exists())
+            server._OTP_SESSIONS.clear()          # simulate a restart: memory gone
+            self.assertTrue(server.otp_session_ok(otp))
+            self.assertFalse(server.otp_session_ok("0" * 32))
+
     def test_wrong_header_token_is_refused(self):
         code = server.totp_code(self.secret)
         _s, _d, hdrs = self._req("/otp", "POST", "c=" + code)

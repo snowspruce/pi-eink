@@ -2059,6 +2059,9 @@ def pin_session_ok(value) -> bool:
 # TLS material instead of inside the pi state dir.
 TOTP_FILE = Path(os.environ.get("EINK_TOTP_FILE") or (Path.home() / ".pi/eink/totp"))
 OTP_COOKIE = "pieink_otp"
+# Sessions survive a restart: a viewer restart used to invalidate every 2FA
+# session, so each device had to be handed a fresh code by whoever ran the box.
+OTP_STORE = Path(os.environ.get("EINK_OTP_STORE") or (Path.home() / ".pi/eink/otp_sessions.json"))
 _OTP_SESSIONS: dict = {}
 _OTP_LOCK = threading.Lock()
 _OTP_CACHE = [None, None]      # (mtime, secret)
@@ -2112,15 +2115,49 @@ def totp_verify(code: str) -> bool:
     return False
 
 
+def _otp_load() -> dict:
+    try:
+        data = json.loads(OTP_STORE.read_text())
+    except Exception:
+        return {}
+    out = {}
+    now = time.time()
+    for k, at in (data.items() if isinstance(data, dict) else []):
+        try:
+            at = float(at)
+        except Exception:
+            continue
+        if now - at <= COOKIE_MAX_AGE:
+            out[str(k)] = at
+    return out
+
+
+def _otp_save() -> None:
+    try:
+        OTP_STORE.parent.mkdir(parents=True, exist_ok=True)
+        tmp = str(OTP_STORE) + ".%d.tmp" % os.getpid()
+        with open(tmp, "w") as fh:
+            json.dump(_OTP_SESSIONS, fh)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp, 0o600)
+        os.replace(tmp, OTP_STORE)
+    except Exception:
+        pass
+
+
 def otp_session_value() -> str:
     now = time.time()
     with _OTP_LOCK:
+        if not _OTP_SESSIONS:
+            _OTP_SESSIONS.update(_otp_load())
         for stale in [k for k, at in _OTP_SESSIONS.items() if now - at > COOKIE_MAX_AGE]:
             _OTP_SESSIONS.pop(stale, None)
         if len(_OTP_SESSIONS) > 256:
             _OTP_SESSIONS.pop(min(_OTP_SESSIONS, key=_OTP_SESSIONS.get), None)
         value = secrets.token_hex(16)
         _OTP_SESSIONS[value] = now
+        _otp_save()
     return value
 
 
@@ -2129,6 +2166,10 @@ def otp_session_ok(value) -> bool:
         return False
     with _OTP_LOCK:
         at = _OTP_SESSIONS.get(value)
+        if at is None:
+            # a session minted before the last restart
+            _OTP_SESSIONS.update(_otp_load())
+            at = _OTP_SESSIONS.get(value)
     return at is not None and time.time() - at <= COOKIE_MAX_AGE
 
 
