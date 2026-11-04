@@ -24,11 +24,6 @@ All notable changes to this project. The format follows
 - Bridge `GET /queue` and `POST /act/{qadd,qedit,qdel,qmove,qclear,qrun}`; `/state` also reports
   the count so the footer costs no extra request.
 
-- `EINK_TOP_PAD` / `/top?n=<px>`: the blank strip above the content is a device property
-  (the browser draws it, the page cannot see it), so it is a per-device dial with a
-  year-long cookie instead of a constant nobody can tune without a redeploy. `/diag` now
-  also reports `bt` (where the document's top edge really is), `ch` and the pad in use.
-
 ### Fixed
 
 - **Queue delivery was inconsistent with what the page said, in four ways found on review:**

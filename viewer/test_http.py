@@ -517,58 +517,6 @@ class QueuePage(unittest.TestCase):
         self.assertEqual(FakeBridge.seen, [])
 
 
-class TopPadding(unittest.TestCase):
-    """The blank strip above the content is device-specific: with the Kindle's address
-    bar hidden the WebView still starts below a strip the browser draws itself, and JS
-    cannot see it. So it is a number the device can dial in, not a constant."""
-
-    SID = "aaaabbbb-1111-2222-3333-444455556666"
-
-    @classmethod
-    def setUpClass(cls):
-        cls.viewer = Viewer()
-
-    @classmethod
-    def tearDownClass(cls):
-        cls.viewer.close()
-
-    def _page(self, cookie=""):
-        import http.client
-        conn = http.client.HTTPConnection("127.0.0.1", self.viewer.port, timeout=5)
-        headers = {"User-Agent": KINDLE_UA, "Cookie": "pieink=" + TOKEN + cookie}
-        conn.request("GET", "/?s=" + self.SID, headers=headers)
-        res = conn.getresponse()
-        body = res.read().decode("utf-8")
-        conn.close()
-        return body
-
-    def test_the_default_pad_is_the_documented_one(self):
-        self.assertIn("#wrap { padding: 16px 12px 6px 12px; }", self._page())
-
-    def test_the_cookie_moves_it(self):
-        self.assertIn("#wrap { padding: 34px 12px 6px 12px; }", self._page("; pietop=34"))
-
-    def test_a_broken_cookie_falls_back(self):
-        self.assertIn("#wrap { padding: 16px 12px 6px 12px; }", self._page("; pietop=abc"))
-
-    def test_the_route_sets_the_cookie_and_comes_back(self):
-        seen = {}
-        status, _d = request(self.viewer.port, "/top?n=34&s=" + self.SID, out=seen)
-        self.assertEqual(status, 303)
-        self.assertIn("pietop=34", seen.get("Set-Cookie", ""))
-        self.assertIn("s=" + self.SID, seen.get("Location", ""))
-        # `n` is the message limit on the page; echoing /top's own n would change it
-        self.assertNotIn("n=34", seen.get("Location", ""))
-
-    def test_the_route_clamps(self):
-        seen = {}
-        request(self.viewer.port, "/top?n=9999", out=seen)
-        self.assertIn("pietop=200", seen.get("Set-Cookie", ""))
-
-    def test_the_page_reports_its_own_pad_to_diag(self):
-        self.assertIn("&top=16", self._page())
-
-
 class Language(unittest.TestCase):
     """Page furniture is bilingual; the default is Chinese, English is opt-in and
     must not depend on guessing from the User-Agent."""
