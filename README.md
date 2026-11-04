@@ -1,10 +1,12 @@
 # pi-eink
 
+**English** · [简体中文](README.zh.md)
+
+![A hand holding a Kindle showing the pi-eink page](docs/hero.jpg)
+
 Use a Kindle, or any browser that barely renders HTML, as a second screen for a running
 [pi](https://pi.dev) session. The page shows the live conversation; five buttons push
 actions back into the agent.
-
-[简体中文](README.zh.md)
 
 ![the page on a real 511x573 e-ink screen](docs/kindle-page.png)
 
@@ -35,6 +37,11 @@ Requirements:
   block. Do not load it twice (`~/.pi/agent/extensions/` and `pi install`): the same
   command would ask for approval twice
 
+  ```sh
+  git clone https://github.com/snowspruce/pi-safety-gate.git ~/.local/share/pi-safety-gate
+  ln -sfn ~/.local/share/pi-safety-gate/extensions/safety-gate ~/.pi/agent/extensions/safety-gate
+  ```
+
 On the machine that will serve the page:
 
 ```sh
@@ -45,7 +52,8 @@ git clone https://github.com/snowspruce/pi-eink ~/pi-eink
 It creates `~/.pi/eink` (mode 700) with a fresh `token` and `pin`, default `uas` and
 `allow_ips`, and a `trust.json` seeded with the current network. It registers the
 extension with `pi install`, disabling a stray loose copy that would otherwise load twice.
-It installs and starts the service unit with absolute paths, checks that the viewer
+It installs and starts the service unit, launchd on macOS and `systemd --user` on Linux,
+with absolute paths, checks that the viewer
 answers, and prints the two URLs to open once: `?k=<token>` on the computer, `?k=<pin>` on
 the Kindle. Re-running is safe: an existing `token`/`pin` is never regenerated, and an
 existing `EINK_UA_STRICT` setting is preserved.
@@ -173,7 +181,7 @@ State files under `~/.pi/eink/`, all ignored by git:
 Viewer on `:8000`: `/` page shell (a first visit without `?s=` is redirected once to
 `/?s=<id>`, so the poll stays on the conversation you opened), `/data` JSON fragment,
 `/static` no-JS fallback (a form POST from a browser without JS lands here), `/sessions`
-picker, `/theme?d=0\|1` day or night cookie, `/lang?l=zh\|en`, `/diag`, `/glyphs`,
+picker, `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`, `/diag`, `/glyphs`,
 `/favicon.png`, `/done/<key>` relayed from the bridge's confirmation page, and
 `POST /act/<action>` proxied to the session's bridge. Two actions are viewer-local:
 `/act/unlock` enters the pin to unlock a network, `/act/readonly` drops back to read-only.
@@ -187,12 +195,19 @@ through the viewer's proxy.
 
 The page furniture, the buttons, hints, the footer and action receipts, exists in Chinese
 and English. The conversation itself is never translated. The default is Chinese; English
-is opt-in per device, three ways: tap the `EN` / `中文` link in the footer for a one-year
-cookie, open `/lang?l=en` once, or set `EINK_LANG=en` in the service unit to make it the
-default for every device. Nothing asks at install time.
+is opt-in per device, three ways: tap the `EN` / `中文` link in the footer, which sets the
+`pielang` cookie for a year, open `/lang?l=en` once (the same thing, handier from a
+bookmark), or set `EINK_LANG=en` in the service unit to make it the default for every
+device. Nothing asks at install time.
 
-The prompts the buttons send to the agent stay Chinese on purpose. They are instructions to
-the model, not UI text, so their wording is not tied to the reader's locale.
+```sh
+EINK_LANG=en python3 ~/pi-eink/viewer/server.py    # foreground
+# or in the launchd / systemd unit: EnvironmentVariables -> EINK_LANG = en
+```
+
+The prompts the buttons send to the agent (`继续` / `对以上优化和修复做一个审查` /
+`根据建议执行`) stay Chinese on purpose. They are instructions to the model, not UI text,
+so their wording is not tied to the reader's locale.
 
 ---
 

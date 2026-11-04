@@ -1,9 +1,11 @@
 # pi-eink
 
+[English](README.md) · **简体中文**
+
+![手握 Kindle，显示 pi-eink 页面](docs/hero.jpg)
+
 把 Kindle，或者任何勉强能渲染 HTML 的浏览器，当作正在运行的 [pi](https://pi.dev) 会话的第二块屏。
 页面显示实时对话，五个白名单按钮把动作送回 agent。
-
-[English](README.md)
 
 ![真实 511×573 电子墨水屏上的页面](docs/kindle-page.png)
 
@@ -32,6 +34,11 @@
   也能用：危险命令只在本机终端确认，页面永远不出现待确认块。不要装两份
   （`~/.pi/agent/extensions/` 和 `pi install` 各一份），否则同一条命令会问两次
 
+  ```sh
+  git clone https://github.com/snowspruce/pi-safety-gate.git ~/.local/share/pi-safety-gate
+  ln -sfn ~/.local/share/pi-safety-gate/extensions/safety-gate ~/.pi/agent/extensions/safety-gate
+  ```
+
 在将要提供页面服务的那台机器上：
 
 ```sh
@@ -40,9 +47,9 @@ git clone https://github.com/snowspruce/pi-eink ~/pi-eink
 ```
 
 它建 `~/.pi/eink`（权限 700），生成新的 `token` 与 `pin`、默认的 `uas` 与 `allow_ips`，并按当前
-网络写一份 `trust.json`。它用 `pi install` 注册扩展，并禁用一个会重复加载的松散副本。它装好并
-启动服务单元，路径填成绝对路径，检查 viewer 是否有响应，最后打印两个只开一次的 URL：电脑上
-`?k=<token>`，Kindle 上 `?k=<pin>`。重跑是安全的：已有的 `token`/`pin` 不会重新生成，已有的
+网络写一份 `trust.json`。它用 `pi install` 注册扩展，并禁用一个会重复加载的松散副本。它装好并启动服务单元（macOS 上
+launchd，Linux 上 `systemd --user`），路径填成绝对路径，检查 viewer 是否有响应，最后打印两个只
+开一次的 URL：电脑上 `?k=<token>`，Kindle 上 `?k=<pin>`。重跑是安全的：已有的 `token`/`pin` 不会重新生成，已有的
 `EINK_UA_STRICT` 设置会保留。
 
 | 参数 | 含义 |
@@ -161,7 +168,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 
 viewer 在 `:8000`：`/` 页面骨架（首次访问没有 `?s=` 时会被重定向一次到 `/?s=<id>`，轮询因此停在你
 打开的那个会话上）、`/data` JSON 片段、`/static` 无 JS 兜底（没有 JS 的浏览器表单 POST 落到这里）、
-`/sessions` 选择器、`/theme?d=0\|1` 昼夜 cookie、`/lang?l=zh\|en`、`/diag`、`/glyphs`、
+`/sessions` 选择器、`/theme?d=0|1` 昼夜 cookie、`/lang?l=zh|en`、`/diag`、`/glyphs`、
 `/favicon.png`、`/done/<key>`（从 bridge 的确认页转来），以及代理到该会话 bridge 的
 `POST /act/<action>`。两个动作是 viewer 本地的：`/act/unlock` 输 pin 解锁当前网络，
 `/act/readonly` 退回只读。
@@ -173,10 +180,17 @@ bridge 在 `:8010`+ 或 `EINK_BRIDGE_PORT`：`GET /`、`/state`，以及
 ### 界面语言
 
 页面的外壳——六个按钮（五个走 bridge，一个是本机的只读开关）、提示、页脚、动作回执——有中英两套。对话本身永远不翻译。默认中文，英文按
-设备选择开启，三种方式：点页脚的 `EN` / `中文` 链接种一年期 cookie；打开一次 `/lang?l=en`；或在
-服务单元里设 `EINK_LANG=en`，把它变成所有设备的默认。安装时不问。
+设备选择开启，三种方式：点页脚的 `EN` / `中文` 链接，它种一个一年期的 `pielang` cookie；打开一次
+`/lang?l=en`（同一件事，从书签进来更方便）；或在服务单元里设 `EINK_LANG=en`，把它变成所有设备的
+默认。安装时不问。
 
-按钮发给 agent 的提示词故意保持中文。它们是指令不是界面文字，措辞不与读者的语言绑定。
+```sh
+EINK_LANG=en python3 ~/pi-eink/viewer/server.py    # 前台
+# 或写进 launchd / systemd 单元：EnvironmentVariables -> EINK_LANG = en
+```
+
+按钮发给 agent 的提示词（`继续` / `对以上优化和修复做一个审查` / `根据建议执行`）故意保持中文。
+它们是指令不是界面文字，措辞不与读者的语言绑定。
 
 ---
 
