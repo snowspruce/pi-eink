@@ -123,6 +123,10 @@ STRINGS = {
     "queue_cancel": ("\u53d6\u6d88", "Cancel"),
     "queue_edit_title": ("\u6539\u6392\u961f\u7b2c %d \u6761", "Edit queued #%d"),
     "queue_back": ("\u8fd4\u56de\u6392\u961f", "Back to the queue"),
+    "queue_refresh": ("\u5237\u65b0", "Refresh"),
+    "queue_run": ("\u5f00\u59cb\u6295\u9012", "Deliver now"),
+    "queue_paused": ("\u961f\u5217\u4ece\u4e0a\u6b21\u4f1a\u8bdd\u6062\u590d\uff0c\u4e0d\u4f1a\u81ea\u5df1\u8dd1\uff1a\u70b9 \u5f00\u59cb\u6295\u9012 \u624d\u4f1a\u53d1",
+                     "This queue was restored with the session and will not run by itself: tap Deliver now"),
     "queue_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u961f\u5217",
                         "This session is not running, so there is no queue"),
     "truncated": ("\u2026 \u5df2\u622a\u65ad\uff08\u5171 %d \u5b57\u7b26\uff09", "\u2026 clipped (%d chars)"),
@@ -386,8 +390,22 @@ def session_meta(path: Path) -> dict:
     return meta
 
 
+# One request resolves the same id several times (resolve_view -> session_selected ->
+# session_path_by_id, then newest_session -> session_path_by_id again). Each walk is a
+# directory listing plus a stat per file, so it is memoized for the duration of ONE
+# request - and never longer: a stale index reads as "this session is gone", which is
+# the failure that swaps the conversation. Direct calls (tests, main()) get no memo.
+_INDEX_MEMO = threading.local()
+
+
+def begin_request() -> None:
+    """Start a fresh per-request memo. Called once at the top of both handlers."""
+    _INDEX_MEMO.active = True
+    _INDEX_MEMO.value = None
+
+
 def session_index() -> dict:
-    """{id -> path} for every real pi session file on disk, rebuilt on every call.
+    """{id -> path} for every real pi session file on disk.
 
     The id has to come from the file's own header row, not from the file name. pi
     names a file `<timestamp>_<id>.jsonl` when it creates it, but writing into an
@@ -399,12 +417,16 @@ def session_index() -> dict:
     page jumped to whichever agent had started last. Files with no session header
     are not pi sessions at all (subagent `*_transcript.jsonl`) and stay out.
 
-    No cache on purpose. One walk is a directory listing plus one `stat` per file
-    (the header parse behind it is cached by mtime), which is cheaper than the
-    staleness it would buy: a session written seconds ago is exactly the one a fresh
-    link points at, and a stale index reads as "gone" - the failure that swaps the
-    conversation. Duplicate ids (a copied file) resolve to the newest copy.
+    Cached for exactly one request (see `_INDEX_MEMO`), never longer. One walk is a
+    directory listing plus a `stat` per file (the header parse behind it is cached by
+    mtime), and a request resolves the same id up to four times; but a session written
+    seconds ago is exactly the one a fresh link points at, and a stale index reads as
+    "gone" - the failure that swaps the conversation. So the memo dies with the
+    request. Duplicate ids (a copied file) resolve to the newest copy.
     """
+    memo = getattr(_INDEX_MEMO, "value", None)
+    if memo is not None:
+        return memo
     index, seen = {}, {}
     for path in SESSIONS.rglob("*.jsonl"):
         sid = str(session_meta(path).get("id") or "")
@@ -417,6 +439,8 @@ def session_index() -> dict:
         if sid not in seen or stamp > seen[sid]:
             seen[sid] = stamp
             index[sid] = path
+    if getattr(_INDEX_MEMO, "active", False):
+        _INDEX_MEMO.value = index
     return index
 
 
@@ -629,9 +653,10 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 # action that is safe without a secret.
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
 # The queue lives in the session's bridge; these actions read and mutate it.
-QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear"}
+QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear", "qrun"}
 BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny",
-                  "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear"}
+                  "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear",
+                  "qrun"}
 
 
 def action_allowed(caps: str, action: str) -> bool:
@@ -1031,7 +1056,7 @@ def _bridge_opener():
 
 
 def bridge_queue(port: int = 0):
-    """(items, pi_has_its_own) for the queue this session's bridge holds, or None.
+    """(items, pi_has_its_own, armed) for this session's bridge queue, or None.
 
     The bridge owns the queue: pi's own pending messages are a boolean behind
     ctx.hasPendingMessages() and cannot be listed, edited or reordered from an
@@ -1049,7 +1074,7 @@ def bridge_queue(port: int = 0):
         return None
     if not isinstance(data, dict) or not isinstance(data.get("items"), list):
         return None
-    return data["items"], bool(data.get("pending"))
+    return data["items"], bool(data.get("pending")), bool(data.get("armed", True))
 
 
 def agent_state(port: int = 0):
@@ -1145,12 +1170,16 @@ def pending_html(sid: str = "", port: int = 0, caps: str = "full", lang: str = "
 
 
 def queue_html(items: list, external: bool = False, sid: str = "", caps: str = "full",
-               lang: str = "") -> str:
+               lang: str = "", armed: bool = True) -> str:
     """The queue page: what the box typed while the agent was busy.
 
     One row per message, with only the controls that can act on that row (no 上移 on
     the first, no 下移 on the last), because a button that does nothing is a fake
     control and this device has room for about four of them.
+
+    `armed` is the bridge saying "this process may deliver by itself". A queue restored
+    with a resumed session is not armed: it is listed, and 开始投递 is the only way to
+    start it, so a week-old plan cannot execute behind the reader's back.
     """
     suffix = ("?s=" + quote(sid, safe="")) if sid else ""
     can_edit = caps == "full"
@@ -1163,7 +1192,9 @@ def queue_html(items: list, external: bool = False, sid: str = "", caps: str = "
         text = str(item.get("text") or "")
         when = ""
         try:
-            when = time.strftime("%H:%M", time.localtime(float(item.get("at")) / 1000.0))
+            at = float(item.get("at") or 0)
+            if at > 0:
+                when = time.strftime("%H:%M", time.localtime(at / 1000.0))
         except Exception:
             when = ""
         buttons = ""
@@ -1186,16 +1217,24 @@ def queue_html(items: list, external: bool = False, sid: str = "", caps: str = "
                         '<input type="hidden" name="i" value="%d">'
                         '<button class="btn" type="submit">%s</button></form>'
                         % (suffix, ident, esc(tr("queue_del", lang))))
-        rows.append('<div class="sess"><div class="mono dim">%d \u00b7 %s</div>'
+        rows.append('<div class="sess"><div class="mono dim">%s</div>'
                     '<div class="body">%s</div><div class="qacts">%s</div></div>'
-                    % (n + 1, esc(when), esc(text[:400]), buttons))
+                    % (esc(("%d \u00b7 " % (n + 1)) + when if when else str(n + 1)),
+                       esc(text[:400]), buttons))
     head = '<div class="body"><b>%s</b></div>' % esc(tr("queue_title", lang, len(items)))
     if external:
         head += '<div class="body dim">%s</div>' % esc(tr("queue_external", lang))
+    if items and not armed:
+        head += '<div class="body dim">%s</div>' % esc(tr("queue_paused", lang))
     if not items:
         head += '<div class="body dim">%s</div>' % esc(tr("queue_empty", lang))
     if not can_edit:
         return head + "".join(rows) + '<div class="body dim">%s</div>' % esc(tr("readonly_hint", lang))
+    run = ""
+    if items and not armed:
+        run = ('<form method="POST" action="/act/qrun%s">'
+               '<button class="btn" type="submit">%s</button></form>'
+               % (suffix, esc(tr("queue_run", lang))))
     add = ('<form method="POST" action="/act/qadd%s" id="qadd">'
            '<textarea name="text" rows="2" maxlength="2000" placeholder="%s"></textarea>'
            '<button class="btn" type="submit">%s</button></form>'
@@ -1205,7 +1244,7 @@ def queue_html(items: list, external: bool = False, sid: str = "", caps: str = "
         clear = ('<form method="POST" action="/act/qclear%s">'
                  '<button class="btn" type="submit">%s</button></form>'
                  % (suffix, esc(tr("queue_clear", lang, len(items)))))
-    return head + "".join(rows) + add + clear
+    return head + "".join(rows) + run + add + clear
 
 
 def queue_edit_html(ident: int, text: str, sid: str = "", lang: str = "", pos: int = 0) -> str:
@@ -2661,6 +2700,7 @@ class Handler(BaseHTTPRequestHandler):
         return False, extra, "bad or missing token"
 
     def do_POST(self):
+        begin_request()
         try:
             self._do_post()
         except (BrokenPipeError, ConnectionResetError):
@@ -2669,6 +2709,7 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(err)
 
     def do_GET(self):
+        begin_request()
         try:
             self._do_get()
         except (BrokenPipeError, ConnectionResetError):
@@ -3131,10 +3172,15 @@ class Handler(BaseHTTPRequestHandler):
                 # the way back from an edit is the queue it came from, not the session
                 back_path = "/queue" + suffix
                 back_label = "queue_back"
+                refresh = ""
             else:
                 back_path = ("/?" + urlencode(keep)) if keep else "/"
                 back_label = "back_to_session"
-            body = ('<div class="body"><a href="%(back_url)s">%(back)s</a></div>'
+                # No meta refresh on this page: it shares the add box with the list, and a
+                # reload would wipe what the reader is typing. One tap re-reads instead.
+                refresh = (' \u00b7 <a href="/queue%s">%s</a>'
+                           % (suffix, esc(tr("queue_refresh", lang))))
+            body = ('<div class="body"><a href="%(back_url)s">%(back)s</a>%(refresh)s</div>'
                     '%(note)s%(queue)s')
             if got is None:
                 inner = '<div class="body dim">%s</div>' % esc(tr("queue_no_bridge", lang))
@@ -3146,7 +3192,7 @@ class Handler(BaseHTTPRequestHandler):
                                          sid, lang, pos=pos)
                          if item else '<div class="body dim">%s</div>' % esc(tr("queue_empty", lang)))
             else:
-                inner = queue_html(got[0], got[1], sid, caps, lang)
+                inner = queue_html(got[0], got[1], sid, caps, lang, armed=got[2])
             page = ("<!DOCTYPE html><html><head>"
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
                     '<link rel="icon" type="image/png" href="/favicon.png">'
@@ -3155,6 +3201,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send((page % {"css": css, "body": body % {
                 "back_url": esc(back_path),
                 "back": esc(tr(back_label, lang)),
+                "refresh": refresh,
                 "note": ('<div id="note">%s</div>' % esc(note_msg)) if note_msg else "",
                 "queue": inner}}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)

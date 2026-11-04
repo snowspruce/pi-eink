@@ -397,7 +397,9 @@ describe("eink bridge", () => {
 			items = await queued();
 			assert.equal(items[0].text, "edited");
 
-			assert.equal((await post("/act/qdel", "i=" + items[0].i)).status, 200);
+			const dropped = await post("/act/qdel", "i=" + items[0].i);
+			assert.equal(dropped.status, 200);
+			assert.match(dropped.json.msg, /第 1 条|#1/, "the page numbers rows by position");
 			assert.deepEqual((await queued()).map((x) => x.text), ["first"]);
 
 			// an id that is not in the queue is refused, not "deleted something else"
@@ -426,6 +428,9 @@ describe("eink bridge", () => {
 		sent = [];
 		await handlers.agent_settled({ aborted: false }, ctx);
 		assert.deepEqual(sent.map((s) => s.text), ["one"]);
+		// a queued message must be expanded like an immediate send, or a queued
+		// /skill:foo would reach the model as chat text
+		assert.deepEqual(sent[0].opts, { expandPromptTemplates: true });
 		assert.deepEqual((await queued()).map((x) => x.text), ["two"], "the rest waits for the next run");
 		await handlers.agent_settled({ aborted: false }, ctx);
 		assert.deepEqual(sent.map((s) => s.text), ["one", "two"]);
@@ -469,13 +474,63 @@ describe("eink bridge", () => {
 		assert.equal(file["test-session"], undefined, "an emptied queue leaves no dead entry");
 	});
 
+	it("does not run a resumed session's leftovers by itself", async () => {
+		// three messages queued before a crash must not execute a week later
+		await post("/act/qclear");
+		writeFileSync(join(EINK, "queue.json"), JSON.stringify({
+			"test-session": [{ i: 3, text: "left over", at: Date.now() - 5 * 864e5 }],
+		}));
+		sent = [];
+		await handlers.session_start({ reason: "resume" }, ctx);
+		await new Promise((r) => setTimeout(r, 200));
+		assert.deepEqual(sent, [], "a resume shows the leftovers, it does not run them");
+		assert.deepEqual((await queued()).map((x) => x.text), ["left over"]);
+		const state = await (await fetch(`http://127.0.0.1:${port}/queue`, {
+			headers: { Cookie: `pieink=${TOKEN}` },
+		})).json();
+		assert.equal(state.armed, false);
+		// and a run settling in that session must not flush it either
+		await handlers.agent_settled({ aborted: false }, ctx);
+		await new Promise((r) => setTimeout(r, 150));
+		assert.deepEqual(sent, [], "not even a settle may start a restored queue");
+
+		// 开始投递 is the explicit way out
+		assert.equal((await post("/act/qrun")).status, 200);
+		await new Promise((r) => setTimeout(r, 150));
+		assert.deepEqual(sent.map((s) => s.text), ["left over"]);
+		assert.deepEqual(await queued(), []);
+	});
+
+	it("keeps delivering across a reload", async () => {
+		// the reader was mid-flight: a reload must not strand what they queued
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=" + encodeURIComponent("across"));
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+		sent = [];
+		await handlers.session_start({ reason: "reload" }, ctx);
+		await new Promise((r) => setTimeout(r, 150));
+		assert.deepEqual(sent.map((s) => s.text), ["across"]);
+	});
+
 	it("sends an added message right away when the session is idle", async () => {
 		await post("/act/qclear");
 		sent = [];
-		assert.equal((await post("/act/qadd", "text=" + encodeURIComponent("now"))).status, 200);
-		await new Promise((r) => setTimeout(r, 150));
+		const res = await post("/act/qadd", "text=" + encodeURIComponent("now"));
+		// the reply has to match what happens: it is sent, not queued
+		assert.equal(res.json.msg, "已发送");
 		assert.deepEqual(sent.map((s) => s.text), ["now"]);
 		assert.deepEqual(await queued(), []);
+	});
+
+	it("refuses an empty message without a 500", async () => {
+		const res = await post("/act/qadd", "text=");
+		assert.equal(res.status, 400);
+		assert.match(res.json.msg, /没有输入内容|Nothing to send/);
 	});
 
 	it("reports the queue count in /state", async () => {

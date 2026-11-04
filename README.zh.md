@@ -138,8 +138,15 @@ pi 自己的队列拿不到：扩展 API 只给了 `ExtensionContext.hasPendingM
 - 页脚出现 `排队中（3）`，`/queue` 列出每条消息，带 上移 / 下移 / 改 / 删，还有 加一条 与 清空。
   每行只给能作用于它的按钮：第一条没有 上移，最后一条没有 下移；
 - 每轮运行结束时（`agent_settled`）投递一条，所以这是“跑完这轮再跑那条”的计划，不是运行中的打断；
+  排队的 `/skill:` 或 prompt 模板会像直发一样展开；
 - 停下 会连同中止一起清空队列（TUI 里 Escape 就是这样），并说明丢了几条；
-- 这个文件扛得住 `/reload` 与 pi 重启；viewer 重启无所谓，因为 viewer 本身不存队列。
+- 这个页面是快照，不是实时列表：它和“加一条”输入框在同一页，自动刷新会冲掉正在输入的东西。
+  `刷新` 重读一次，每个按钮都会重渲染；
+- 投递**需要上弦**：在这个进程里排过东西、或刚 `/reload`（人还在流程中）才算上弦；跟着“恢复会话”
+  读回来的队列只列出来、不上弦——崩溃前排的三条不该一周后自己跑起来。`开始投递` 是唯一的出口。
+  一周没人回来的队列条目会被清掉；
+- 这个文件扛得住 `/reload` 与 pi 重启；viewer 重启无所谓，因为 viewer 本身不存队列。写法和
+  `bridges.json` 一样是读-改-写，两个 pi 进程同一瞬间写可能丢一次。
 
 诚实的边界：**在电脑终端里**运行中打的话在 pi 的队列里，这个页面列不出、改不了、也排不了序；
 pi 报告自己有排队消息时，排队页会明说这一点。
@@ -196,7 +203,7 @@ viewer 在 `:8000`：`/` 页面骨架（首次访问没有 `?s=` 时会被重定
 的 pi 进程里新建一个会话（建完直接跳到它，会话运行中则拒绝）。
 
 bridge 在 `:8010`+ 或 `EINK_BRIDGE_PORT`：`GET /`、`/state`、`/queue`，以及
-`POST /act/{stop,continue,review,execute,status,say,approve,deny,new,qadd,qedit,qdel,qmove,qclear}`。
+`POST /act/{stop,continue,review,execute,status,say,approve,deny,new,qadd,qedit,qdel,qmove,qclear,qrun}`。
 非 loopback 对端只接受 `stop` 与 `status`；自由文本、审批、提示词、新建会话与队列必须走 viewer 的
 代理。
 

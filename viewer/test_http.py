@@ -431,7 +431,7 @@ class QueuePage(unittest.TestCase):
         FakeBridge.routes = {
             "/queue": json.dumps({"items": [{"i": 7, "text": "first", "at": 1767225600000},
                                             {"i": 9, "text": "second", "at": 1767225660000}],
-                                  "pending": False}).encode(),
+                                  "pending": False, "armed": True}).encode(),
             "/state": json.dumps({"idle": False, "pending": False, "queued": 2}).encode(),
         }
         self.addCleanup(mock.patch.stopall)
@@ -478,6 +478,36 @@ class QueuePage(unittest.TestCase):
         foot = json.loads(data)["foot"]
         self.assertIn("排队中（2）", foot)
         self.assertIn('href="/queue?s=' + self.SID, foot)
+
+    def test_a_queue_restored_with_a_resumed_session_waits_for_a_tap(self):
+        FakeBridge.routes["/queue"] = json.dumps({
+            "items": [{"i": 1, "text": "old", "at": 1767225600000}],
+            "pending": False, "armed": False}).encode()
+        status, data = request(self.viewer.port, "/queue?s=" + self.SID)
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn('action="/act/qrun?s=%s"' % self.SID, body)
+        self.assertIn("开始投递", body)
+        self.assertIn("不会自己跑", body)
+
+    def test_an_armed_queue_has_no_deliver_button(self):
+        status, data = request(self.viewer.port, "/queue?s=" + self.SID)
+        self.assertEqual(status, 200)
+        self.assertNotIn("/act/qrun", data.decode("utf-8"))
+
+    def test_starting_delivery_comes_back_to_the_queue_page(self):
+        seen = {}
+        status, _d = request(self.viewer.port, "/act/qrun?s=" + self.SID, "POST", "", out=seen)
+        self.assertEqual(status, 303)
+        self.assertTrue(seen.get("Location", "").startswith("/queue?s=" + self.SID))
+
+    def test_a_readonly_network_cannot_mutate_the_queue(self):
+        with mock.patch.object(server, "caps_for", lambda _h: "readonly"):
+            for action in ("qadd", "qdel", "qedit", "qmove", "qclear", "qrun"):
+                status, _d = request(self.viewer.port, "/act/%s?s=%s" % (action, self.SID),
+                                     "POST", "i=7&text=x", accept="application/json")
+                self.assertEqual(status, 403, action)
+        self.assertEqual([s for s in FakeBridge.seen if s[0] == "POST"], [])
 
     def test_a_session_without_a_bridge_has_no_queue(self):
         with mock.patch.object(server, "bridge_port_for", lambda _sid: 0):

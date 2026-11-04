@@ -154,11 +154,19 @@ event goes to those clients too. So the box keeps **its own** queue
   加一条 box and 清空. Each row only carries the buttons that can act on it: no 上移 on the
   first message, no 下移 on the last;
 - one message is delivered per settled run (`agent_settled`), so the queue is a run-after-run
-  plan, not a mid-run interruption;
+  plan, not a mid-run interruption. A queued `/skill:` or prompt template expands exactly as
+  an immediate send would;
 - 停下 clears the queue along with aborting (the same thing Escape does in the TUI) and says
   how many were dropped;
+- the page is a snapshot, not a live list: it shares the page with the add box, so a
+  meta-refresh would wipe what you are typing. 刷新 re-reads it, and every button re-renders;
+- delivery is *armed* by queueing something, and by `/reload` (the reader was mid-flight);
+  a queue restored with a resumed session is listed but not armed, because three messages
+  queued before a crash must not execute by themselves a week later. 开始投递 is the way out.
+  Queue entries nobody came back for are dropped after a week;
 - the file survives `/reload` and a pi restart; a viewer restart does not matter because the
-  viewer keeps no queue state at all.
+  viewer keeps no queue state at all. Writes are read-modify-write like `bridges.json`, so two
+  pi processes queueing in the same instant can lose one write.
 
 The honest limit: a message typed **in the terminal** during a run sits in pi's queue, which
 this page cannot list, edit or reorder. The queue page says so when pi reports pending
@@ -219,7 +227,7 @@ to read-only, `/act/new` creates a session inside that session's pi process (and
 it; refused while that session is running).
 
 Bridge on `:8010`+ or `EINK_BRIDGE_PORT`: `GET /`, `/state`, `/queue`, and
-`POST /act/{stop,continue,review,execute,status,say,approve,deny,new,qadd,qedit,qdel,qmove,qclear}`.
+`POST /act/{stop,continue,review,execute,status,say,approve,deny,new,qadd,qedit,qdel,qmove,qclear,qrun}`.
 Only `stop` and `status` are accepted from a non-loopback peer; free text, approvals,
 prompts, new sessions and the queue must come through the viewer's proxy.
 

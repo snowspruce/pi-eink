@@ -57,6 +57,9 @@ const ANSWER_FILE = join(homedir(), ".pi/eink/answer.json");
 // during a run is in pi's queue, which the box can neither see nor change.
 const QUEUE_FILE = join(homedir(), ".pi/eink/queue.json");
 const QUEUE_MAX = 20;
+// A queue nobody came back for is dropped after a week: long enough to survive a
+// weekend, short enough that the file does not grow one key per session for ever.
+const QUEUE_KEEP_MS = 7 * 24 * 3600_000;
 // Why a session stopped being the bridge owner; the TUI has no room to say it.
 const BRIDGE_LOG = join(homedir(), ".pi/eink/bridge.log");
 // Session control (new session, reload, compact, quit) is only reachable through
@@ -285,6 +288,7 @@ const TEXT: Record<string, [string, string]> = {
 	gate_loopback: ["该动作只接受本机转发（通过 eink 页面操作）", "loopback only: drive it from the e-ink page"],
 	queued_n: ["已排队（第 %s 条）", "Queued (#%s)"],
 	queue_full: ["排队最多 %s 条", "The queue holds at most %s"],
+	queue_started: ["已开始投递（一条一轮）", "Delivery started (one per run)"],
 	queue_cleared: ["已清空排队（%s 条）", "Cleared %s queued"],
 	queue_deleted: ["已删除第 %s 条", "Removed #%s"],
 	queue_edited: ["已修改第 %s 条", "Updated #%s"],
@@ -381,6 +385,12 @@ export default function einkBridge(pi: ExtensionAPI) {
 	// steer), which no extension can read. The page says so instead of pretending.
 	let queue: { i: number; text: string; at: number }[] = [];
 	let delivering = false;
+	// Whether this process is allowed to deliver the queue by itself. Set by anything
+	// that queues here, and by a reload (so `/reload` is transparent). NOT set when a
+	// session is merely resumed: three messages queued before a crash must not fire by
+	// themselves a week later - they stay listed on the page until the reader taps
+	// 开始投递 or queues something new.
+	let armed = false;
 
 	const sessionId = () => ctx?.sessionManager.getSessionId() ?? "";
 
@@ -399,7 +409,17 @@ export default function einkBridge(pi: ExtensionAPI) {
 			const all = readQueueFile();
 			if (queue.length > 0) all[sid] = queue;
 			else delete all[sid];
-			// unique tmp name + rename: several pi sessions write this file
+			// Drop queues nobody came back for: one key per session that ever queued
+			// something would otherwise accumulate for ever.
+			const stale = Date.now() - QUEUE_KEEP_MS;
+			for (const [key, value] of Object.entries(all)) {
+				if (key === sid || !Array.isArray(value) || value.length === 0) continue;
+				const newest = value.reduce((max, item) => Math.max(max, Number(item?.at) || 0), 0);
+				if (newest < stale) delete all[key];
+			}
+			// read-modify-write without a lock: two pi processes saving in the same instant
+			// can lose one write, exactly like bridges.json. Losing an enqueue is a visible
+			// loss (the page shows an empty queue), so the window stays short and small.
 			const tmp = `${QUEUE_FILE}.${process.pid}.tmp`;
 			writeFileSync(tmp, JSON.stringify(all, null, 2));
 			renameSync(tmp, QUEUE_FILE);
@@ -444,6 +464,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 		if (queue.length >= QUEUE_MAX) throw new Error(tt(lang, "queue_full", QUEUE_MAX));
 		const item = { i: nextQueueId(), text: clipped, at: Date.now() };
 		queue.push(item);
+		armed = true;
 		saveQueue();
 		return item;
 	};
@@ -451,16 +472,19 @@ export default function einkBridge(pi: ExtensionAPI) {
 	/** Deliver the head of the queue once the session is idle.
 	 *  One message per settled run: sending starts a turn, and the next item waits for
 	 *  `agent_settled`. The delayed retry covers the case where a hook swallows the
-	 *  message and no run starts (otherwise the queue would stall for ever). */
+	 *  message and no run starts (otherwise the queue would stall for ever).
+	 *  `expandPromptTemplates` matches what an immediate send from the page does: a
+	 *  queued `/skill:foo` or prompt template must not silently become chat text. */
 	const deliverNext = async () => {
-		if (delivering || !ctx || queue.length === 0 || !ctx.isIdle()) return;
+		if (!armed || delivering || !ctx || queue.length === 0 || !ctx.isIdle()) return;
 		delivering = true;
 		const item = queue[0];
 		try {
 			try {
-				await pi.sendUserMessage(item.text);
+				await pi.sendUserMessage(item.text, { expandPromptTemplates: true });
 			} catch {
-				// a run started between the idle check and the send
+				// a run started between the idle check and the send; a steered message is
+				// delivered as-is (pi expands templates only for an idle send)
 				await pi.sendUserMessage(item.text, { deliverAs: "steer" });
 			}
 			queue = queue.filter((q) => q.i !== item.i);
@@ -563,16 +587,35 @@ export default function einkBridge(pi: ExtensionAPI) {
 					+ (dropped > 0 ? tt(lang, "queue_dropped", dropped) : ""), req);
 				return;
 			}
-			if (action === "qadd" || action === "qedit") {
-				const text = new URLSearchParams(body).get("text") ?? "";
-				if (action === "qadd") {
-					enqueue(text, lang);
-					reply(res, "qadd", tt(lang, "queued_n", queue.length), req);
-					void deliverNext();   // idle right now: no run will settle to pump it
+			if (action === "qadd") {
+				const clipped = (new URLSearchParams(body).get("text") ?? "").trim().slice(0, 2000);
+				if (!clipped) {
+					reply(res, "qadd", tt(lang, "empty_input"), req, 400);
 					return;
 				}
+				if (!ctx) throw new Error("no session context");
+				if (ctx.isIdle()) {
+					// nothing to wait for: send it now and say so, instead of claiming it is
+					// queued and then delivering it a millisecond later
+					await pi.sendUserMessage(clipped, { expandPromptTemplates: true });
+					reply(res, "qadd", tt(lang, "sent"), req);
+					return;
+				}
+				enqueue(clipped, lang);
+				reply(res, "qadd", tt(lang, "queued_n", queue.length), req);
+				return;
+			}
+			if (action === "qrun") {
+				// The reader's way out of "loaded from disk but not armed" (a resumed
+				// session): 开始/恢复投递 is an explicit act, never a side effect.
+				armed = true;
+				reply(res, "qrun", tt(lang, "queue_started"), req);
+				void deliverNext();
+				return;
+			}
+			if (action === "qedit") {
+				const clipped = (new URLSearchParams(body).get("text") ?? "").trim().slice(0, 2000);
 				const idx = findQueued(body);
-				const clipped = text.trim().slice(0, 2000);
 				if (idx < 0) {
 					reply(res, "qedit", tt(lang, "queue_missing"), req, 404);
 					return;
@@ -583,7 +626,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 				}
 				queue[idx].text = clipped;
 				saveQueue();
-				reply(res, "qedit", tt(lang, "queue_edited", queue[idx].i), req);
+				reply(res, "qedit", tt(lang, "queue_edited", idx + 1), req);
 				return;
 			}
 			if (action === "qdel") {
@@ -592,9 +635,9 @@ export default function einkBridge(pi: ExtensionAPI) {
 					reply(res, "qdel", tt(lang, "queue_missing"), req, 404);
 					return;
 				}
-				const [gone] = queue.splice(idx, 1);
+				queue.splice(idx, 1);
 				saveQueue();
-				reply(res, "qdel", tt(lang, "queue_deleted", gone.i), req);
+				reply(res, "qdel", tt(lang, "queue_deleted", idx + 1), req);
 				return;
 			}
 			if (action === "qmove") {
@@ -762,6 +805,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 				pending: ctx ? ctx.hasPendingMessages() : false,
 				// queued = the box's queue, which the page renders and edits
 				queued: queue.length,
+				armed,
 				model: ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
 				thinking: ctx?.thinkingLevel ?? null,
 				context: usage ? { tokens: usage.tokens, window: usage.contextWindow, percent: usage.percent } : null,
@@ -777,6 +821,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 			const body = JSON.stringify({
 				items: queue.map((item) => ({ i: item.i, text: item.text, at: item.at })),
 				pending: ctx ? ctx.hasPendingMessages() : false,
+				armed,
 			});
 			res.writeHead(200, { "Content-Type": "application/json; charset=utf-8", "Cache-Control": "no-store" });
 			res.end(body);
@@ -948,12 +993,16 @@ export default function einkBridge(pi: ExtensionAPI) {
 		},
 	});
 
-	pi.on("session_start", async (_event, sessionCtx) => {
+	pi.on("session_start", async (event, sessionCtx) => {
 		ctx = sessionCtx;
-		// Messages queued before a /reload (or a restart that resumed this session) are
-		// still on disk: load them first, then try to deliver if nothing is running.
+		// The queue is on disk, so it outlives the extension instance: load it, and arm
+		// delivery only when this is a reload (the reader was mid-flight and expects the
+		// messages to keep flowing). A resumed session shows the leftovers on the queue
+		// page instead of running them: three messages queued before a crash must not
+		// execute by themselves a week later.
+		armed = event?.reason === "reload";
 		const restored = loadQueue();
-		if (restored > 0) void deliverNext();
+		if (restored > 0 && armed) void deliverNext();
 		if (server) {
 			// a new session in this process: the registry must name the new id and drop
 			// the old one, or the picker offers a session whose buttons act on this one

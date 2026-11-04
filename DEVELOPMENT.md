@@ -6,8 +6,8 @@
 这份文件记两件事：这个项目分几层长出来、每一层为什么这么选；以及**真正花掉时间的坑**
 在哪儿 —— 大多数不是"写错了代码"，而是"以为改好了但没生效"和"从症状猜错层"。
 
-规模参考：`viewer/server.py` 约 3200 行、`extensions/eink-bridge.ts` 约 1000 行、
-`install.sh` 约 390 行；测试 51 条（Node）+ 243 条（Python，含 HTTP 级用例）。
+规模参考：`viewer/server.py` 约 3300 行、`extensions/eink-bridge.ts` 约 1060 行、
+`install.sh` 约 390 行；测试 55 条（Node）+ 252 条（Python，含 HTTP 级用例）。
 覆盖率：`npm run test:cov` / `npm run test:cov:viewer`，两边都在 90% 行覆盖以上（2026-11 时为
 90.8%、91.4%）；数字以命令输出为准，这里不留快照。
 
@@ -189,8 +189,10 @@ README 曾有 5 处与代码不符：`PI_SESSION_FILE` 写成"优先"（实际�
 - 在会话列表里点任何非运行中的会话，都回到当前会话（那个 id 猜不出来）；
 - 电脑上新开一个 agent 干活，Kindle 突然跳到这个新 agent（回落的落点就是"最新"）。
 
-修法：id 一律从**文件头行的 `session` 行**读（`session_index()`，无缓存；header 解析
-本身按 mtime 缓存，所以一次重建只是目录遍历 + 每个文件一次 `stat`）。同时：
+修法：id 一律从**文件头行的 `session` 行**读（`session_index()`）。一次遍历是目录列举 +
+每个文件一次 `stat`（header 解析本身按 mtime 缓存）；同一个请求会把同一个 id 解析最多四次，
+所以索引只在**一个请求内**缓存（`_INDEX_MEMO`，由 handler 在入口 `begin_request()` 清空），
+绝不跨请求——过期的 id 会被读成“会话没了”，那正是换会话的失败。同时：
 
 - 没有 `session` 头的文件（subagent 的 `*_transcript.jsonl`）不是 pi 会话，不进索引、
   不进列表——之前它们会以文件主干名当 id 出现在列表里，点进去同样回落；
@@ -254,6 +256,29 @@ README 曾有 5 处与代码不符：`PI_SESSION_FILE` 写成"优先"（实际�
 
 教训：**先确认平台给了什么，再设计 UI**。“这些是 pi 的正常功能”里的“正常功能”指的是终端里
 的能力，不等于扩展能看到的数据；一个只靠 `hasPendingMessages()` 的“队列页面”会是另一个假控件。
+
+### 17. 复审挖出来的四个坑（同一个功能的四个面）
+
+写完自认为想清楚了，复审时用真模块写了四条探针，四条全中：
+
+1. **空闲时点“加到排队”，回复说“已排队（第 1 条）”，其实它已经发出去了**——`qadd` 无条件
+   `enqueue` 再 `void deliverNext()`。提示与实际不一致，比不提示更糟。现在空闲时直接发、回“已发送”。
+2. **`session_start` 不区分 reason**：崩溃前排队的三条消息，一周后 `-r` 恢复会话时会自己跑起来。
+   探针里把 `at` 设成 5 天前，`reason: "resume"` 一样触发投递。现在投递要**上弦**：本进程排过东西、
+   或 `reason === "reload"` 才上弦；恢复回来的队列只列出来，页面上多一个 `开始投递`。
+3. **排队文本不展开 prompt/skill**：空闲直发用的是 `expandPromptTemplates: true`，从队列投递用的是
+   裸 `sendUserMessage`，于是排队的 `/skill:foo` 会变成聊天文本发给模型。现在投递也展开
+   （steer 那条补救路径不行——pi 只在空闲发送时展开，这点写进注释）。
+4. **空文本走 `qadd` 得到 500**（“失败：没有输入内容”），而 `say` 是 400。状态码错得不多，但它
+   意味着“服务端出错”，会让读者去查根本没坏的东西。
+
+另外两个只能算体验坑：`at` 缺失时渲染成 `08:00`（epoch 0 的本地时间，一个凭空造的时间戳），
+以及 `/queue` 没有任何刷新手段。后者**不能**用 meta refresh 解决——它和“加一条”输入框同页，
+刷新会冲掉正在输入的内容；改成一个 `刷新` 链接。
+
+教训（补第 10 条“同一个症状多个入口”）：**自己写的功能也要用探针跑一遍四条边界**——空闲/忙、
+reload/恢复、正常文本/命令文本、缺字段/坏字段。上面的 2 和 3 都是“两条看起来等价的路径其实不等价”，
+这类 bug 单元测试不会自己长出来，得先把两条路径并排写出来看。
 
 ---
 
@@ -396,7 +421,7 @@ Node 22+ 跑扩展测试，Python 3 跑 viewer（只是打开页面不需要这�
 
 ```sh
 npm test                 # 扩展：桩化 pi API、临时 HOME、真实 HTTP handler
-npm run test:viewer      # viewer：单元 + HTTP 级强制点（243 条，约 10s）
+npm run test:viewer      # viewer：单元 + HTTP 级强制点（252 条，约 10s）
 npm run test:cov         # 扩展覆盖率（node 自带 reporter）
 npm run test:cov:viewer  # viewer 覆盖率（需 `pip install coverage`）
 ```

@@ -350,6 +350,21 @@ class QueueRendering(unittest.TestCase):
         html = server.queue_html(self.ITEMS, True, SID)
         self.assertIn("电脑端", html)
 
+    def test_no_time_is_shown_when_the_item_has_none(self):
+        # epoch 0 used to render as 08:00, i.e. a made-up timestamp
+        html = server.queue_html([{"i": 1, "text": "x", "at": 0}], False, SID)
+        meta = html.split('class="mono dim">')[1].split("</div>")[0]
+        self.assertEqual(meta, "1")   # position only: no made-up clock
+
+    def test_a_restored_queue_shows_the_deliver_button(self):
+        html = server.queue_html(self.ITEMS, False, SID, armed=False)
+        self.assertIn("/act/qrun", html)
+        self.assertIn("开始投递", html)
+        self.assertIn("不会自己跑", html)
+
+    def test_an_armed_queue_has_no_deliver_button(self):
+        self.assertNotIn("/act/qrun", server.queue_html(self.ITEMS, False, SID))
+
     def test_editing_escapes_the_message_into_the_textarea(self):
         html = server.queue_edit_html(4, "</textarea><script>x</script>", SID)
         self.assertNotIn("</textarea><script>", html)
@@ -413,6 +428,51 @@ class SessionPicker(unittest.TestCase):
         self.assertIn(unique, links)
         for sid in links:
             self.assertTrue(server.session_selected(sid), sid)
+
+
+class IndexMemo(unittest.TestCase):
+    """One request resolves the same id several times; one walk must serve them all.
+    Caching longer than a request would be worse than slow: a stale id reads as "gone",
+    which is the failure that swaps the conversation."""
+
+    def setUp(self):
+        real = server.SESSIONS
+        self.addCleanup(setattr, server, "SESSIONS", real)
+
+        class CountingPath:
+            walks = 0
+
+            def __init__(self, inner):
+                self.inner = inner
+
+            def rglob(self, pattern):
+                CountingPath.walks += 1
+                return self.inner.rglob(pattern)
+
+            def __getattr__(self, name):
+                return getattr(self.inner, name)
+
+        CountingPath.walks = 0
+        self.walks = lambda: CountingPath.walks
+        server.SESSIONS = CountingPath(real)
+        # the per-request memo is only cleared by the HTTP handlers; a test that opens a
+        # request scope has to close it, or the next test gets a stale index
+        self.addCleanup(setattr, server._INDEX_MEMO, "active", False)
+        self.addCleanup(setattr, server._INDEX_MEMO, "value", None)
+        server._INDEX_MEMO.value = None
+
+    def test_repeated_lookups_inside_one_request_walk_once(self):
+        server.begin_request()
+        for _ in range(4):
+            server.session_path_by_id(SID)
+        self.assertEqual(self.walks(), 1)
+
+    def test_direct_calls_outside_a_request_always_rebuild(self):
+        server._INDEX_MEMO.active = False
+        server._INDEX_MEMO.value = None
+        server.session_path_by_id(SID)
+        server.session_path_by_id(SID)
+        self.assertEqual(self.walks(), 2)
 
 
 class NewSessionDiscovery(unittest.TestCase):
