@@ -8,11 +8,28 @@ All notable changes to this project. The format follows
 
 ### Added
 
-- **`+ New session` in the picker** — one tap on a running session's row starts a new
+- **The queue is visible and editable from the page.** While the agent is busy, what the box
+  sends waits in the bridge's own queue (`~/.pi/eink/queue.json`, survives `/reload`); the
+  footer shows `排队中（3）` and `/queue` lists the messages with 上移 / 下移 / 改 / 删, a 加一条
+  box and 清空. One message is delivered per settled run, 停下 drops the queue along with
+  aborting (the same thing Escape does in the TUI) and says how many went.
+- `+ New session` in the picker — one tap on a running session's row starts a new
   session in that session's pi process (`POST /act/new` → the extension's `eink:new`
   command) and lands the page on it. Refused while that session is running, so a stray tap
   cannot throw away a turn. The new id is read from `bridges.json` (same pid, new id),
   because the bridge that answers is the instance being replaced.
+- Bridge `GET /queue` and `POST /act/{qadd,qedit,qdel,qmove,qclear}`; `/state` also reports
+  the count so the footer costs no extra request.
+
+### Changed
+
+- A message sent while the agent is busy no longer goes into pi's queue with
+  `deliverAs: "followUp"`, and the old "messages are already queued" refusal is gone: the
+  box queues several messages and delivers them run by run.
+- **Limitation, stated in the README:** pi's own queue cannot be read or edited from an
+  extension (`ctx.hasPendingMessages()` is a boolean), so messages typed in the terminal
+  during a run are not shown on the queue page. The page says so when pi reports pending
+  messages of its own.
 
 ### Fixed
 

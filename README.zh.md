@@ -13,6 +13,9 @@
 阅读不需要 JavaScript；轮询就地替换消息列表，屏幕不会整页闪烁。agent 干活时 1.2 秒轮询一次，
 空闲时 3 秒。
 
+agent 干活时你发的话不会掉进 pi 那个看不见的队列：它排在盒子自己的队列里，页脚多出
+`排队中（3）` 链接，`/queue` 里列出每一条，可以 上移 / 下移 / 改 / 删（见[排队](#排队)）。
+
 定位：个人自用，一个 viewer、几个会话、自己掌控的网络。它不是多用户服务，也不是沙箱：这个页面
 能驱动一个带 shell 的 agent。
 
@@ -101,7 +104,7 @@ Voyage 只支持 2.4 GHz）。
 |---|---|---|
 | `extensions/eink-bridge.ts` | pi 扩展，加载在每个 pi 进程里 | 发提示词要用进程内 API（`pi.sendUserMessage()`、`ctx.abort()`），外部进程做不到 |
 | `viewer/server.py` | 独立进程（launchd / systemd） | 它只读会话 `.jsonl` 快照，所以 pi 重启后仍在，继续显示最后状态 |
-| `~/.pi/eink/` | 运行状态与密钥，永不入库 | `token`、`pin`、`allow_ips`、`uas`、`bridge.json`、`bridges.json`、`pending.json`、`answer.json`、`view.json`、日志 |
+| `~/.pi/eink/` | 运行状态与密钥，永不入库 | `token`、`pin`、`allow_ips`、`uas`、`bridge.json`、`bridges.json`、`pending.json`、`answer.json`、`view.json`、`queue.json`、日志 |
 
 每个 pi 进程绑自己的 bridge 端口（基数 `8010`，按会话 id 的哈希偏移，撞了往后走），并把自己注册
 进 `~/.pi/eink/bridges.json`。所以一个 viewer 服务所有运行中的会话，把每个按钮代理到该会话自己的
@@ -123,6 +126,23 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 两侧都校验归属，两个检查都必须保留。viewer 只显示 `pid` 与当前渲染会话相符的块
 （`pending_owned_by()`），所以页面永远不会引用别的项目的命令行；bridge 拒绝回答 `pid` 不是自己的
 块（HTTP 409，`eink-bridge.ts:394`），因为 `pending.json` 被所有 pi 进程共享。
+
+### 排队
+
+pi 自己的队列拿不到：扩展 API 只给了 `ExtensionContext.hasPendingMessages(): boolean`。背后那两个
+数组与 `clearQueue()` 在 `AgentSession` 上，只绑给 RPC/JSON 客户端，`queue_update` 事件也只发给他们。
+所以盒子自己持有一份队列（`~/.pi/eink/queue.json`，每个会话一条），pi 那个队列保持空：
+
+- 页面在 agent 忙时发的一切（自由文本，以及 继续 / 审查 / 执行）都进这份队列，而不是交给 pi 当
+  follow-up；
+- 页脚出现 `排队中（3）`，`/queue` 列出每条消息，带 上移 / 下移 / 改 / 删，还有 加一条 与 清空。
+  每行只给能作用于它的按钮：第一条没有 上移，最后一条没有 下移；
+- 每轮运行结束时（`agent_settled`）投递一条，所以这是“跑完这轮再跑那条”的计划，不是运行中的打断；
+- 停下 会连同中止一起清空队列（TUI 里 Escape 就是这样），并说明丢了几条；
+- 这个文件扛得住 `/reload` 与 pi 重启；viewer 重启无所谓，因为 viewer 本身不存队列。
+
+诚实的边界：**在电脑终端里**运行中打的话在 pi 的队列里，这个页面列不出、改不了、也排不了序；
+pi 报告自己有排队消息时，排队页会明说这一点。
 
 ---
 
@@ -159,6 +179,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 | `bridge.json` | bridge | 最近一次心跳，"有没有活着的 bridge" |
 | `view.json` | viewer | 页面最后渲染的会话；没有自己 id 的新页面（书签、重启后第一次打开）落到它上面，之后每个页面都钉住自己解析出的会话 |
 | `bridges.json` | bridge | 会话 id → `{port, pid, cwd, sessionFile, updatedAt}`，60 秒心跳，超过 10 分钟的条目不认 |
+| `queue.json` | bridge | 会话 id → 该会话忙时盒子排下的消息；扛得住 `/reload`，队列空了就删掉这个键 |
 | `pending.json`、`answer.json` | safety-gate 与 bridge | 停住等确认的危险命令，以及页面的裁决 |
 | `bridge.log` | bridge | 某个会话为什么不提供页面，例如端口被占 |
 | `diag.log`、`ua_seen.log` | viewer | 页面 beacon 与被拒的 UA；都在 256 KB 时轮转到 `.1` |
@@ -168,15 +189,16 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 
 viewer 在 `:8000`：`/` 页面骨架（首次访问没有 `?s=` 时会被重定向一次到 `/?s=<id>`，轮询因此停在你
 打开的那个会话上）、`/data` JSON 片段、`/static` 无 JS 兜底（没有 JS 的浏览器表单 POST 落到这里）、
-`/sessions` 选择器（每个运行中的会话后面带一个 `＋新会话` 按钮）、`/theme?d=0|1` 昼夜 cookie、
-`/lang?l=zh|en`、`/diag`、`/glyphs`、`/favicon.png`、`/done/<key>`（从 bridge 的确认页转来），
-以及代理到该会话 bridge 的 `POST /act/<action>`。三个动作是 viewer 本地的：`/act/unlock` 输 pin
-解锁当前网络，`/act/readonly` 退回只读，`/act/new` 在该会话的 pi 进程里新建一个会话（建完直接跳到
-它，会话运行中则拒绝）。
+`/sessions` 选择器（每个运行中的会话后面带一个 `＋新会话` 按钮）、`/queue` 与 `/queue/edit`（排队，
+见上）、`/theme?d=0|1` 昼夜 cookie、`/lang?l=zh|en`、`/diag`、`/glyphs`、`/favicon.png`、
+`/done/<key>`（从 bridge 的确认页转来），以及代理到该会话 bridge 的 `POST /act/<action>`。三个动作
+是 viewer 本地的：`/act/unlock` 输 pin 解锁当前网络，`/act/readonly` 退回只读，`/act/new` 在该会话
+的 pi 进程里新建一个会话（建完直接跳到它，会话运行中则拒绝）。
 
-bridge 在 `:8010`+ 或 `EINK_BRIDGE_PORT`：`GET /`、`/state`，以及
-`POST /act/{stop,continue,review,execute,status,say,approve,deny,new}`。非 loopback 对端只接受
-`stop` 与 `status`；自由文本、审批、提示词与新建会话必须走 viewer 的代理。
+bridge 在 `:8010`+ 或 `EINK_BRIDGE_PORT`：`GET /`、`/state`、`/queue`，以及
+`POST /act/{stop,continue,review,execute,status,say,approve,deny,new,qadd,qedit,qdel,qmove,qclear}`。
+非 loopback 对端只接受 `stop` 与 `status`；自由文本、审批、提示词、新建会话与队列必须走 viewer 的
+代理。
 
 ### 界面语言
 
@@ -221,7 +243,8 @@ token，一旦接受它，嗅到 cookie 的人就能把陌生网络提升成 `fu
 | 你点了 只读 | 除 loopback 外全部 `readonly`，直到输入 pin |
 
 `readonly` 意味着没有自由文本、没有 继续/审查/执行、没有会话选择器（那个列表会暴露机器上每个
-项目），`?s=` 被忽略，只能读默认会话。停掉失控的 agent 故意保留可用：那是唯一不需要密钥也安全的
+项目），`?s=` 被忽略，只能读默认会话；排队页仍然可读，但没有那些按钮（每个动作都只会 403）。
+停掉失控的 agent 故意保留可用：那是唯一不需要密钥也安全的
 动作。只读判定、pin 解锁与每个被代理的动作都写进 `actions.log`。
 
 丢掉 `?s=` 不会让页面乱跳。viewer 把最后渲染的会话记在 `~/.pi/eink/view.json`，任何无法自己指认

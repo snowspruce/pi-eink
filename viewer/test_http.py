@@ -38,13 +38,16 @@ class FakeBridge(BaseHTTPRequestHandler):
     reply_status = 200
     reply_body = b'{"ok": true, "msg": "fake bridge"}'
     reply_headers: list = []
+    # per-path bodies: the viewer asks the bridge for /state on every poll and for
+    # /queue when it renders the queue page, and those are different shapes
+    routes: dict = {}
 
     def _record(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         FakeBridge.seen.append((self.command, self.path, body.decode("utf-8", "replace"),
                                dict(self.headers)))
-        payload = FakeBridge.reply_body
+        payload = FakeBridge.routes.get(self.path.split("?", 1)[0], FakeBridge.reply_body)
         self.send_response(FakeBridge.reply_status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
@@ -395,6 +398,93 @@ class PerPageSession(unittest.TestCase):
         self.assertEqual(status, 200)
         head = data.decode("utf-8").split('<div class="sess">', 1)[0]   # the back link only
         self.assertIn('href="/?s=%s"' % self.B, head)
+
+
+class QueuePage(unittest.TestCase):
+    """The queue page: what the box typed while the agent was busy.
+
+    The list, the count and the buttons all come from the session's bridge - pi's own
+    queue is only a boolean to an extension, so the bridge is the owner and the viewer
+    never keeps a copy of it.
+    """
+
+    SID = "aaaabbbb-1111-2222-3333-444455556666"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        cls.bridge_port = cls.bridge.server_address[1]
+        threading.Thread(target=cls.bridge.serve_forever, daemon=True).start()
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+        cls.bridge.shutdown()
+        cls.bridge.server_close()
+
+    def setUp(self):
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_body = b'{"ok": true, "msg": "fake bridge"}'
+        FakeBridge.reply_headers = []
+        FakeBridge.routes = {
+            "/queue": json.dumps({"items": [{"i": 7, "text": "first", "at": 1767225600000},
+                                            {"i": 9, "text": "second", "at": 1767225660000}],
+                                  "pending": False}).encode(),
+            "/state": json.dumps({"idle": False, "pending": False, "queued": 2}).encode(),
+        }
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(server, "caps_for", lambda _h: "full").start()
+        mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port).start()
+        mock.patch.object(server, "live_bridges", lambda: {}).start()
+
+    def test_the_page_lists_the_queue_with_per_row_controls(self):
+        status, data = request(self.viewer.port, "/queue?s=" + self.SID)
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn("排队中（2 条）", body)
+        self.assertIn("first", body)
+        self.assertIn("second", body)
+        self.assertIn('action="/act/qdel?s=%s"' % self.SID, body)
+        self.assertIn('action="/act/qclear?s=%s"' % self.SID, body)
+        self.assertIn('action="/act/qadd?s=%s"' % self.SID, body)
+        self.assertIn('/queue/edit?s=%s&amp;i=7' % self.SID, body)
+        # a button that cannot act is not rendered: no 上移 on the first row, no 下移
+        # on the last one
+        self.assertEqual(body.count("上移"), 1)
+        self.assertEqual(body.count("下移"), 1)
+
+    def test_the_edit_page_prefills_that_message(self):
+        status, data = request(self.viewer.port, "/queue/edit?s=%s&i=9" % self.SID)
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn("<textarea name=\"text\" rows=\"6\" maxlength=\"2000\">second</textarea>", body)
+        self.assertIn('action="/act/qedit?s=%s"' % self.SID, body)
+        self.assertIn('name="i" value="9"', body)
+
+    def test_an_action_comes_back_to_the_queue_page(self):
+        seen = {}
+        status, _d = request(self.viewer.port, "/act/qdel?s=" + self.SID, "POST", "i=7", out=seen)
+        self.assertEqual(status, 303)
+        self.assertTrue(seen.get("Location", "").startswith("/queue?s=" + self.SID))
+        self.assertIn("msg=", seen.get("Location", ""))
+        self.assertEqual(FakeBridge.seen[0][1], "/act/qdel")
+        self.assertEqual(FakeBridge.seen[0][2], "i=7")
+
+    def test_the_footer_shows_the_count_and_links_to_the_page(self):
+        status, data = request(self.viewer.port, "/data?s=" + self.SID)
+        self.assertEqual(status, 200)
+        foot = json.loads(data)["foot"]
+        self.assertIn("排队中（2）", foot)
+        self.assertIn('href="/queue?s=' + self.SID, foot)
+
+    def test_a_session_without_a_bridge_has_no_queue(self):
+        with mock.patch.object(server, "bridge_port_for", lambda _sid: 0):
+            status, data = request(self.viewer.port, "/queue?s=" + self.SID)
+        self.assertEqual(status, 200)
+        self.assertIn("未在运行", data.decode("utf-8"))
+        self.assertEqual(FakeBridge.seen, [])
 
 
 class Language(unittest.TestCase):

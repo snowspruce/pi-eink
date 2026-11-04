@@ -311,6 +311,51 @@ class RenderPage(unittest.TestCase):
         self.assertIn("no messages yet", frag)
 
 
+class QueueRendering(unittest.TestCase):
+    """The queue page: what the box typed while the agent was busy."""
+
+    ITEMS = [{"i": 4, "text": "first", "at": 1767225600000},
+             {"i": 8, "text": "second", "at": 1767225660000}]
+
+    def test_each_row_offers_only_what_it_can_do(self):
+        html = server.queue_html(self.ITEMS, False, SID)
+        self.assertEqual(html.count("/act/qmove"), 2)   # two rows, one direction each
+        self.assertNotIn('value="-1"', html.split("/act/qmove")[1])  # first row: no 上移
+        self.assertEqual(html.count("/act/qdel"), 2)
+        self.assertIn('value="4"', html)
+        self.assertIn('value="8"', html)
+
+    def test_a_readonly_network_gets_the_list_without_buttons(self):
+        # the mutations would only 403: rendering them is the fake control this
+        # project keeps warning about
+        html = server.queue_html(self.ITEMS, False, SID, "readonly")
+        self.assertIn("first", html)
+        self.assertNotIn("/act/qdel", html)
+        self.assertNotIn("/act/qmove", html)
+        self.assertIn("只读", html)
+
+    def test_an_empty_queue_says_how_to_fill_it(self):
+        html = server.queue_html([], False, SID)
+        self.assertIn("队列空着", html)
+        self.assertIn("/act/qadd", html)
+        self.assertNotIn("/act/qclear", html)   # nothing to clear
+
+    def test_text_is_escaped_and_bounded(self):
+        html = server.queue_html([{"i": 1, "text": "<b>x</b>" + "y" * 900, "at": 0}], False, SID)
+        self.assertNotIn("<b>x</b>", html)
+        self.assertIn("&lt;b&gt;", html)
+        self.assertLess(html.count("y"), 500)
+
+    def test_pi_side_pending_is_admitted_not_hidden(self):
+        html = server.queue_html(self.ITEMS, True, SID)
+        self.assertIn("电脑端", html)
+
+    def test_editing_escapes_the_message_into_the_textarea(self):
+        html = server.queue_edit_html(4, "</textarea><script>x</script>", SID)
+        self.assertNotIn("</textarea><script>", html)
+        self.assertIn("&lt;/textarea&gt;", html)
+
+
 class SessionPicker(unittest.TestCase):
     def test_live_bridges_are_listed_first(self):
         entry = {"port": 8123, "pid": os.getpid(), "cwd": "/tmp/live", "sessionFile": "/tmp/live.jsonl"}

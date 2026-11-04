@@ -83,6 +83,14 @@ const post = async (path, body = "") => {
 	return { status: res.status, json: await res.json().catch(() => null) };
 };
 
+/** The queue the bridge owns, as the viewer reads it to render /queue. */
+const queued = async () => {
+	const res = await fetch(`http://127.0.0.1:${port}/queue`, {
+		headers: { Cookie: `pieink=${TOKEN}`, Accept: "application/json" },
+	});
+	return (await res.json()).items;
+};
+
 const park = (id, pid) => {
 	writeFileSync(PENDING, JSON.stringify({
 		id, pid, reason: "rm -rf on a protected path", command: "rm -rf /tmp/x",
@@ -360,9 +368,128 @@ describe("eink bridge", () => {
 		try {
 			const res = await post("/act/say", "text=" + encodeURIComponent("later"));
 			assert.equal(res.status, 200);
+			assert.match(res.json.msg, /第 1 条|#1/);
 		} finally {
 			ctx.isIdle = wasIdle;
 		}
+		assert.deepEqual((await queued()).map((x) => x.text), ["later"]);
+		await post("/act/qclear");
+	});
+
+	it("lists, reorders, edits and drops what was queued", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=" + encodeURIComponent("first"));
+			const second = await post("/act/qadd", "text=" + encodeURIComponent("second"));
+			assert.match(second.json.msg, /第 2 条|#2/);
+			let items = await queued();
+			assert.deepEqual(items.map((x) => x.text), ["first", "second"]);
+
+			assert.equal((await post("/act/qmove", "i=" + items[1].i + "&d=-1")).status, 200);
+			items = await queued();
+			assert.deepEqual(items.map((x) => x.text), ["second", "first"]);
+
+			const edit = await post("/act/qedit", "i=" + items[0].i + "&text=edited");
+			assert.equal(edit.status, 200);
+			assert.match(edit.json.msg, /已修改第|Updated/);
+			items = await queued();
+			assert.equal(items[0].text, "edited");
+
+			assert.equal((await post("/act/qdel", "i=" + items[0].i)).status, 200);
+			assert.deepEqual((await queued()).map((x) => x.text), ["first"]);
+
+			// an id that is not in the queue is refused, not "deleted something else"
+			assert.equal((await post("/act/qdel", "i=9999")).status, 404);
+			assert.equal((await post("/act/qedit", "i=9999&text=x")).status, 404);
+
+			const cleared = await post("/act/qclear");
+			assert.match(cleared.json.msg, /1/);
+			assert.deepEqual(await queued(), []);
+		} finally {
+			ctx.isIdle = wasIdle;
+			await post("/act/qclear");
+		}
+	});
+
+	it("delivers one queued message per settled run", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=" + encodeURIComponent("one"));
+			await post("/act/qadd", "text=" + encodeURIComponent("two"));
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+		sent = [];
+		await handlers.agent_settled({ aborted: false }, ctx);
+		assert.deepEqual(sent.map((s) => s.text), ["one"]);
+		assert.deepEqual((await queued()).map((x) => x.text), ["two"], "the rest waits for the next run");
+		await handlers.agent_settled({ aborted: false }, ctx);
+		assert.deepEqual(sent.map((s) => s.text), ["one", "two"]);
+		assert.deepEqual(await queued(), []);
+	});
+
+	it("drops the queue when the run is stopped, and says how many", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=a");
+			await post("/act/qadd", "text=b");
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+		sent = [];
+		const res = await post("/act/stop");
+		assert.match(res.json.msg, /丢弃|dropped/);
+		assert.deepEqual(await queued(), []);
+		assert.deepEqual(sent, [], "stop must not immediately start the next run");
+	});
+
+	it("reloads the queue from the file on session_start", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=" + encodeURIComponent("in memory"));
+			// what a /reload (or a resumed session) actually faces: the file is the state
+			writeFileSync(join(EINK, "queue.json"), JSON.stringify({
+				"test-session": [{ i: 99, text: "from the file", at: Date.now() }],
+			}));
+			await handlers.session_start({ reason: "new" }, ctx);
+			assert.deepEqual((await queued()).map((x) => x.text), ["from the file"]);
+		} finally {
+			ctx.isIdle = wasIdle;
+			await post("/act/qclear");
+		}
+		const file = JSON.parse(readFileSync(join(EINK, "queue.json"), "utf8"));
+		assert.equal(file["test-session"], undefined, "an emptied queue leaves no dead entry");
+	});
+
+	it("sends an added message right away when the session is idle", async () => {
+		await post("/act/qclear");
+		sent = [];
+		assert.equal((await post("/act/qadd", "text=" + encodeURIComponent("now"))).status, 200);
+		await new Promise((r) => setTimeout(r, 150));
+		assert.deepEqual(sent.map((s) => s.text), ["now"]);
+		assert.deepEqual(await queued(), []);
+	});
+
+	it("reports the queue count in /state", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try {
+			await post("/act/qadd", "text=x");
+		} finally {
+			ctx.isIdle = wasIdle;
+		}
+		const res = await fetch(`http://127.0.0.1:${port}/state`, { headers: { Cookie: `pieink=${TOKEN}` } });
+		assert.equal((await res.json()).queued, 1);
+		await post("/act/qclear");
 	});
 
 	it("maps /new and refuses a TUI-only built-in", async () => {
@@ -471,6 +598,12 @@ describe("gate", () => {
 	it("treats /state like an action, not like a static page", () => {
 		assert.notEqual(mod.gate("192.168.3.9", "", "/state", "192.168.3.45"), null);
 		assert.equal(mod.gate("127.0.0.1", "", "/state", "192.168.3.45"), null);
+	});
+
+	it("keeps the queue readable only from this machine", () => {
+		// it quotes what the reader typed: same rule as /state and free text
+		assert.notEqual(mod.gate("192.168.3.9", "", "/queue", "192.168.3.45"), null);
+		assert.equal(mod.gate("127.0.0.1", "", "/queue", "192.168.3.45"), null);
 	});
 
 	it("trusts a listed viewer host as a proxy", () => {

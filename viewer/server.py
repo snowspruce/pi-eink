@@ -107,6 +107,24 @@ STRINGS = {
     "new_session": ("\uff0b \u65b0\u4f1a\u8bdd", "+ New session"),
     "new_session_failed": ("\u65b0\u5efa\u4f1a\u8bdd\u672a\u51fa\u73b0\uff08bridge \u6ca1\u4e0a\u62a5\uff09",
                            "The new session did not appear (no bridge reported it)"),
+    "queue": ("\u6392\u961f\u4e2d\uff08%d\uff09", "Queued (%d)"),
+    "queue_title": ("\u6392\u961f\u4e2d\uff08%d \u6761\uff09", "Queued (%d)"),
+    "queue_empty": ("\u961f\u5217\u7a7a\u7740\u3002\u4f1a\u8bdd\u8fd0\u884c\u4e2d\u65f6\uff0c\u8f93\u5165\u6846\u91cc\u53d1\u7684\u8bdd\u4f1a\u6392\u5728\u8fd9\u91cc\u3002",
+                     "Nothing queued. While the agent is busy, what you type waits here."),
+    "queue_external": ("\u7535\u8111\u7aef\u8fd8\u6392\u7740\u6d88\u606f\uff0c\u8fd9\u91cc\u770b\u4e0d\u5230\u4e5f\u6539\u4e0d\u4e86",
+                       "pi also has queued messages from the terminal - not shown or editable here"),
+    "queue_add": ("\u52a0\u5230\u6392\u961f", "Add to queue"),
+    "queue_clear": ("\u6e05\u7a7a\uff08%d\uff09", "Clear (%d)"),
+    "queue_up": ("\u4e0a\u79fb", "Up"),
+    "queue_down": ("\u4e0b\u79fb", "Down"),
+    "queue_edit": ("\u6539", "Edit"),
+    "queue_del": ("\u5220", "Delete"),
+    "queue_save": ("\u4fdd\u5b58", "Save"),
+    "queue_cancel": ("\u53d6\u6d88", "Cancel"),
+    "queue_edit_title": ("\u6539\u6392\u961f\u7b2c %d \u6761", "Edit queued #%d"),
+    "queue_back": ("\u8fd4\u56de\u6392\u961f", "Back to the queue"),
+    "queue_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u961f\u5217",
+                        "This session is not running, so there is no queue"),
     "truncated": ("\u2026 \u5df2\u622a\u65ad\uff08\u5171 %d \u5b57\u7b26\uff09", "\u2026 clipped (%d chars)"),
     "ua_not_allowed": ("ua not allowed\uff08\u5df2\u8bb0\u5f55\uff0c\u53ef\u52a0\u5165 ~/.pi/eink/uas\uff09",
                        "ua not allowed (logged; add it to ~/.pi/eink/uas)"),
@@ -610,8 +628,10 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 # on purpose: cutting a runaway agent loose from an untrusted LAN is the one
 # action that is safe without a secret.
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
+# The queue lives in the session's bridge; these actions read and mutate it.
+QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear"}
 BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny",
-                  "stop", "status", "new"}
+                  "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear"}
 
 
 def action_allowed(caps: str, action: str) -> bool:
@@ -1010,6 +1030,28 @@ def _bridge_opener():
     return urllib.request.build_opener(_NoRedirect)
 
 
+def bridge_queue(port: int = 0):
+    """(items, pi_has_its_own) for the queue this session's bridge holds, or None.
+
+    The bridge owns the queue: pi's own pending messages are a boolean behind
+    ctx.hasPendingMessages() and cannot be listed, edited or reordered from an
+    extension, so what the page below lists is what the box queued itself.
+    """
+    if port <= 0:
+        return None
+    try:
+        req = urllib.request.Request("http://127.0.0.1:%d/queue" % port,
+                                     headers={"Cookie": "%s=%s" % (COOKIE, token()),
+                                              "User-Agent": "viewer"})
+        with _bridge_opener().open(req, timeout=2.0) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        return None
+    return data["items"], bool(data.get("pending"))
+
+
 def agent_state(port: int = 0):
     """Ask the bridge whether the agent is running. None when unavailable."""
     if port <= 0:
@@ -1101,6 +1143,88 @@ def pending_html(sid: str = "", port: int = 0, caps: str = "full", lang: str = "
     ) % (esc(tr("awaiting", lang)), reason, command, suffix, esc(tr("allow", lang)),
          suffix, esc(tr("deny", lang)))
 
+
+def queue_html(items: list, external: bool = False, sid: str = "", caps: str = "full",
+               lang: str = "") -> str:
+    """The queue page: what the box typed while the agent was busy.
+
+    One row per message, with only the controls that can act on that row (no 上移 on
+    the first, no 下移 on the last), because a button that does nothing is a fake
+    control and this device has room for about four of them.
+    """
+    suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    can_edit = caps == "full"
+    rows = []
+    for n, item in enumerate(items):
+        try:
+            ident = int(item.get("i"))
+        except Exception:
+            continue
+        text = str(item.get("text") or "")
+        when = ""
+        try:
+            when = time.strftime("%H:%M", time.localtime(float(item.get("at")) / 1000.0))
+        except Exception:
+            when = ""
+        buttons = ""
+        if can_edit:
+            if n > 0:
+                buttons += ('<form method="POST" action="/act/qmove%s">'
+                            '<input type="hidden" name="i" value="%d">'
+                            '<input type="hidden" name="d" value="-1">'
+                            '<button class="btn" type="submit">%s</button></form>'
+                            % (suffix, ident, esc(tr("queue_up", lang))))
+            if n < len(items) - 1:
+                buttons += ('<form method="POST" action="/act/qmove%s">'
+                            '<input type="hidden" name="i" value="%d">'
+                            '<input type="hidden" name="d" value="1">'
+                            '<button class="btn" type="submit">%s</button></form>'
+                            % (suffix, ident, esc(tr("queue_down", lang))))
+            buttons += ('<a class="btn" href="/queue/edit%s&amp;i=%d">%s</a>'
+                        % (suffix, ident, esc(tr("queue_edit", lang))))
+            buttons += ('<form method="POST" action="/act/qdel%s">'
+                        '<input type="hidden" name="i" value="%d">'
+                        '<button class="btn" type="submit">%s</button></form>'
+                        % (suffix, ident, esc(tr("queue_del", lang))))
+        rows.append('<div class="sess"><div class="mono dim">%d \u00b7 %s</div>'
+                    '<div class="body">%s</div><div class="qacts">%s</div></div>'
+                    % (n + 1, esc(when), esc(text[:400]), buttons))
+    head = '<div class="body"><b>%s</b></div>' % esc(tr("queue_title", lang, len(items)))
+    if external:
+        head += '<div class="body dim">%s</div>' % esc(tr("queue_external", lang))
+    if not items:
+        head += '<div class="body dim">%s</div>' % esc(tr("queue_empty", lang))
+    if not can_edit:
+        return head + "".join(rows) + '<div class="body dim">%s</div>' % esc(tr("readonly_hint", lang))
+    add = ('<form method="POST" action="/act/qadd%s" id="qadd">'
+           '<textarea name="text" rows="2" maxlength="2000" placeholder="%s"></textarea>'
+           '<button class="btn" type="submit">%s</button></form>'
+           % (suffix, esc(tr("queue_add", lang)), esc(tr("queue_add", lang))))
+    clear = ""
+    if items:
+        clear = ('<form method="POST" action="/act/qclear%s">'
+                 '<button class="btn" type="submit">%s</button></form>'
+                 % (suffix, esc(tr("queue_clear", lang, len(items)))))
+    return head + "".join(rows) + add + clear
+
+
+def queue_edit_html(ident: int, text: str, sid: str = "", lang: str = "", pos: int = 0) -> str:
+    """Edit one queued message. Its own page: a textarea per row would not fit.
+
+    `ident` is the item's stable id (what the form posts); `pos` is where it sits now,
+    which is what the reader sees - an id that jumps around after a reorder would be
+    the only number on the page they cannot match to a row.
+    """
+    suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    title = tr("queue_edit_title", lang, pos or ident)
+    return ('<div class="body"><b>%s</b></div>'
+            '<form method="POST" action="/act/qedit%s" id="qadd">'
+            '<input type="hidden" name="i" value="%d">'
+            '<textarea name="text" rows="6" maxlength="2000">%s</textarea>'
+            '<button class="btn" type="submit">%s</button></form>'
+            '<div class="body"><a href="/queue%s">%s</a></div>'
+            % (esc(title), suffix, ident, esc(text),
+               esc(tr("queue_save", lang)), suffix, esc(tr("queue_cancel", lang))))
 
 
 def bridge_alive() -> bool:
@@ -1256,6 +1380,21 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
    only a running process can create a session in its own project. */
 .sess form.new { display: inline-block; vertical-align: middle; margin: 0 0 0 8px; }
 .sess .btn { font-size: 11px; min-height: 20px; padding: 0 6px; line-height: 16px; }
+/* Queue page: one action row per message. `a.btn` has to look like the buttons next
+   to it (改 is a link because editing needs its own page), so it carries the same
+   border and gets `display:inline-block` - the shared `.btn` rule is written for
+   <button>, which is a block-level-ish box in these engines. */
+.qacts { margin-top: 6px; }
+.qacts form { display: inline-block; margin: 0 6px 0 0; line-height: 1; }
+.qacts .btn { font-size: 11px; min-height: 20px; padding: 0 6px; line-height: 16px; }
+a.btn { display: inline-block; text-decoration: none; font-size: 11px;
+  min-height: 20px; padding: 0 6px; line-height: 16px; }
+#qadd { margin-top: 12px; }
+#qadd textarea {
+  display: block; width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
+  font-family: inherit; font-size: 14px; line-height: 1.3;
+  border: 2px solid #000; padding: 4px 8px; margin: 0 0 6px 0; background: #fff; color: #000;
+}
 #note { font-size: 20px; font-weight: bold; padding: 6px 0 0; }
 #result { padding: 3px 8px; font-size: 14px; font-weight: bold; color: #000; min-height: 20px; }
 
@@ -1290,6 +1429,7 @@ hr { border-top-color: #fff; }
 #acts #sayform textarea::placeholder, #acts #sayform input::placeholder { color: #eee; }
 .sess { border-bottom-color: #fff; }
 .sess a { color: #fff; }
+#qadd textarea { background: #000; color: #fff; border-color: #fff; }
 #note, #result { color: #fff; }
 a { color: #fff; }
 """
@@ -2111,16 +2251,26 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
                   else '<a href="/theme?d=1%s">%s</a>' % (more, esc(tr("theme_night", lang))))
     reload_link = '<a href="/%s">%s</a>' % (suffix, esc(tr("redraw", lang)))
     picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions", lang))) if caps == "full" else ""
+    # The queue link is shown while a queue exists and while the agent is busy (then
+    # there is something to queue *into*), never as a bare "0" on every page.
+    queued = 0
+    try:
+        queued = int((state or {}).get("queued") or 0)
+    except Exception:
+        queued = 0
+    queue_link = ""
+    if caps == "full" and sid and (queued > 0 or busy):
+        queue_link = '<a href="/queue%s">%s</a> \u00b7 ' % (suffix, esc(tr("queue", lang, queued)))
     # target language is the other one: the label doubles as the switch
     lang_link = '<a href="/lang?l=%s%s">%s</a>' % (
         "zh" if lang == "en" else "en",
         more,
         esc(tr("lang_switch", lang)))
-    foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
+    foot = queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     if path:
         # the picker lists every project on this machine: not on a read-only network
         picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions_short", lang))) if caps == "full" else ""
-        foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
+        foot = queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     return digest, frag, status, foot, items, busy
 
 
@@ -2761,6 +2911,11 @@ class Handler(BaseHTTPRequestHandler):
                 loc = "/?" + urlencode([("s", str(payload["sid"])), ("msg", text[:60])])
                 self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", loc)])
                 return
+            if action in QUEUE_ACTIONS:
+                # the reader was on the queue page: come back to it, with the outcome
+                loc = "/queue?" + urlencode([("s", post_sid), ("msg", text[:60])])
+                self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", loc)])
+                return
             back = "/static?" + urlencode(keep + [("msg", text[:60])])
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", back)])
             return
@@ -2964,6 +3119,46 @@ class Handler(BaseHTTPRequestHandler):
 
         note = (q.get("msg") or [""])[0]
         note_html = ('<div id="note">%s</div>' % esc(note[:40])) if note else ""
+
+        if u.path in ("/queue", "/queue/edit"):
+            # The queue belongs to the session this page names (the same id the poll and
+            # the buttons carry), and its content comes from that session's bridge: the
+            # viewer keeps no queue state of its own.
+            suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+            got = bridge_queue(port)
+            note_msg = (q.get("msg") or [""])[0][:60]
+            if u.path == "/queue/edit":
+                # the way back from an edit is the queue it came from, not the session
+                back_path = "/queue" + suffix
+                back_label = "queue_back"
+            else:
+                back_path = ("/?" + urlencode(keep)) if keep else "/"
+                back_label = "back_to_session"
+            body = ('<div class="body"><a href="%(back_url)s">%(back)s</a></div>'
+                    '%(note)s%(queue)s')
+            if got is None:
+                inner = '<div class="body dim">%s</div>' % esc(tr("queue_no_bridge", lang))
+            elif u.path == "/queue/edit":
+                want = (q.get("i") or [""])[0]
+                pos, item = next(((n + 1, x) for n, x in enumerate(got[0])
+                                  if str(x.get("i")) == want), (0, None))
+                inner = (queue_edit_html(int(item["i"]), str(item.get("text") or ""),
+                                         sid, lang, pos=pos)
+                         if item else '<div class="body dim">%s</div>' % esc(tr("queue_empty", lang)))
+            else:
+                inner = queue_html(got[0], got[1], sid, caps, lang)
+            page = ("<!DOCTYPE html><html><head>"
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    '<link rel="icon" type="image/png" href="/favicon.png">'
+                    "<style>%(css)s</style></head><body>"
+                    '<div id="wrap">%(body)s</div></body></html>')
+            self._send((page % {"css": css, "body": body % {
+                "back_url": esc(back_path),
+                "back": esc(tr(back_label, lang)),
+                "note": ('<div id="note">%s</div>' % esc(note_msg)) if note_msg else "",
+                "queue": inner}}).encode("utf-8"),
+                       "text/html; charset=utf-8", extra=extra)
+            return
 
         if u.path == "/sessions":
             # The way back is the session this picker was opened from, not "whatever the

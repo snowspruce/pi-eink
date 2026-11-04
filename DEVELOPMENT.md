@@ -6,8 +6,8 @@
 这份文件记两件事：这个项目分几层长出来、每一层为什么这么选；以及**真正花掉时间的坑**
 在哪儿 —— 大多数不是"写错了代码"，而是"以为改好了但没生效"和"从症状猜错层"。
 
-规模参考：`viewer/server.py` 约 3000 行、`extensions/eink-bridge.ts` 约 800 行、
-`install.sh` 约 390 行；测试 45 条（Node）+ 231 条（Python，含 HTTP 级用例）。
+规模参考：`viewer/server.py` 约 3200 行、`extensions/eink-bridge.ts` 约 1000 行、
+`install.sh` 约 390 行；测试 51 条（Node）+ 243 条（Python，含 HTTP 级用例）。
 覆盖率：`npm run test:cov` / `npm run test:cov:viewer`，两边都在 90% 行覆盖以上（2026-11 时为
 90.8%、91.4%）；数字以命令输出为准，这里不留快照。
 
@@ -230,6 +230,31 @@ README 曾有 5 处与代码不符：`PI_SESSION_FILE` 写成"优先"（实际�
 
 改法：JS 里避开取模（`if (x >= n) { x = 0; }`），非用不可就写 `%%`；注释里也不要写 `%`。
 
+### 16. "pi 有队列功能，照抄过来就行"
+
+想得很对，但**扩展拿不到 pi 的队列**。`ExtensionContext` 只有 `hasPendingMessages(): boolean`；
+队列本体（`_steeringMessages` / `_followUpMessages`）和 `clearQueue()` 都在 `AgentSession` 上，
+只绑给 RPC/json 客户端（`clear_queue` 命令），`queue_update` 事件也只发给 `this._eventListeners`
+（即 RPC 流），扩展的 `pi.on()` 里没有这个事件。
+
+所以两条路：要么做一个只有数字的“排队中”徽标和一个点进去什么也改不了的页（假控件，本项目
+最反对的东西），要么盒子自己当队列的主人。选了后者：
+
+- 忙时发的一切进 `~/.pi/eink/queue.json`，不往 pi 的 followUp 队列里塞，pi 那个队列因此是空的
+  （也是为什么电脑端的排队消息“看不到”——真的看不到，不是没做）；
+- 投递点是 `agent_settled`：每一轮结束投一条。`agent_end` 不行，它后面还可能有自动重试 /
+  自动压缩 / 继续，`agent_settled` 才是“pi 不会自己再跑了”；
+- 投递不是 `await` 完就算完：`pi.sendUserMessage()` 返回 void，运行开始是异步的，所以送完
+  一条后 400ms 再查一次忙闲，否则一个被 hook 吃掉的输入会让整个队列永久卡住；
+- 停下 连带清空队列（并报告丢了几条）。理由不是设计偏好：pi 自己的客户端拦截 Esc 的做法就是
+  先 `clear_queue` 再 `abort`，而 pi 的 abort 会继续投递队列——对一个“把活儿全停掉”的按钮来说
+  这是反直觉的；
+- 文件而不是内存：`/reload` 会重建扩展实例（同一个进程新实例），放内存里就丢消息，而 pi 自己
+  的队列能扛过 `/reload`，这是不能倒退的行为。
+
+教训：**先确认平台给了什么，再设计 UI**。“这些是 pi 的正常功能”里的“正常功能”指的是终端里
+的能力，不等于扩展能看到的数据；一个只靠 `hasPendingMessages()` 的“队列页面”会是另一个假控件。
+
 ---
 
 ## 三、排查阶梯（设备打不开时按顺序）
@@ -371,7 +396,7 @@ Node 22+ 跑扩展测试，Python 3 跑 viewer（只是打开页面不需要这�
 
 ```sh
 npm test                 # 扩展：桩化 pi API、临时 HOME、真实 HTTP handler
-npm run test:viewer      # viewer：单元 + HTTP 级强制点（231 条，约 10s）
+npm run test:viewer      # viewer：单元 + HTTP 级强制点（243 条，约 10s）
 npm run test:cov         # 扩展覆盖率（node 自带 reporter）
 npm run test:cov:viewer  # viewer 覆盖率（需 `pip install coverage`）
 ```
