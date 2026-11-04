@@ -318,3 +318,110 @@ p90 那 1.18s 不能全算卡顿：这组间隔混入了「没内容变化就不
 3. **改完先确认生效**（reload / kickstart / 版本号），再谈效果。
 4. **安全加严要成对检查副作用**：加锁定要考虑恢复路径，加 grep 判定要考虑注释。
 5. **跨平台不做字符串假设**：plist、systemd、shell 各有各的语法，判定走各自的解析器。
+
+---
+
+## 六、测试
+
+Node 22+ 跑扩展测试，Python 3 跑 viewer（只是打开页面不需要这两样）。
+
+```sh
+npm test                 # 扩展：桩化 pi API、临时 HOME、真实 HTTP handler
+npm run test:viewer      # viewer：单元 + HTTP 级强制点（188 条，约 7s）
+npm run test:cov         # 扩展覆盖率（node 自带 reporter）
+npm run test:cov:viewer  # viewer 覆盖率（需 `pip install coverage`）
+```
+
+两套都在 90% 行覆盖以上，数字以命令输出为准。
+
+测试固定绑 `18019` 端口，不会和真 bridge 撞；永远不碰 `~/.pi/eink`：HOME 指向临时目录，并先
+清掉 `PI_SESSION_FILE`（pi 会导出这个变量，它的优先级高于临时会话目录）。`test_http.py` 对着
+假 bridge 起真 viewer，在传输层断言：只读对端即使请求到达 handler 也不能打字、动作落在页面正在
+显示的那个会话上、请求不能选中网络没被展示过的会话。`test_render.py` 覆盖不到 socket 的部分：
+markdown → html、一行 → 一个消息块、审批块、bridge 注册表过滤（复用的 pid 不能把死条目续命）、
+会话解析。`test_server.py` 驱动纯判据：按网络的 capability、UA、锁定、信任。
+
+## 七、手动安装（不用 install.sh）
+
+```sh
+mkdir -p ~/.pi/eink
+openssl rand -hex 16 > ~/.pi/eink/token   # 长 token，可给脚本用
+chmod 600 ~/.pi/eink/token
+```
+
+e-ink 上敲 32 位 token 很痛苦，建议再写一个短码代替它：
+
+```sh
+printf '482913\n' > ~/.pi/eink/pin && chmod 600 ~/.pi/eink/pin   # 6 位数字
+```
+
+然后决定**哪些对端可以连接服务**。没有这个文件时只允许 loopback，也就是 Kindle 会拿到 403：
+
+```sh
+cat > ~/.pi/eink/allow_ips <<'EOF'
+# 每行一个 IP 或 CIDR。"#" 开头是注释。loopback 永远允许。
+127.0.0.1
+::1
+192.168.0.0/16
+EOF
+```
+
+viewer 和 bridge 读同一个文件，所以两边永远一致（`EINK_ALLOW_IPS` 只是文件缺失时的兜底）。
+
+再决定**在哪儿可以打字**：把当前网络写进 `~/.pi/eink/trust.json`，否则首次访问是只读，直到输入
+pin：
+
+```json
+{ "confirmed": ["192.168.1.0/24"], "peers": ["192.168.1.0/24"], "readonly": false }
+```
+
+`install.sh` 会按当前网络替你生成这份文件。
+
+### 装 pi 扩展
+
+推荐让 pi 管理这个仓库。本地源就地加载，不复制任何东西，`git pull` 就是更新方式：
+
+```sh
+pi install ~/pi-eink          # 把条目写进 ~/.pi/agent/settings.json
+pi list                       # 应列出 ~/pi-eink 及其解析后的路径
+```
+
+`pi install` 记录的是**相对 settings 文件**的路径（`../../Documents/...` 这种），这是正常的。
+不要在 `~/.pi/agent/extensions/` 再放一份 `eink-bridge.ts`：两份都会加载，一个会话会绑两个
+bridge 端口并重复响应同一个按钮。
+
+**本地目录还是 `git:` 源？** 对扩展来说都行，但只有本地克隆能同时承载 viewer 服务：
+`git:github.com/you/pi-eink` 会被克隆到 `~/.pi/agent/git/...`，那棵树由 pi 拥有并在更新时重写
+（`git reset --hard`、`git clean -fdx`，路径按 ref 生成）。把 launchd 或 systemd 指过去，下次
+`pi update --extensions` 单元就坏了。用一个自己控制的克隆，把 `git pull` + 重启服务当作更新路径。
+
+确认扩展已生效：启动 pi，然后看 `~/.pi/eink/bridges.json`——运行中的会话应带着自己的端口出现在
+里面。没有的话，`~/.pi/eink/bridge.log` 会说原因。
+
+### 跑 viewer
+
+先在前台试：
+
+```sh
+EINK_PORT=8000 python3 ~/pi-eink/viewer/server.py
+```
+
+打开一次 `http://<host>:8000/?k=$(cat ~/.pi/eink/token)` 种下 `pieink` cookie，之后
+`http://<host>:8000/` 就能直接用。Kindle 上可以用 `?k=<pin>` 代替长 token。
+
+常驻用 launchd（macOS）：把 `service/com.example.pi-eink.plist.example` 拷到
+`~/Library/LaunchAgents/`，替换所有 `/path/to/pi-eink` 和 python 路径，然后：
+
+```sh
+launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.$(whoami).pi-eink.plist
+```
+
+Linux 用 `service/pi-eink.service.example`（`systemctl --user enable --now pi-eink`）。两种都注意：
+`git pull` **不会**重启 viewer——单元只保证进程活着，不重载代码。更新后要：
+
+```sh
+launchctl kickstart -k "gui/$(id -u)/com.$(whoami).pi-eink"   # macOS，与 install.sh 的 label 一致
+systemctl --user restart pi-eink                              # Linux
+```
+
+e-ink 注意：宿主睡眠时页面会变黑。第二个 launchd 单元里跑 `caffeinate -s`，接电源时保持唤醒。
