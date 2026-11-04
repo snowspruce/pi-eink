@@ -15,6 +15,7 @@ import datetime
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import struct
@@ -111,6 +112,7 @@ STRINGS = {
     "readonly_need_pin": ("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c",
                           "Read-only network (locked): enter the PIN to type or run"),
     "session_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff08\u6ca1\u6709\u53ef\u7528\u7684 bridge\uff09", "This session has no bridge"),
+    "unknown_action": ("\u672a\u77e5\u52a8\u4f5c", "Unknown action"),
     "bridge_not_running": ("bridge \u672a\u6fc0\u6d3b\uff1a%s", "bridge not running: %s"),
     "bridge_not_running_short": ("bridge \u672a\u6fc0\u6d3b", "bridge not running"),
     "failed": ("\u5931\u8d25\uff1a", "Failed: "),
@@ -153,6 +155,10 @@ _UA_SEEN = set()
 _FAILS = {}    # ip -> (wrong guesses, window start)
 _BLOCKED = {}  # ip -> unix time until which auth is refused
 _COOKIE_REFRESH = {}  # ip -> unix time the cookie was last re-issued
+# A pin login seeds a random secret here, never the token itself: the token
+# also authenticates install.sh and the bridge, and it survives a pin change.
+_PIN_SESSIONS = {}  # random per-session secret -> unix time it was minted
+_PIN_LOCK = threading.Lock()
 # Devices allowed to use the page: ~/.pi/eink/uas, one substring per line.
 # A UA is trivially spoofable: this is a speed bump in front of the token, not a boundary.
 
@@ -511,6 +517,10 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 # on purpose: cutting a runaway agent loose from an untrusted LAN is the one
 # action that is safe without a secret.
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
+BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny",
+                  "stop", "status"}
+
+
 def action_allowed(caps: str, action: str) -> bool:
     """The enforcement point for read-only networks, kept pure so the gate itself is
     unit-tested and not only the decision that feeds it."""
@@ -751,9 +761,14 @@ def log_action(ip: str, caps: str, action: str, status: int, sid: str = "") -> N
     try:
         if ACTION_LOG.exists() and ACTION_LOG.stat().st_size > 1_000_000:
             os.replace(ACTION_LOG, str(ACTION_LOG) + ".1")
+        # sid/action come from the request line: control characters would forge
+        # records (a %0D%0A in ?s= used to split one action into two lines)
+        clean_sid = _diag_clean(sid, 8)
+        clean_action = _diag_clean(action, 64)
         with ACTION_LOG.open("a") as fh:
             fh.write("%s\tip=%s\tcaps=%s\tsid=%s\taction=%s\tstatus=%d\n" % (
-                time.strftime("%Y-%m-%d %H:%M:%S"), ip, caps, sid[:8], action, status))
+                time.strftime("%Y-%m-%d %H:%M:%S"), ip, caps, clean_sid, clean_action,
+                status))
     except Exception:
         pass
 
@@ -893,6 +908,15 @@ def usage_totals(rows: list) -> dict:
 SPIN = ("[-]", "[\\]", "[|]", "[/]")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None  # never follow a bridge redirect: it would carry the token
+
+
+def _bridge_opener():
+    return urllib.request.build_opener(_NoRedirect)
+
+
 def agent_state(port: int = 0):
     """Ask the bridge whether the agent is running. None when unavailable."""
     if port <= 0:
@@ -901,7 +925,7 @@ def agent_state(port: int = 0):
         req = urllib.request.Request("http://127.0.0.1:%d/state" % (port or bridge_port()),
                                      headers={"Cookie": "%s=%s" % (COOKIE, token()),
                                               "User-Agent": "viewer"})
-        with urllib.request.urlopen(req, timeout=1.0) as resp:
+        with _bridge_opener().open(req, timeout=1.0) as resp:
             return json.loads(resp.read())
     except Exception:
         return None
@@ -1587,9 +1611,22 @@ def table_cells(line: str) -> list:
 INLINE_FENCE = re.compile(r"```([^`\n]{1,400}?)```")
 
 
-def md(text: str) -> str:
+def md(text) -> str:
     """Small markdown subset -> html: fences, tables, headings, lists, quotes,
-    rules, bold/italic/strike/code/links. Input is raw text."""
+    rules, bold/italic/strike/code/links. Input is raw text.
+
+    `text` is typed loosely on purpose: a session row may carry a JSON object where a
+    string was expected (a tool that logs structured output), and `(text or "").replace`
+    raised AttributeError -> every page of that session returned 500 until the file was
+    edited by hand. Coerce instead of trusting the transcript.
+    """
+    if text is None:
+        text = ""
+    elif not isinstance(text, str):
+        try:
+            text = json.dumps(text, ensure_ascii=False)
+        except Exception:
+            text = str(text)
     # normalise line endings: CRLF left a stray \r inside <li> and pre blocks
     raw = ANSI.sub("", (text or "").replace("\r\n", "\n").replace("\r", "\n"))
     # a single-line ```x``` is a code block, not three stray backticks
@@ -1707,9 +1744,12 @@ def block_text(block: dict) -> tuple[str, str]:
     """Return (kind, text) for one content block."""
     t = block.get("type")
     if t == "text":
-        return "text", block.get("text", "")
+        # tool output is not always a string (a dict/number showed up in a
+        # session once); md()/esc() only accept str, so coerce instead of 500ing
+        # every page until the row scrolls out of the file
+        return "text", as_text(block.get("text", ""))
     if t == "thinking":
-        return "thinking", block.get("thinking") or block.get("text", "")
+        return "thinking", as_text(block.get("thinking") or block.get("text", ""))
     if t == "toolCall":
         name = block.get("name") or block.get("toolName") or "tool"
         args = block.get("arguments") or block.get("args") or block.get("input") or {}
@@ -1725,6 +1765,19 @@ def clip(text: str, limit: int) -> str:
     if limit and len(text) > limit:
         return text[:limit] + "\n... [%d chars clipped]" % (len(text) - limit)
     return text
+
+
+def as_text(value) -> str:
+    """A session row can carry a non-string where text is expected (a tool that
+    returned a JSON object): render it as JSON instead of crashing the page."""
+    if isinstance(value, str):
+        return value
+    if not value:
+        return ""
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except Exception:
+        return str(value)
 
 
 ROWS_CACHE = [None, [], {}]   # (path, mtime, size) -> rows, usage totals
@@ -1968,18 +2021,44 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
 ACTIONS = ["stop", "continue", "review", "execute", "status"]   # labels live in STRINGS
 
 
-def cookie_value(ttl: int = COOKIE_MAX_AGE) -> str:
-    return "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (COOKIE, token(), ttl)
+def cookie_value(value: str = "", ttl: int = COOKIE_MAX_AGE) -> str:
+    return "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (
+        COOKIE, value or token(), ttl)
 
 
-def cookie_refresh(ip: str) -> list:
+def pin_session_value() -> str:
+    """Mint the cookie secret for a pin login. Random and per-session: the
+    six-digit pin is a convenience factor for the Kindle, and handing out the
+    token for it made one lucky guess worth the master credential."""
+    now = time.time()
+    with _PIN_LOCK:
+        for stale in [k for k, at in _PIN_SESSIONS.items() if now - at > COOKIE_MAX_AGE]:
+            _PIN_SESSIONS.pop(stale, None)
+        if len(_PIN_SESSIONS) > 256:
+            _PIN_SESSIONS.pop(min(_PIN_SESSIONS, key=_PIN_SESSIONS.get), None)
+        value = secrets.token_hex(16)
+        _PIN_SESSIONS[value] = now
+    return value
+
+
+def pin_session_ok(value) -> bool:
+    if not value:
+        return False
+    with _PIN_LOCK:
+        at = _PIN_SESSIONS.get(value)
+    return at is not None and time.time() - at <= COOKIE_MAX_AGE
+
+
+def cookie_refresh(ip: str, current: str = "") -> list:
     """Rolling expiry: a page polled every few seconds must not ask for the pin
     again, but a cookie left on a lost Kindle stops working within a week."""
     now = time.time()
     if now - _COOKIE_REFRESH.get(ip, 0) < 3600:
         return []
     _COOKIE_REFRESH[ip] = now
-    return [("Set-Cookie", cookie_value())]
+    # a pin session is refreshed with its own secret: re-issuing the token
+    # here would promote a six-digit login to the master credential
+    return [("Set-Cookie", cookie_value(current or token()))]
 
 
 def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = "") -> str:
@@ -2038,6 +2117,10 @@ def auth_page(msg: str, dark: bool = False) -> str:
 
 
 class Handler(BaseHTTPRequestHandler):
+    # one thread per connection and no keep-alive: a client that opens a socket
+    # and never finishes its request line holds the thread (and its fd) forever
+    timeout = 30
+
     def log_message(self, *a):
         pass
 
@@ -2072,7 +2155,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def _clear_fails(self, ip: str) -> None:
         with _AUTH_LOCK:
-            touched = _FAILS.pop(ip, None) is not None or _BLOCKED.pop(ip, None) is not None
+            # both pops must run: `or` short-circuits, and a lockout always
+            # leaves an entry in _FAILS, so the block survived a successful
+            # login and kept refusing the weaker credential for ten minutes
+            had_fails = _FAILS.pop(ip, None) is not None
+            had_block = _BLOCKED.pop(ip, None) is not None
+            touched = had_fails or had_block
         if touched:
             save_fails()
 
@@ -2095,9 +2183,11 @@ class Handler(BaseHTTPRequestHandler):
         """Return (ok, headers-to-set, reason). Cookie, or ?k=<token> which sets the cookie."""
         extra = []
         ip = client_ip(self)
-        # Credentials are checked before the lockout, so a correct token/pin always
-        # recovers: locking the door in front of the key was how a token rotation
-        # locked the reader out for ten minutes.
+        # The token is checked before the lockout on purpose: after a token
+        # rotation the reader must not be locked out of their own page for ten
+        # minutes. Weaker credentials - the 6-digit pin, a stale cookie - wait
+        # the block out: compared mid-block, a correct pin was a lucky guess
+        # that walked straight in, and the lockout only slowed the guessing.
         lang = lang_of(self)
         ok_ip, why = ip_allowed(ip, local_ip(self))
         if not ok_ip:
@@ -2112,24 +2202,40 @@ class Handler(BaseHTTPRequestHandler):
         want = token()
         if not want:
             return False, extra, "token file missing or empty"
-        if parse_cookies(self.headers.get("Cookie", "")).get(COOKIE) == want:
-            self._clear_fails(ip)
-            return True, extra + cookie_refresh(ip), ""
+        have = parse_cookies(self.headers.get("Cookie", "")).get(COOKIE)
         given = (q.get("k") or [""])[0]
-        if given and given in ((want,) if NO_PIN else (want, pin())):
+        if have and have == want:
+            self._clear_fails(ip)
+            return True, extra + cookie_refresh(ip, have), ""
+        if given == want:
             self._clear_fails(ip)
             _COOKIE_REFRESH[ip] = time.time()
             extra.append(("Set-Cookie", cookie_value()))
             return True, extra, ""
+        if have and pin_session_ok(have):
+            # a pin login holds a session secret, not the token: it stays
+            # valid for the same week but is worthless anywhere else
+            self._clear_fails(ip)
+            return True, extra + cookie_refresh(ip, have), ""
 
         # A guess is a ?k= attempt or a cookie that does not match. A request with
         # no credential at all is an anonymous probe and must not count, or anyone
         # could lock the real device out by polling it.
-        presented = bool(given) or COOKIE in parse_cookies(self.headers.get("Cookie", ""))
+        presented = bool(given) or have is not None
+        until = _BLOCKED.get(ip, 0)
+        blocked = until > time.time()
+        # The block is authoritative for everything weaker than the token, so
+        # the pin is only compared once it cannot matter: accepting a correct
+        # pin mid-block meant five guesses bought ten minutes of unlimited
+        # guessing at full speed.
+        if not blocked and not NO_PIN and given and given == pin():
+            self._clear_fails(ip)
+            _COOKIE_REFRESH[ip] = time.time()
+            extra.append(("Set-Cookie", cookie_value(pin_session_value())))
+            return True, extra, ""
         if presented:
             self._note_fail(ip, guess=bool(given))
-        until = _BLOCKED.get(ip, 0)
-        if until > time.time():
+        if blocked:
             return False, extra, tr("too_many", lang, max(1, round((until - time.time()) / 60)))
         return False, extra, "bad or missing token"
 
@@ -2151,7 +2257,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def _fail(self, err: Exception) -> None:
         try:
-            print("%s ERROR %s %s: %s" % (time.strftime("%H:%M:%S"), self.path,
+            # path only, never the query: the credential travels in ?k=, and a
+            # traceback into server.log must not archive it
+            print("%s ERROR %s %s: %s" % (time.strftime("%H:%M:%S"), urlparse(self.path).path,
                                           type(err).__name__, err), flush=True)
             self._send(("error: %s" % type(err).__name__).encode("utf-8"),
                        "text/plain; charset=utf-8", 500)
@@ -2166,19 +2274,26 @@ class Handler(BaseHTTPRequestHandler):
             return
         # Actions are rare, and a tap that never reaches the server leaves no other
         # trace: the Kindle has no console. server.log is the only place to look.
-        print("%s POST %s ip=%s ua=%s" % (time.strftime("%H:%M:%S"), u.path,
-                                          client_ip(self), (self.headers.get("User-Agent") or "-")[:40]),
+        # the path is attacker bytes: strip control characters or a terminal
+        # tailing server.log could be fed escape sequences
+        print("%s POST %s ip=%s ua=%s" % (time.strftime("%H:%M:%S"), _diag_clean(u.path, 300),
+                                          client_ip(self), _diag_clean(self.headers.get("User-Agent") or "-", 40)),
               flush=True)
         ok, extra, reason = self._authorized(q)
         if not ok:
-            print("%s DENY %s ip=%s reason=%s" % (time.strftime("%H:%M:%S"), u.path,
+            print("%s DENY %s ip=%s reason=%s" % (time.strftime("%H:%M:%S"), _diag_clean(u.path, 300),
                                                   client_ip(self), reason), flush=True)
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
             return
 
         raw_len = (self.headers.get("Content-Length") or "").strip()
-        length = int(raw_len) if raw_len.isdigit() else 0
+        try:
+            length = int(raw_len) if raw_len.isdigit() else 0
+        except ValueError:
+            # superscripts and other unicode digits pass str.isdigit() but are
+            # not ints; this used to 500 the request instead of ignoring it
+            length = 0
         body = self.rfile.read(length) if 0 < length <= 8192 else b""
 
         ip = client_ip(self)
@@ -2223,6 +2338,11 @@ class Handler(BaseHTTPRequestHandler):
             save_trust(state)
             back(tr("now_readonly", lang))
             return
+        if action not in BRIDGE_ACTIONS:
+            # The path segment is client-controlled and used to be forwarded
+            # verbatim; the bridge re-parses it, so the two must not disagree.
+            back(tr("unknown_action", lang), 404)
+            return
         if not action_allowed(caps, action):
             back(tr("readonly_need_pin", lang), 403)
             return
@@ -2233,7 +2353,10 @@ class Handler(BaseHTTPRequestHandler):
         # Route to the session the page displays. In read-only mode ?s= is ignored
         # entirely (no choosing another session's history), so the id comes from the
         # rendered page rather than from the request.
-        post_sid = (sid_hint if caps == "full" else "") or rendered_session_id()
+        # The ?s= hint is not honoured even at full caps: a request that could
+        # name any live session would let one credential steer every project's
+        # agent, so routing always follows the session the viewer renders.
+        post_sid = rendered_session_id()
         if not post_sid:
             # approval requests belong to whichever session parked them: match its pid
             try:
@@ -2249,11 +2372,13 @@ class Handler(BaseHTTPRequestHandler):
             # Never fall back to BRIDGE_PORT: that is a different process, or nothing
             back(tr("session_no_bridge", lang), 502)
             return
-        target = "http://127.0.0.1:%d%s" % (port_target, u.path)
+        target = "http://127.0.0.1:%d/act/%s" % (port_target, action)
         req = urllib.request.Request(target, data=body, method="POST")
         # forward credentials: the bridge gates on the same cookie
         if self.headers.get("Cookie"):
-            req.add_header("Cookie", self.headers["Cookie"])
+            # rebuilt from the server's own token: a client Cookie header must not
+            # travel to the bridge (or anywhere a redirect might point)
+            req.add_header("Cookie", "%s=%s" % (COOKIE, token()))
         req.add_header("User-Agent", self.headers.get("User-Agent") or "")
         # Always ask the bridge for JSON, whatever the browser sent: the outcome is
         # data (status + msg), while the bridge's HTML redirect leads to a /done/
@@ -2265,11 +2390,7 @@ class Handler(BaseHTTPRequestHandler):
         if body:
             req.add_header("Content-Type",
                            self.headers.get("Content-Type") or "application/x-www-form-urlencoded")
-        class _NoRedirect(urllib.request.HTTPRedirectHandler):
-            def redirect_request(self, *args, **kwargs):
-                return None  # surface the 3xx as HTTPError so we can relay it
-
-        opener = urllib.request.build_opener(_NoRedirect)
+        opener = _bridge_opener()
         status, resp_body, resp_headers = 502, b"", []
         try:
             with opener.open(req, timeout=10) as resp:
@@ -2419,13 +2540,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if u.path.startswith("/done/"):
-            target = "http://127.0.0.1:%d%s" % (bridge_port(), self.path)
+            # rebuilt from validated parts: the bridge only knows /done/<key>?m=
+            done_key = quote(u.path[len("/done/"):].split("?", 1)[0], safe="")
+            done_msg = (q.get("m") or [""])[0]
+            target = "http://127.0.0.1:%d/done/%s?%s" % (bridge_port(), done_key,
+                                                         urlencode({"m": done_msg}))
             req = urllib.request.Request(target)
             if self.headers.get("Cookie"):
-                req.add_header("Cookie", self.headers["Cookie"])
+                # authenticate to the bridge, but never relay an arbitrary client
+                # Cookie header onto a hop the viewer did not choose
+                req.add_header("Cookie", "%s=%s" % (COOKIE, token()))
             req.add_header("User-Agent", self.headers.get("User-Agent") or "")
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
+                with _bridge_opener().open(req, timeout=10) as resp:
                     self._send(resp.read(), "text/html; charset=utf-8", extra=extra)
             except Exception:
                 self._send(auth_page(tr("bridge_not_running_short", lang), self._dark()).encode("utf-8"),

@@ -215,6 +215,20 @@ class RenderPage(unittest.TestCase):
         self.assertEqual(len(items), 2)
         self.assertTrue(digest)
 
+    def test_non_string_text_block_does_not_break_the_page(self):
+        """A session row whose text block is a JSON object used to 500 the whole page."""
+        path = write_session("--render-obj--", "s.jsonl", [
+            {"type": "session", "id": SID, "cwd": "/tmp/demo"},
+            {"type": "message", "id": "m1", "timestamp": "t1",
+             "message": {"role": "assistant",
+                         "content": [{"type": "text", "text": {"weird": "object"}}]}},
+        ])
+        try:
+            _d, frag, _s, _f, _i, _b = server.render(path, 20, False, False)
+            self.assertIn("weird", frag)      # rendered as JSON, not a crash
+        finally:
+            clean("--render-obj--")
+
     def test_limit_keeps_the_tail(self):
         _d, frag, _s, _f, items, _b = server.render(self.path, 1, False, False)
         self.assertEqual(len(items), 1)
