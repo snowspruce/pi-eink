@@ -117,6 +117,32 @@ class IpGate(unittest.TestCase):
             (EINK / "allow_ips").write_text("127.0.0.1\n")
 
 
+class Discovery(unittest.TestCase):
+    """The Kindle cannot resolve .local and must not need a router-reserved address, so
+    it broadcasts and uses the reply's source address. This side only has to answer."""
+
+    def test_answers_the_probe_with_the_tcp_port(self):
+        self.assertEqual(server.discovery_answer(b"PI-EINK-DISCOVER?", 8000),
+                         b"PI-EINK-HERE 8000")
+
+    def test_stays_quiet_for_anything_else(self):
+        for junk in (b"", b"GET / HTTP/1.0", b"PI-EINK-DISCOVER? extra", b"\x00" * 20):
+            self.assertEqual(server.discovery_answer(junk, 8000), b"", junk)
+
+    def test_the_loop_replies_on_the_wire(self):
+        import socket, struct, threading, time
+        port = 18099
+        threading.Thread(target=server.discovery_loop, args=(port, 8000), daemon=True).start()
+        time.sleep(0.3)
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        s.settimeout(2.0)
+        s.sendto(b"PI-EINK-DISCOVER?", ("127.0.0.1", port))
+        data, _peer = s.recvfrom(64)
+        s.close()
+        self.assertEqual(data, b"PI-EINK-HERE 8000")
+
+
 class ClientIdentity(unittest.TestCase):
     """Behind the public entry every request comes from loopback: without the proxy's
     X-Real-IP the log says 127.0.0.1 and caps_for() hands the internet "full"."""

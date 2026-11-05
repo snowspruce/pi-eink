@@ -12,21 +12,24 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 SDK="${ANDROID_SDK:-${ANDROID_HOME:-$HOME/Library/Android/sdk}}"
-BT="$SDK/build-tools/34.0.0"
+# Newest build-tools available: d8 in 34.0.0 crashes on the empty-string constant javac 17+
+# emits (NullPointerException: Cannot invoke "String.length()"), 35.0.0 handles it.
+BT=$(ls -d "$SDK"/build-tools/* 2>/dev/null | sort -V | tail -1)
 AJ="$SDK/platforms/android-19/android.jar"
 : "${JAVA_HOME:=}"
 [ -n "$JAVA_HOME" ] && PATH="$JAVA_HOME/bin:$PATH"
 
 for f in "$BT/aapt2" "$BT/d8" "$BT/apksigner" "$AJ"; do
-  [ -e "$f" ] || { echo "缺少 $f（ANDROID_SDK 指错了？需要 build-tools/34.0.0 + platforms/android-19）" >&2; exit 1; }
+  [ -e "$f" ] || { echo "缺少 $f（ANDROID_SDK 指错了？需要 build-tools/* + platforms/android-19）" >&2; exit 1; }
 done
+echo "build-tools: $BT"
 
 rm -rf out && mkdir -p out/classes out/dex
 javac -nowarn -source 8 -target 8 -bootclasspath "$AJ" -d out/classes \
   src/ink/eink/kiosk/Kiosk.java 2>&1 | grep -vE "warning|bootstrap" || true
 
 "$BT/aapt2" link -o out/base.apk --manifest AndroidManifest.xml -I "$AJ" \
-  --min-sdk-version 19 --target-sdk-version 19 --version-code 1 --version-name 1.0
+  --min-sdk-version 19 --target-sdk-version 19 --version-code "${VERSION_CODE:-10}" --version-name "${VERSION_NAME:-1.0}"
 "$BT/d8" --min-api 19 --lib "$AJ" --output out/dex/ $(find out/classes -name '*.class')
 
 python3 - <<'PY'

@@ -3225,6 +3225,14 @@ class Handler(BaseHTTPRequestHandler):
                 _UA_SEEN.add(seen)
                 print("UA %s %s" % seen, flush=True)
 
+        if u.path == "/whois":
+            # Claimed identity for LAN discovery, deliberately above the token and OTP
+            # gates: a device that has no mDNS (Android 4.4) and must not depend on a
+            # router-reserved address scans its own /24 for this one line. It reveals
+            # nothing but "the page server is here, on this port".
+            self._send(("PI-EINK %d" % PORT).encode("utf-8"), "text/plain; charset=utf-8")
+            return
+
         ok, extra, reason = self._authorized(q)
         if not ok:
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
@@ -3494,8 +3502,58 @@ def git_head() -> str:
         return "?"
 
 
+DISCOVERY_PORT = int(os.environ.get("EINK_DISCOVERY_PORT", "8099"))
+DISCOVERY_ASK = b"PI-EINK-DISCOVER?"
+_DISCOVERY_SEEN = [0]
+DISCOVERY_ANSWER = b"PI-EINK-HERE"
+
+
+def discovery_answer(payload: bytes, tcp_port: int = PORT) -> bytes:
+    """What to reply to a broadcast probe, or b"" to stay quiet.
+
+    The reader device cannot resolve .local (no mDNS on Android 4.4) and must not depend
+    on a router-reserved address, so it broadcasts and uses the *source* address of the
+    reply: whoever answered is the machine to load the page from. That means this side
+    never has to know its own LAN address.
+    """
+    if payload.strip() != DISCOVERY_ASK:
+        return b""
+    return DISCOVERY_ANSWER + b" " + str(int(tcp_port)).encode()
+
+
+def discovery_loop(port: int = DISCOVERY_PORT, tcp_port: int = PORT):
+    """Answer LAN probes forever. One datagram in, one out - no state to corrupt."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        sock.bind(("", port))
+    except Exception as exc:
+        print("discovery: cannot bind udp/%d (%s)" % (port, exc), flush=True)
+        return
+    print("discovery: answering broadcasts on udp/%d" % port, flush=True)
+    while True:
+        try:
+            data, peer = sock.recvfrom(256)
+        except Exception:
+            continue
+        answer = discovery_answer(data, tcp_port)
+        if not answer:
+            if _DISCOVERY_SEEN[0] < 5:
+                _DISCOVERY_SEEN[0] += 1
+                print("discovery: ignored %r from %s" % (data[:40], peer[0]), flush=True)
+            continue
+        if _DISCOVERY_SEEN[0] < 5:
+            _DISCOVERY_SEEN[0] += 1
+            print("discovery: answered %s" % (peer[0],), flush=True)
+        try:
+            sock.sendto(answer, peer)
+        except Exception:
+            pass
+
+
 def main():
     load_fails()
+    threading.Thread(target=discovery_loop, daemon=True).start()
     srv = ThreadingHTTPServer((BIND, PORT), Handler)
     print("listening on http://%s:%d/ (file: %s, rev: %s, session: %s)"
           % (BIND, PORT, Path(__file__).resolve(), git_head(), newest_session()), flush=True)

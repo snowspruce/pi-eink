@@ -41,15 +41,31 @@ adb install -r out/kiosk.apk
 
 APK 约 12 KB，装在 `/data`（不是系统应用），`adb uninstall ink.eink.kiosk` 即可回退。
 
-## 指向哪个地址
+## 地址从哪来（不依赖路由器）
 
-在家优先走 **LAN 直连**（`~/bin/eink-kiosk` 会算好地址）：
+换网络时 IP 会变，设备又解析不了 `.local`（Android 4.4 没有 mDNS），所以地址是自己找的：
 
-```
-http://<Mac 的 LAN IP>:8000/?k=<token>
-```
+1. **显式 intent**（`eink-kiosk` 从 Mac 推过来）
+2. **上次用过的地址**
+3. **LAN 广播** `PI-EINK-DISCOVER?` → viewer 回 `PI-EINK-HERE <port>`，用回包的源地址
+4. **扫本机 /24**：GET `http://<ip>:8000/whois`，回 `PI-EINK 8000` 的那台就是
+5. **公网地址** `https://eink.blueberry.cafe/`（出门时的路）
 
-比起公网域名，这条路省掉跨境隧道（RTT 从 250ms 降到 ~15ms）和 nginx 的 Basic Auth。
-`trust.json` 里已有家里的 /24，所以 LAN 过来的请求是 `full` 权限；token 仍然需要。
+广播常被 AP 丢掉（这台就是：Mac 的 UDP 监听一个包都没收到），所以才需要第 4 步——
+254 个地址、32 线程、250ms 超时，大约 2 秒能找到一跳之外的那台机器。
 
-第一次进入会要求输入一次 6 位动态码（TOTP），之后 cookie 留在 WebView 里。
+**token 和地址是分开记的**：`/whois` 故意不吐 token（它免认证），所以 token 从任何一次带
+`?k=` 的地址里学下来，之后拼到发现到的地址上。换网络只换地址，token 不用重输。
+
+## 没有地址栏，怎么输地址
+
+导航栏的 **⋮** 键 → 弹框里可以改地址，也可以点"自动发现"再扫一次。输入会记住。
+
+## 出门（公网）
+
+公网那条路一直还在（VPS + ssh 隧道 + Mac 上的 TLS/Basic），没有因为 LAN 优先而被去掉。
+第一次走公网会弹一次 nginx 的 Basic 用户名/密码（原厂浏览器有缓存凭据，这个壳没有），
+输一次就存下来。之后还有 viewer 的 6 位动态码，同样一次。
+
+注意：**OTP cookie 在 force-stop 之后可能丢**（Chromium 4.4 的 cookie 是异步落盘的）。
+正常重启/切网络不受影响；重启设备后可能要再输一次动态码。

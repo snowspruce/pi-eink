@@ -295,6 +295,15 @@ class FullNetwork(unittest.TestCase):
             server.TOTP_FILE = saved
             totp.unlink(missing_ok=True)
 
+    def test_whois_answers_without_credentials(self):
+        """LAN discovery needs one unauthenticated line: the device has no mDNS and must
+        not depend on a router-reserved address, so it scans its own /24 and looks for
+        this. It carries nothing but the port."""
+        status, data = request(self.viewer.port, "/whois", cookie=False)
+        self.assertEqual(status, 200)
+        self.assertTrue(data.startswith(b"PI-EINK "), data)
+        self.assertLess(len(data), 32)
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")
