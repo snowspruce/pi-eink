@@ -33,6 +33,10 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- A poll that changes nothing no longer ships the transcript: the page sends the digest
+  it already has, and `/data` answers `{"same":true,…}` (88 bytes instead of ~20 KB -
+  measured 99.6% less traffic on the live viewer).
+
 - **Attribute injection through a directory name.** `esc()` escaped `& < >` but not
   quotes, and `/new` puts a directory into `value="..."` (the OTP page puts `?s=` into one
   too): a folder called `x" onmouseover="alert(1)` injected a live attribute. `esc()` now
