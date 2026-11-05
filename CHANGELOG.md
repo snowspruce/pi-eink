@@ -33,6 +33,16 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- **The Kindle now runs a 12 KB WebView shell instead of the stock browser** (`device/kiosk`).
+  The black band and the input box hiding behind the keyboard were both the stock AOSP
+  Browser's own UI: it keeps a stale 89px content offset after collapsing its toolbar, and a
+  fullscreen window is not resized for the IME. Measured on the device: fullscreen kept the
+  WebView at 1356px with the keyboard shown; non-fullscreen + `adjustResize` shrinks it to
+  621px and the page scrolls its box up.
+- `?k=<token>` could never authenticate on a network that needs the OTP form: the OTP page
+  dropped the `Set-Cookie` it was given, so the token arrived on the one request that was
+  answered by that page and nowhere after it.
+
 - A poll that changes nothing no longer ships the transcript: the page sends the digest
   it already has, and `/data` answers `{"same":true,…}` (88 bytes instead of ~20 KB -
   measured 99.6% less traffic on the live viewer).

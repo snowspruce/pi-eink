@@ -2799,8 +2799,14 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
 
-    def _otp_gate(self, q) -> bool:
-        """Second factor. True when satisfied (or when 2FA is not configured)."""
+    def _otp_gate(self, q, extra=()) -> bool:
+        """Second factor. True when satisfied (or when 2FA is not configured).
+
+        `extra` carries the headers the caller already decided to send - notably the
+        Set-Cookie for `?k=<token>`. Dropping them here made the token arrive only on
+        the request that was answered by this page, so a network behind the OTP form
+        could never authenticate with ?k= at all: the form posts without it.
+        """
         if not totp_secret():
             return True
         if otp_session_ok(parse_cookies(self.headers.get("Cookie", "")).get(OTP_COOKIE)):
@@ -2808,11 +2814,11 @@ class Handler(BaseHTTPRequestHandler):
         lang = lang_of(self)
         if self.command == "POST":
             self._send(auth_page(tr("otp_needed", lang), self._dark()).encode("utf-8"),
-                       "text/html; charset=utf-8", 403)
+                       "text/html; charset=utf-8", 403, extra=list(extra))
             return False
         sid = (q.get("s") or [""])[0]
         self._send(otp_page(sid, self._dark(), "", lang).encode("utf-8"),
-                   "text/html; charset=utf-8")
+                   "text/html; charset=utf-8", extra=list(extra))
         return False
 
     def _authorized(self, q) -> tuple[bool, list, str]:
@@ -2952,7 +2958,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
             return
-        if not self._otp_gate(q):
+        if not self._otp_gate(q, extra):
             return
 
         raw_len = (self.headers.get("Content-Length") or "").strip()
@@ -3224,7 +3230,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(auth_page("denied: %s" % esc(reason), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
             return
-        if not self._otp_gate(q):
+        if not self._otp_gate(q, extra):
             return
 
         # The only writer of view.json: whatever this page is about to show becomes

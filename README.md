@@ -140,6 +140,22 @@ Both sides check ownership and both checks must stay. The viewer only shows a bl
 another project's command line. The bridge refuses to answer a block whose `pid` is not its
 own (HTTP 409, `eink-bridge.ts:394`), because `pending.json` is shared by every pi process.
 
+### The device end: not the stock browser
+
+The Kindle's stock AOSP Browser 4.4.2 leaves a 42 CSS px **black band** after collapsing its
+toolbar, and being a fullscreen window it is never resized for the soft keyboard, so the
+input box ends up underneath it. Both are that app's UI, so the display end is a 120-line
+WebView shell in `device/kiosk`:
+
+```sh
+ANDROID_SDK=… JAVA_HOME=… device/kiosk/build.sh   # a 12 KB APK
+adb install -r device/kiosk/out/kiosk.apk
+eink-kiosk                                        # opens the page over the LAN
+```
+
+It costs the 44px status bar (going fullscreen would save it, but then the keyboard covers the
+input box - that one is Android's behaviour). Details and measurements: `device/kiosk/README.md`.
+
 ### Starting a session
 
 `+ New session` opens `/new`, which asks **which directory**: the sub-directories of

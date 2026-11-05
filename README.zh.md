@@ -127,6 +127,21 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 （`pending_owned_by()`），所以页面永远不会引用别的项目的命令行；bridge 拒绝回答 `pid` 不是自己的
 块（HTTP 409，`eink-bridge.ts:394`），因为 `pending.json` 被所有 pi 进程共享。
 
+### 设备端：不用原厂浏览器
+
+Kindle 那台（CracKDroid / Android 4.4.2）自带的 AOSP Browser 有两个和本项目冲突的行为：
+折叠工具栏后会留一条 42 CSS px 的**黑带**，而且全屏窗口不会为软键盘重排（**输入框被盖住**）。
+两个都是那个 App 自己的 UI，所以显示端换成 `device/kiosk` 里 120 行的 WebView 壳：
+
+```sh
+ANDROID_SDK=… JAVA_HOME=… device/kiosk/build.sh   # 12 KB 的 APK
+adb install -r device/kiosk/out/kiosk.apk
+eink-kiosk                                        # 走 LAN 直连打开页面
+```
+
+代价是顶部 44px 系统状态栏（全屏能省掉它，但键盘就会盖住输入框——Android 的固定行为）。
+细节与实测数字见 `device/kiosk/README.md`。
+
 ### 开新会话
 
 `＋新会话` 打开 `/new`，问的是**哪个目录**：`EINK_PROJECT_ROOTS`（默认 `~/Documents/Program`）

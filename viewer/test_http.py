@@ -277,6 +277,24 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("html", json.loads(data))
 
+    def test_the_token_from_the_url_survives_the_otp_page(self):
+        """`?k=<token>` sets the cookie, and the OTP form then posts *without* it: if the
+        OTP page drops the Set-Cookie, a network behind 2FA can never log in at all -
+        which is exactly what the Kindle did ("denied: bad or missing token")."""
+        totp = pathlib.Path(base.HOME) / ".pi/eink/totp"
+        totp.write_text("JBSWY3DPEHPK3PXP")
+        saved = server.TOTP_FILE
+        server.TOTP_FILE = totp
+        try:
+            seen = {}
+            status, body = request(self.viewer.port, "/?k=" + TOKEN, cookie=False, out=seen)
+            self.assertEqual(status, 200)
+            self.assertIn("Set-Cookie", seen, "the token cookie must survive the OTP page")
+            self.assertIn("6", body.decode("utf-8", "replace"))   # the code form
+        finally:
+            server.TOTP_FILE = saved
+            totp.unlink(missing_ok=True)
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")
