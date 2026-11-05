@@ -33,6 +33,11 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- The OTP form was asked for again per origin: the LAN address and the public address are
+  different cookie jars, while the server keeps a single 7-day OTP session. The app now
+  remembers the value it sees and plants it on whichever origin it loads next, so the code
+  is entered once - including after pressing ⋮.
+
 - **Remote access works again from the kiosk app**, which is what the black-band fix had
   quietly broken: the app had no `onReceivedSslError` (the stock browser shows a "continue"
   warning, a bare WebView cancels silently, so the request never left the device), no Basic

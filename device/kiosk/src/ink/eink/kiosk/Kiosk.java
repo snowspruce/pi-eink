@@ -8,6 +8,7 @@ import android.content.SharedPreferences;
 import android.graphics.Color;
 import android.graphics.drawable.ColorDrawable;
 import android.net.Uri;
+import android.webkit.CookieManager;
 import android.util.Log;
 import android.os.Bundle;
 import android.text.InputType;
@@ -85,6 +86,11 @@ public class Kiosk extends Activity {
         s.setCacheMode(WebSettings.LOAD_DEFAULT);
 
         web.setWebViewClient(new WebViewClient() {
+            @Override
+            public void onPageFinished(WebView view, String url) {
+                harvestOtpCookie(url);
+            }
+
             @Override
             public void onReceivedError(WebView view, int code, String desc, String url) {
                 Log.i(TAG, "error " + code + " " + desc + " " + url);
@@ -183,9 +189,54 @@ public class Kiosk extends Activity {
     }
 
 
+    /**
+     * The OTP session cookie is per origin: the LAN address and the public address are
+     * different hosts, so entering the code at home and then travelling used to demand it
+     * again - and a re-discovered LAN address after a trip, again. The value itself is one
+     * server-side session (7 days), so remember it once and plant it on every origin we
+     * load. Answers "do I have to type the code after pressing ⋮?" with no.
+     */
+    private void plantOtpCookie(String url) {
+        String saved = prefs.getString("otp_cookie", "");
+        if (saved.length() < 16) {
+            return;
+        }
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String have = cm.getCookie(url);
+            if (have != null && have.contains("pieink_otp=")) {
+                return;
+            }
+            cm.setCookie(url, "pieink_otp=" + saved + "; path=/");
+        } catch (Exception ignored) {
+            // cookie store unavailable: worst case the code is asked for once more
+        }
+    }
+
+    private void harvestOtpCookie(String url) {
+        try {
+            String have = CookieManager.getInstance().getCookie(url);
+            if (have == null) {
+                return;
+            }
+            for (String part : have.split(";")) {
+                part = part.trim();
+                if (part.startsWith("pieink_otp=")) {
+                    String value = part.substring("pieink_otp=".length());
+                    if (value.length() >= 16 && !value.equals(prefs.getString("otp_cookie", ""))) {
+                        prefs.edit().putString("otp_cookie", value).commit();
+                    }
+                }
+            }
+        } catch (Exception ignored) {
+            // as above
+        }
+    }
+
     private void load(String url) {
         Log.i(TAG, "load " + url);
         remember(url);
+        plantOtpCookie(url);
         if (web.getParent() == null) {
             setContentView(web);
         }

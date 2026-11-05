@@ -79,5 +79,13 @@ APK 约 12 KB，装在 `/data`（不是系统应用），`adb uninstall ink.eink
 第一次走公网会弹一次 nginx 的 Basic 用户名/密码（原厂浏览器有缓存凭据，这个壳没有），
 输一次就存下来。之后还有 viewer 的 6 位动态码，同样一次。
 
-注意：**OTP cookie 在 force-stop 之后可能丢**（Chromium 4.4 的 cookie 是异步落盘的）。
-正常重启/切网络不受影响；重启设备后可能要再输一次动态码。
+### 动态码只输一次
+
+OTP cookie 是**按来源**存的：`http://192.168.x.x:8000` 和 `https://eink.blueberry.cafe`
+是两个不同的 host，浏览器各存一份。而服务端那边的 OTP 会话只有一个（7 天有效）。
+
+所以 App 把见到的 cookie 值记下来（`otp_cookie`），换来源时用 `CookieManager.setCookie()`
+把它种过去。效果：**在哪个来源输一次都行，之后 LAN/公网/换网络都不用再输**——点 ⋮ 也不会。
+
+只有这三种情况会再要一次：7 天到期、重装 App/清数据、或者 `force-stop` 发生在 cookie 落盘
+之前（Chromium 4.4 是异步写盘的，正常使用遇不到）。
