@@ -117,6 +117,9 @@ STRINGS = {
     "new_session_running": ("%d \u4e2a\u4f1a\u8bdd\u5728\u8fd0\u884c", "%d sessions running"),
     "new_session_hidden": ("\u8fd8\u6709 %d \u4e2a\u76ee\u5f55\u672a\u5217\u51fa\uff08\u8fd9\u91cc\u53ea\u5217\u6700\u8fd1\u52a8\u8fc7\u7684\uff09",
                             "%d more directories not listed (recently touched first)"),
+    "new_here_hint": ("\u5728 %s \u91cc\u5f00\u4e00\u4e2a\u65b0\u7a97\u53e3", "a new window in %s"),
+    "new_session_here": ("\uff0b \u5728\u672c\u9879\u76ee\u65b0\u5efa\u4f1a\u8bdd",
+                         "+ New session in this project"),
     "port_label": ("\u7aef\u53e3 %s", "port %s"),
     "running_label": ("\u8fd0\u884c\u4e2d", "running"),
     "all_projects": ("\u6240\u6709\u9879\u76ee", "All projects"),
@@ -424,6 +427,67 @@ def session_meta(path: Path) -> dict:
     return meta
 
 
+def session_last_user(path: Path, chunk: int = 128 * 1024, budget: int = 1024 * 1024) -> str:
+    """The last thing the reader asked in this session, clipped.
+
+    The picker used to show the *first* user line, which for a long session is an
+    introduction ("hi", a pasted brief) and says nothing about which conversation this
+    is. The last question is what the reader recognises.
+
+    Read backwards in chunks: one busy turn writes megabytes of tool output, and a single
+    128 KB tail of an active conversation can contain no user message at all.
+    """
+    key = "last:" + str(path)
+    try:
+        st = path.stat()
+    except Exception:
+        return ""
+    cached = SESSION_META_CACHE.get(key)
+    if cached and cached[0] == (st.st_mtime, st.st_size):
+        return cached[1]
+    text = ""
+    try:
+        with path.open("rb") as fh:
+            fh.seek(0, 2)
+            size = fh.tell()
+            end = size
+            seen = 0
+            while end > 0 and seen < budget:
+                start = max(0, end - chunk)
+                fh.seek(start)
+                blob = fh.read(end - start)
+                lines = blob.splitlines()
+                if start > 0 and lines:
+                    lines = lines[1:]      # probably cut in half by the chunk boundary
+                found = ""
+                for raw in reversed(lines):
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        row = json.loads(raw.decode("utf-8", "replace"))
+                    except Exception:
+                        continue
+                    if row.get("type") != "message":
+                        continue
+                    msg = row.get("message") or {}
+                    if msg.get("role") != "user":
+                        continue
+                    content = msg.get("content")
+                    found = content if isinstance(content, str) else "".join(
+                        b.get("text", "") for b in content if isinstance(b, dict))
+                    break
+                if found:
+                    text = " ".join(str(found).split())[:90]
+                    break
+                seen += len(blob)
+                end = start
+    except Exception:
+        text = ""
+    SESSION_META_CACHE[key] = ((st.st_mtime, st.st_size), text)
+    return text
+
+
 # One request resolves the same id several times (resolve_view -> session_selected ->
 # session_path_by_id, then newest_session -> session_path_by_id again). Each walk is a
 # directory listing plus a stat per file, so it is memoized for the duration of ONE
@@ -561,7 +625,15 @@ def sessions_html(lang: str = "", sid: str = "", cwd: str = "") -> str:
         except Exception:
             want = cwd
     new_suffix = ("?s=" + quote(sid, safe="")) if sid else ""
-    if not want and live:
+    if want:
+        # 在本项目里开新会话（就是 pi 的 /new）：不属于"删掉"，作用域内更需要它
+        rows.append('<div class="sess"><form method="POST" action="/act/enter%s">'
+                    '<input type="hidden" name="dir" value="%s">'
+                    '<button class="btn" type="submit">%s</button></form>'
+                    '<div class="mono dim">%s</div></div>'
+                    % (new_suffix, esc(cwd), esc(tr("new_session_here", lang)),
+                       esc(tr("new_here_hint", lang, short_path(cwd) or cwd))))
+    elif live:
         rows.append('<div class="sess"><a href="/new%s"><b>%s</b></a>'
                     '<div class="mono dim">%s</div></div>'
                     % (new_suffix, esc(tr("new_session", lang)),
@@ -574,12 +646,17 @@ def sessions_html(lang: str = "", sid: str = "", cwd: str = "") -> str:
                     continue
             except Exception:
                 continue
+        live_path = session_index().get(str(sid_live))
+        live_last = session_last_user(live_path) if live_path else ""
         if want:
-            # scoped: the project is already in the header, so the row says what differs
+            # scoped: the project is in the header, so the row says what differs - the last
+            # question the reader asked in it, not a port number nobody can map to a topic
             rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
-                        '<div class="mono dim">%s</div></div>'
+                        '<div class="dotrow"><span class="dot"></span>%s</div>'
+                        '<div class="body">%s</div></div>'
                         % (quote(str(sid_live), safe=""), esc(tr("running_label", lang)),
-                           esc(str(info.get("port", "")))))
+                           esc(tr("port_label", lang, str(info.get("port", "")))),
+                           esc(live_last or tr("empty_value", lang))))
         else:
             rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
                         '<div class="mono dim">%s</div></div>'
@@ -600,18 +677,19 @@ def sessions_html(lang: str = "", sid: str = "", cwd: str = "") -> str:
             except Exception:
                 continue
         when = time.strftime("%m-%d %H:%M", time.localtime(path.stat().st_mtime))
+        last = session_last_user(path)
         if want:
             rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
                         '<div class="body">%s</div></div>'
                         % (quote(str(sid), safe=""), esc(when),
-                           esc(meta.get("first") or tr("empty_value", lang))))
+                           esc(last or meta.get("first") or tr("empty_value", lang))))
         else:
             rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
                         '<div class="mono dim">%s \u00b7 %s</div>'
                         '<div class="body">%s</div></div>'
                         % (quote(str(sid), safe=""), esc(when + "  " + (short_path(meta.get("cwd")) or "?")),
                            esc(short_path(meta.get("cwd"))), esc(when),
-                           esc(meta.get("first") or tr("empty_value", lang))))
+                           esc(last or meta.get("first") or tr("empty_value", lang))))
         shown += 1
         if shown >= 25:
             break
@@ -1727,6 +1805,9 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 .sess { border-bottom: 1px solid #000; padding: 8px 0; }
 .sess a { color: #000; }
 .sess .btn { font-size: 11px; min-height: 20px; padding: 0 6px; line-height: 16px; }
+.sess .dotrow { font-size: 11px; color: #444; margin-top: 3px; }
+.sess .dot { display: inline-block; width: 10px; height: 10px; border-radius: 5px;
+             background: #000; margin-right: 6px; vertical-align: 0; }
 /* Queue page: one action row per message. `a.btn` has to look like the buttons next
    to it (改 is a link because editing needs its own page), so it carries the same
    border and gets `display:inline-block` - the shared `.btn` rule is written for

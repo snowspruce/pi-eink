@@ -319,8 +319,27 @@ class FullNetwork(unittest.TestCase):
             self.assertEqual(status, 200)
             body = data.decode("utf-8")
             self.assertIn("aaaabbbb-1111-2222-3333-444455556666", body)   # this project only
+            self.assertIn("/act/enter", body)          # can still start one in this project
             self.assertNotIn("ccccdddd-1111-2222-3333-444455556666", body)
             self.assertIn("/home", body)               # the way to switch projects
+
+    def test_a_session_row_shows_the_last_question(self):
+        """The first user line of a long session is an introduction; the last one is what
+        the reader recognises. Only the tail of the file is read."""
+        f = pathlib.Path(base.HOME) / ".pi/agent/sessions" / "--test--" / "tail.jsonl"
+        f.write_text("\n".join([
+            json.dumps({"type": "session", "id": "dddd0000-1111-2222-3333-444455556666",
+                        "cwd": "/tmp/demo"}),
+            json.dumps({"type": "message", "id": "m0", "timestamp": "t0",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "old question"}]}}),
+            json.dumps({"type": "message", "id": "m1", "timestamp": "t1",
+                        "message": {"role": "assistant", "content": [{"type": "text", "text": "answer"}]}}),
+            json.dumps({"type": "message", "id": "m2", "timestamp": "t2",
+                        "message": {"role": "user", "content": [{"type": "text", "text": "the new question"}]}}),
+        ]) + "\n")
+        self.addCleanup(f.unlink, True)
+        server.SESSION_META_CACHE.pop("last:" + str(f), None)
+        self.assertEqual(server.session_last_user(f), "the new question")
 
     def test_whois_answers_without_credentials(self):
         """LAN discovery needs one unauthenticated line: the device has no mDNS and must
