@@ -109,6 +109,8 @@ STRINGS = {
     "new_session_none": ("\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684 pi \u4f1a\u8bdd\uff1a\u65b0\u4f1a\u8bdd\u53ea\u80fd\u5efa\u5728\u5df2\u7ecf\u8dd1\u7740 pi \u7684\u76ee\u5f55\u91cc",
                          "No running pi session: a new session can only start in a directory that already runs pi"),
     "new_session_running": ("%d \u4e2a\u4f1a\u8bdd\u5728\u8fd0\u884c", "%d sessions running"),
+    "new_session_old_bridge": ("\u8be5\u9879\u76ee\u7684 bridge \u662f\u65e7\u7248\uff0c\u5728\u90a3\u4e2a\u4f1a\u8bdd\u91cc /reload \u540e\u624d\u80fd\u5f00\u65b0\u4f1a\u8bdd",
+                                "that project's bridge is an older build - /reload there first"),
     "new_session_failed": ("\u65b0\u5efa\u4f1a\u8bdd\u672a\u51fa\u73b0\uff08bridge \u6ca1\u4e0a\u62a5\uff09",
                            "The new session did not appear (no bridge reported it)"),
     "queue": ("\u6392\u961f\u4e2d\uff08%d\uff09", "Queued (%d)"),
@@ -586,11 +588,20 @@ def new_session_html(sid: str = "", lang: str = "") -> str:
                                 key=lambda kv: live[kv[1]].get("updatedAt", ""), reverse=True):
         count = sum(1 for i in live.values() if str(i.get("cwd") or "") == cwd)
         extra = (" \u00b7 %s" % esc(tr("new_session_running", lang, count))) if count > 1 else ""
-        rows.append('<div class="sess"><form method="POST" action="/act/new?s=%s">'
-                    '<button class="btn" type="submit">%s</button></form>'
-                    '<div class="mono dim">%s%s</div></div>'
-                    % (quote(str(live_sid), safe=""),
-                       esc("\uff0b " + (short_path(cwd) or cwd)), esc(cwd), extra))
+        # The session is created by that process's own extension, so a bridge from
+        # before the feature cannot do it. One loopback probe per project (they are few
+        # and this page is opened by hand) tells us; offering the button anyway would
+        # mean "tap to find out".
+        state = agent_state(bridge_port_for(live_sid))
+        if state is not None and "queued" in state:
+            action = ('<form method="POST" action="/act/new?s=%s">'
+                      '<button class="btn" type="submit">%s</button></form>'
+                      % (quote(str(live_sid), safe=""), esc("\uff0b " + (short_path(cwd) or cwd))))
+        else:
+            action = ('<div class="body dim">%s \u00b7 %s</div>'
+                      % (esc(short_path(cwd) or cwd), esc(tr("new_session_old_bridge", lang))))
+        rows.append('<div class="sess">%s<div class="mono dim">%s%s</div></div>'
+                    % (action, esc(cwd), extra))
     return "".join(rows)
 
 
@@ -1458,9 +1469,6 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 }
 .sess { border-bottom: 1px solid #000; padding: 8px 0; }
 .sess a { color: #000; }
-/* "+ new session" sits on the running rows: one running pi process per row, and
-   only a running process can create a session in its own project. */
-.sess form.new { display: inline-block; vertical-align: middle; margin: 0 0 0 8px; }
 .sess .btn { font-size: 11px; min-height: 20px; padding: 0 6px; line-height: 16px; }
 /* Queue page: one action row per message. `a.btn` has to look like the buttons next
    to it (改 is a link because editing needs its own page), so it carries the same
@@ -3129,7 +3137,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
                 ("Location", "/?" + urlencode(keep))])
             return
-        if caps != "full" and u.path == "/sessions":
+        if caps != "full" and u.path in ("/sessions", "/new"):
             self._send(auth_page(tr("list_locked", lang), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403, extra=extra)
             return

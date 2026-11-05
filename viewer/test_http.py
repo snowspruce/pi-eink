@@ -460,7 +460,7 @@ class OlderBridge(QueuePage.__mro__[1] if False else unittest.TestCase):
         self.assertIn("旧版", body)
         self.assertNotIn("未在运行", body)
 
-    def test_the_new_session_page_offers_projects_and_posts_to_one(self):
+    def test_a_new_session_page_does_not_offer_an_old_bridge(self):
         live = {"aaaabbbb-1111-2222-3333-444455556666":
                 {"port": self.bridge_port, "pid": os.getpid(), "cwd": "/tmp/demo",
                  "updatedAt": "2026-01-01T00:00:00Z"}}
@@ -468,8 +468,8 @@ class OlderBridge(QueuePage.__mro__[1] if False else unittest.TestCase):
             status, data = request(self.viewer.port, "/new?s=" + self.SID)
         self.assertEqual(status, 200)
         body = data.decode("utf-8")
-        self.assertIn('/act/new?s=aaaabbbb-1111-2222-3333-444455556666', body)
-        self.assertIn("/tmp/demo", body)
+        self.assertNotIn("/act/new", body)
+        self.assertIn("/reload", body)
 
     def test_a_new_session_tap_explains_the_old_bridge(self):
         status, data = request(self.viewer.port, "/act/new?s=" + self.SID, "POST", "",
@@ -516,6 +516,17 @@ class QueuePage(unittest.TestCase):
         mock.patch.object(server, "caps_for", lambda _h: "full").start()
         mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port).start()
         mock.patch.object(server, "live_bridges", lambda: {}).start()
+
+    def test_the_new_session_page_offers_a_project_with_a_new_bridge(self):
+        sid = "aaaabbbb-1111-2222-3333-444455556666"
+        live = {sid: {"port": self.bridge_port, "pid": os.getpid(), "cwd": "/tmp/demo",
+                      "updatedAt": "2026-01-01T00:00:00Z"}}
+        with mock.patch.object(server, "live_bridges", lambda: live):
+            status, data = request(self.viewer.port, "/new?s=" + self.SID)
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn('/act/new?s=' + sid, body)
+        self.assertIn("/tmp/demo", body)
 
     def test_the_page_lists_the_queue_with_per_row_controls(self):
         status, data = request(self.viewer.port, "/queue?s=" + self.SID)
@@ -603,6 +614,32 @@ class QueuePage(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn("未在运行", data.decode("utf-8"))
         self.assertEqual(FakeBridge.seen, [])
+
+
+class ReadOnlyPages(unittest.TestCase):
+    """A read-only network may not see the project list: it exposes every directory this
+    machine runs pi in. `/sessions` has been refused for that reason from the start;
+    `/new` lists the same directories and needs the same rule."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+
+    def test_the_project_list_is_refused_on_a_readonly_network(self):
+        for name, value in (("caps_for", lambda _h: "readonly"),
+                            ("live_bridges", lambda: {"x": {"cwd": "/secret/project",
+                                                           "updatedAt": "2026-01-01T00:00:00Z"}})):
+            patcher = mock.patch.object(server, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        for path in ("/new", "/sessions"):
+            status, data = request(self.viewer.port, path)
+            self.assertEqual(status, 403, path)
+            self.assertNotIn(b"/secret/project", data, path)
 
 
 class Language(unittest.TestCase):

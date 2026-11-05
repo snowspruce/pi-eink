@@ -37,6 +37,10 @@ All notable changes to this project. The format follows
 - The dollar total is gone from the status line (`↑255k ↓330k 55%`): a number to look up
   on the computer, not something to act on from the Kindle, and the line has to share
   9 px with the footer links.
+- `/new` (the project picker for `+ New session`) was readable from a read-only network.
+  It lists the same directories `/sessions` is refused for, so it now gets the same 403;
+  and a project whose bridge predates the feature shows *why* instead of a button that
+  can only answer "unknown action".
 - The `排队中（N）` footer link no longer hides itself when the agent is idle with an empty
   queue: that is exactly when a reader opens the page to look at it.
 

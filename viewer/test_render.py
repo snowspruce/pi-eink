@@ -408,13 +408,30 @@ class SessionPicker(unittest.TestCase):
             "other-project": {"port": 3, "pid": os.getpid(), "cwd": "/tmp/other",
                               "updatedAt": "2026-01-01T12:00:00Z"},
         }
-        with mock.patch.object(server, "live_bridges", lambda: live):
+        # a bridge that has the feature: /state carries `queued` (the page probes each
+        # project before offering a button - see the old-bridge test below)
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "queued": 0}):
             html = server.new_session_html()
         self.assertEqual(html.count("/act/new"), 2)
         # the newest session in a directory is the one whose bridge creates it
         self.assertIn("/act/new?s=new-in-demo", html)
         self.assertIn("/act/new?s=other-project", html)
         self.assertIn("2 个会话在运行", html)
+
+    def test_the_new_session_page_marks_an_old_bridge_instead_of_offering_it(self):
+        """The session is created by that project's own extension: with an older bridge
+        the tap can only fail, so the row says why instead of showing a button."""
+        live = {"demo-session": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/demo",
+                                 "updatedAt": "2026-01-01T00:00:00Z"}}
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "pending": False}):
+            html = server.new_session_html()
+        self.assertNotIn("/act/new", html)
+        self.assertIn("/reload", html)
+        self.assertIn("/tmp/demo", html)
 
     def test_the_new_session_page_explains_an_empty_list(self):
         with mock.patch.object(server, "live_bridges", lambda: {}):
