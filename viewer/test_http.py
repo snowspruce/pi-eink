@@ -296,6 +296,32 @@ class FullNetwork(unittest.TestCase):
             server.TOTP_FILE = saved
             totp.unlink(missing_ok=True)
 
+    def test_the_session_list_is_this_project_only(self):
+        """/sessions is pi's /resume: the project the page belongs to, not every project
+        on the machine (the home screen is the project chooser)."""
+        import json as _json
+        sessions = pathlib.Path(base.HOME) / ".pi/agent/sessions" / "--other--"
+        sessions.mkdir(parents=True, exist_ok=True)
+        other = sessions / "2026-01-02T00-00-00-000Z_ccccdddd-1111-2222-3333-444455556666.jsonl"
+        other.write_text("\n".join([
+            _json.dumps({"type": "session", "id": "ccccdddd-1111-2222-3333-444455556666",
+                         "cwd": "/tmp/another-project"}),
+            _json.dumps({"type": "message", "id": "m1", "timestamp": "t1",
+                         "message": {"role": "user", "content": [{"type": "text",
+                                                                  "text": "other project"}]}}),
+        ]) + "\n")
+        self.addCleanup(other.unlink, True)
+        if hasattr(server._INDEX_MEMO, "value"):
+            del server._INDEX_MEMO.value
+        with mock.patch.object(server, "SESSION_META_CACHE", {}):
+            status, data = request(self.viewer.port,
+                                   "/sessions?s=aaaabbbb-1111-2222-3333-444455556666")
+            self.assertEqual(status, 200)
+            body = data.decode("utf-8")
+            self.assertIn("aaaabbbb-1111-2222-3333-444455556666", body)   # this project only
+            self.assertNotIn("ccccdddd-1111-2222-3333-444455556666", body)
+            self.assertIn("/home", body)               # the way to switch projects
+
     def test_whois_answers_without_credentials(self):
         """LAN discovery needs one unauthenticated line: the device has no mDNS and must
         not depend on a router-reserved address, so it scans its own /24 and looks for

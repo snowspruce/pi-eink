@@ -117,6 +117,9 @@ STRINGS = {
     "new_session_running": ("%d \u4e2a\u4f1a\u8bdd\u5728\u8fd0\u884c", "%d sessions running"),
     "new_session_hidden": ("\u8fd8\u6709 %d \u4e2a\u76ee\u5f55\u672a\u5217\u51fa\uff08\u8fd9\u91cc\u53ea\u5217\u6700\u8fd1\u52a8\u8fc7\u7684\uff09",
                             "%d more directories not listed (recently touched first)"),
+    "port_label": ("\u7aef\u53e3 %s", "port %s"),
+    "running_label": ("\u8fd0\u884c\u4e2d", "running"),
+    "all_projects": ("\u6240\u6709\u9879\u76ee", "All projects"),
     "new_session_live": ("pi \u5728\u8fd9\u91cc\u8dd1\u7740", "pi is running here"),
     "new_session_old_bridge": ("\u8fd9\u4e2a\u9875\u9762\u7684 bridge \u662f\u65e7\u7248\uff0c\u5728\u8be5\u4f1a\u8bdd\u91cc /reload \u540e\u624d\u80fd\u5f00\u65b0\u7a97\u53e3",
                                 "that project's bridge is an older build - /reload there first"),
@@ -541,27 +544,47 @@ def resolve_view(requested_sid: str, caps: str) -> tuple:
     return newest_session(sid), sid, gone
 
 
-def sessions_html(lang: str = "", sid: str = "") -> str:
-    """Picker: running bridges first, then the most recently used session files.
+def sessions_html(lang: str = "", sid: str = "", cwd: str = "") -> str:
+    """This project's sessions, newest first - pi's /resume, not a global index.
 
-    One `+ New session` entry at the top, not a button on every row: a new session is
-    "a new conversation in some project", so the second step is choosing the project,
-    not choosing which of two sessions in the same directory to hang it off.
+    It used to list every session on the machine, which made it a second project chooser:
+    the home screen already answers "which project", so this answers the narrower question
+    the reader has while sitting in one. `cwd` is the directory of the session the picker
+    was opened from; with no cwd (a page with no session) it stays a global list.
     """
     live = live_bridges()
     rows = []
+    want = ""
+    if cwd:
+        try:
+            want = os.path.realpath(cwd)
+        except Exception:
+            want = cwd
     new_suffix = ("?s=" + quote(sid, safe="")) if sid else ""
-    if live:
+    if not want and live:
         rows.append('<div class="sess"><a href="/new%s"><b>%s</b></a>'
                     '<div class="mono dim">%s</div></div>'
                     % (new_suffix, esc(tr("new_session", lang)),
                        esc(tr("new_session_hint", lang))))
     for sid_live, info in sorted(live.items(), key=lambda kv: kv[1].get("updatedAt", ""), reverse=True):
         cwd = info.get("cwd") or ""
-        rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
-                    '<div class="mono dim">%s</div></div>'
-                    % (quote(str(sid_live), safe=""), esc(short_path(cwd) or sid_live[:8]),
-                       esc(tr("running_at", lang, short_path(cwd), str(info.get("port", ""))))))
+        if want:
+            try:
+                if os.path.realpath(cwd) != want:
+                    continue
+            except Exception:
+                continue
+        if want:
+            # scoped: the project is already in the header, so the row says what differs
+            rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
+                        '<div class="mono dim">%s</div></div>'
+                        % (quote(str(sid_live), safe=""), esc(tr("running_label", lang)),
+                           esc(str(info.get("port", "")))))
+        else:
+            rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
+                        '<div class="mono dim">%s</div></div>'
+                        % (quote(str(sid_live), safe=""), esc(short_path(cwd) or sid_live[:8]),
+                           esc(tr("running_at", lang, short_path(cwd), str(info.get("port", ""))))))
 
     files = sorted(session_index().values(), key=lambda f: f.stat().st_mtime, reverse=True)
     shown = 0
@@ -570,13 +593,25 @@ def sessions_html(lang: str = "", sid: str = "") -> str:
         sid = str(meta.get("id") or "")
         if not sid or sid in live:
             continue   # a file with no session header is not a session (transcripts)
+        if want:
+            try:
+                if os.path.realpath(str(meta.get("cwd") or "")) != want:
+                    continue          # another project's history: not what /resume means
+            except Exception:
+                continue
         when = time.strftime("%m-%d %H:%M", time.localtime(path.stat().st_mtime))
-        rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
-                    '<div class="mono dim">%s \u00b7 %s</div>'
-                    '<div class="body">%s</div></div>'
-                    % (quote(str(sid), safe=""), esc(when + "  " + (short_path(meta.get("cwd")) or "?")),
-                       esc(short_path(meta.get("cwd"))), esc(when),
-                       esc(meta.get("first") or tr("empty_value", lang))))
+        if want:
+            rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
+                        '<div class="body">%s</div></div>'
+                        % (quote(str(sid), safe=""), esc(when),
+                           esc(meta.get("first") or tr("empty_value", lang))))
+        else:
+            rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
+                        '<div class="mono dim">%s \u00b7 %s</div>'
+                        '<div class="body">%s</div></div>'
+                        % (quote(str(sid), safe=""), esc(when + "  " + (short_path(meta.get("cwd")) or "?")),
+                           esc(short_path(meta.get("cwd"))), esc(when),
+                           esc(meta.get("first") or tr("empty_value", lang))))
         shown += 1
         if shown >= 25:
             break
@@ -3697,13 +3732,21 @@ class Handler(BaseHTTPRequestHandler):
             # The way back is the session this picker was opened from, not "whatever the
             # viewer rendered last": with two devices in use that is the other one's pick.
             back_path = ("/?" + urlencode(keep)) if keep else "/"
+            # /resume semantics: the sessions of the project this page belongs to.
+            here = session_meta(path).get("cwd") if path is not None else ""
+            head = ""
+            if here:
+                head = ('<div class="sess"><a href="/home"><b>%s</b></a>'
+                        '<div class="mono dim">%s</div></div>'
+                        % (esc(tr("all_projects", lang)), esc(short_path(here) or here)))
             page = ("<!DOCTYPE html><html><head>"
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
                     '<link rel="icon" type="image/png" href="/favicon.png">'
                     "<style>%(css)s</style></head><body>"
                     '<div id="wrap"><div class="body"><a href="%(back_url)s">%(back)s</a></div>'
-                    "%(list)s</div></body></html>")
-            self._send((page % {"css": css, "list": sessions_html(lang, sid),
+                    "%(head)s%(list)s</div></body></html>")
+            self._send((page % {"css": css, "list": sessions_html(lang, sid, str(here or "")),
+                                "head": head,
                                 "back_url": esc(back_path),
                                 "back": esc(tr("back_to_session", lang))}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
