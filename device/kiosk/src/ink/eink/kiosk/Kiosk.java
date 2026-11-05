@@ -573,8 +573,10 @@ public class Kiosk extends Activity {
         input.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
         input.setSingleLine(true);
         // The remembered home, not the live URL: after the OTP redirect the live one is
-        // "/?s=<sid>" (no token, useless next time). Select all so typing replaces it.
-        String current = prefs.getString(KEY_HOME, PUBLIC);
+        // "/?s=<sid>" (no token, useless next time). The token is stripped from what is
+        // shown - it is only good for shoulder-surfing here - and re-attached on load by
+        // withToken(). Select all so typing replaces it.
+        String current = prefs.getString(KEY_HOME, PUBLIC).replaceAll("([?&])k=[^&]*", "");
         input.setText(current);
         input.setSelection(0, input.getText().length());
 
@@ -593,7 +595,12 @@ public class Kiosk extends Activity {
                         load(withToken(url));
                     }
                 })
-                .setNeutralButton("自动发现", new DialogInterface.OnClickListener() {
+                .setNeutralButton("桌面", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int which) {
+                        openOtherHome();
+                    }
+                })
+                .setNegativeButton("自动发现", new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface d, int which) {
                         foundThisLaunch = true;
                         discoverOrFallback();
@@ -601,5 +608,31 @@ public class Kiosk extends Activity {
                 })
                 .setNegativeButton("取消", null)
                 .show();
+    }
+
+    /**
+     * The escape hatch. This app can be the HOME activity, which means the launcher would
+     * otherwise be unreachable - and with it KOReader, Settings and everything else.
+     */
+    private void openOtherHome() {
+        try {
+            android.content.Intent home = new android.content.Intent(android.content.Intent.ACTION_MAIN);
+            home.addCategory(android.content.Intent.CATEGORY_HOME);
+            for (android.content.pm.ResolveInfo info :
+                    getPackageManager().queryIntentActivities(home, 0)) {
+                String pkg = info.activityInfo.packageName;
+                if (!pkg.equals(getPackageName())) {
+                    android.content.Intent go = new android.content.Intent(android.content.Intent.ACTION_MAIN);
+                    go.addCategory(android.content.Intent.CATEGORY_LAUNCHER);
+                    go.setClassName(pkg, info.activityInfo.name);
+                    go.addFlags(android.content.Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(go);
+                    return;
+                }
+            }
+            Log.i(TAG, "no other HOME activity found");
+        } catch (Exception e) {
+            Log.i(TAG, "openOtherHome failed: " + e);
+        }
     }
 }

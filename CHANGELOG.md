@@ -132,6 +132,12 @@ All notable changes to this project. The format follows
 
 ### Changed
 
+- The kiosk app is the device's **HOME**: pressing HOME or rebooting lands on the page, and
+  the launcher no longer sits in front of it. `⋮ → 桌面` starts whichever other HOME app is
+  installed, so nothing is locked away. The watchdog now decides on the *process* being
+  alive, not on the foreground window - a foreground check would drag the reader back every
+  minute after they had deliberately opened the launcher.
+
 - A message sent while the agent is busy no longer goes into pi's queue with
   `deliverAs: "followUp"`, and the old "messages are already queued" refusal is gone: the
   box queues several messages and delivers them run by run.
