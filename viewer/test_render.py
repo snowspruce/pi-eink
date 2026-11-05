@@ -433,6 +433,26 @@ class SessionPicker(unittest.TestCase):
         self.assertIn("/reload", html)
         self.assertIn("/tmp/demo", html)
 
+    def test_a_project_uses_a_session_that_can_actually_do_it(self):
+        """Newest-first is not the same as capability: a session loaded before the last
+        /reload sits next to one that was reloaded, and the project must still work."""
+        live = {
+            "old-but-newest": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/demo",
+                               "updatedAt": "2026-01-02T00:00:00Z"},
+            "reloaded": {"port": 2, "pid": os.getpid(), "cwd": "/tmp/demo",
+                         "updatedAt": "2026-01-01T00:00:00Z"},
+        }
+        def state(port=0):
+            return {"idle": True, "queued": 0} if port == 2 else {"idle": True}
+
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_port_for",
+                               lambda sid: live[sid]["port"]), \
+             mock.patch.object(server, "agent_state", state):
+            html = server.new_session_html()
+        self.assertIn("/act/new?s=reloaded", html)
+        self.assertNotIn("/act/new?s=old-but-newest", html)
+
     def test_the_new_session_page_explains_an_empty_list(self):
         with mock.patch.object(server, "live_bridges", lambda: {}):
             html = server.new_session_html()

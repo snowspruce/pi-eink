@@ -40,7 +40,8 @@ All notable changes to this project. The format follows
 - `/new` (the project picker for `+ New session`) was readable from a read-only network.
   It lists the same directories `/sessions` is refused for, so it now gets the same 403;
   and a project whose bridge predates the feature shows *why* instead of a button that
-  can only answer "unknown action".
+  can only answer "unknown action" - probing the sessions in that directory newest first
+  until one of them has the feature, so a stale newest sibling cannot hide a reloaded one.
 - The `排队中（N）` footer link no longer hides itself when the agent is idle with an empty
   queue: that is exactly when a reader opens the page to look at it.
 

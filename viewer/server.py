@@ -589,10 +589,19 @@ def new_session_html(sid: str = "", lang: str = "") -> str:
         count = sum(1 for i in live.values() if str(i.get("cwd") or "") == cwd)
         extra = (" \u00b7 %s" % esc(tr("new_session_running", lang, count))) if count > 1 else ""
         # The session is created by that process's own extension, so a bridge from
-        # before the feature cannot do it. One loopback probe per project (they are few
-        # and this page is opened by hand) tells us; offering the button anyway would
-        # mean "tap to find out".
-        state = agent_state(bridge_port_for(live_sid))
+        # before the feature cannot do it. Probe the sessions in this directory newest
+        # first and take the first one that CAN do it - picking the newest unconditionally
+        # would mark a project "old bridge" just because its newest session predates the
+        # reload while a sibling does not. One loopback probe per session, and only until
+        # one answers.
+        same = sorted((s for s, i in live.items() if str(i.get("cwd") or "") == cwd),
+                      key=lambda s: str(live[s].get("updatedAt") or ""), reverse=True)
+        state = None
+        for candidate in same:
+            state = agent_state(bridge_port_for(candidate))
+            if state is not None and "queued" in state:
+                live_sid = candidate
+                break
         if state is not None and "queued" in state:
             action = ('<form method="POST" action="/act/new?s=%s">'
                       '<button class="btn" type="submit">%s</button></form>'
