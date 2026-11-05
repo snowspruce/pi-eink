@@ -104,6 +104,31 @@ STRINGS = {
     "no_sessions": ("(\u6ca1\u6709\u4f1a\u8bdd)", "(no sessions)"),
     "empty_value": ("(\u7a7a)", "(empty)"),
     "running_at": ("%s \u8fd0\u884c\u4e2d :%s", "%s running :%s"),
+    "new_session": ("\uff0b \u65b0\u4f1a\u8bdd", "+ New session"),
+    "new_session_failed": ("\u65b0\u5efa\u4f1a\u8bdd\u672a\u51fa\u73b0\uff08bridge \u6ca1\u4e0a\u62a5\uff09",
+                           "The new session did not appear (no bridge reported it)"),
+    "queue": ("\u6392\u961f\u4e2d\uff08%d\uff09", "Queued (%d)"),
+    "queue_title": ("\u6392\u961f\u4e2d\uff08%d \u6761\uff09", "Queued (%d)"),
+    "queue_empty": ("\u961f\u5217\u7a7a\u7740\u3002\u4f1a\u8bdd\u8fd0\u884c\u4e2d\u65f6\uff0c\u8f93\u5165\u6846\u91cc\u53d1\u7684\u8bdd\u4f1a\u6392\u5728\u8fd9\u91cc\u3002",
+                     "Nothing queued. While the agent is busy, what you type waits here."),
+    "queue_external": ("\u7535\u8111\u7aef\u8fd8\u6392\u7740\u6d88\u606f\uff0c\u8fd9\u91cc\u770b\u4e0d\u5230\u4e5f\u6539\u4e0d\u4e86",
+                       "pi also has queued messages from the terminal - not shown or editable here"),
+    "queue_add": ("\u52a0\u5230\u6392\u961f", "Add to queue"),
+    "queue_clear": ("\u6e05\u7a7a\uff08%d\uff09", "Clear (%d)"),
+    "queue_up": ("\u4e0a\u79fb", "Up"),
+    "queue_down": ("\u4e0b\u79fb", "Down"),
+    "queue_edit": ("\u6539", "Edit"),
+    "queue_del": ("\u5220", "Delete"),
+    "queue_save": ("\u4fdd\u5b58", "Save"),
+    "queue_cancel": ("\u53d6\u6d88", "Cancel"),
+    "queue_edit_title": ("\u6539\u6392\u961f\u7b2c %d \u6761", "Edit queued #%d"),
+    "queue_back": ("\u8fd4\u56de\u6392\u961f", "Back to the queue"),
+    "queue_refresh": ("\u5237\u65b0", "Refresh"),
+    "queue_run": ("\u5f00\u59cb\u6295\u9012", "Deliver now"),
+    "queue_paused": ("\u961f\u5217\u4ece\u4e0a\u6b21\u4f1a\u8bdd\u6062\u590d\uff0c\u4e0d\u4f1a\u81ea\u5df1\u8dd1\uff1a\u70b9 \u5f00\u59cb\u6295\u9012 \u624d\u4f1a\u53d1",
+                     "This queue was restored with the session and will not run by itself: tap Deliver now"),
+    "queue_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u961f\u5217",
+                        "This session is not running, so there is no queue"),
     "truncated": ("\u2026 \u5df2\u622a\u65ad\uff08\u5171 %d \u5b57\u7b26\uff09", "\u2026 clipped (%d chars)"),
     "ua_not_allowed": ("ua not allowed\uff08\u5df2\u8bb0\u5f55\uff0c\u53ef\u52a0\u5165 ~/.pi/eink/uas\uff09",
                        "ua not allowed (logged; add it to ~/.pi/eink/uas)"),
@@ -286,6 +311,44 @@ def bridge_port_for(session_id: str) -> int:
         return 0
 
 
+def wait_for_new_session(pid: int, old_sid: str, timeout: float = 6.0) -> str:
+    """The session a pi process reports after it was asked for a new one.
+
+    Read from the registry rather than from the bridge's reply: the instance that
+    answers `/act/new` is the one being replaced. It replies, then shuts down (its
+    registry entries for this pid are dropped), and the replacement registers itself
+    under the same pid with a fresh session id and a fresh port. Waiting for that
+    entry is what makes the picker's button land on the new session instead of on
+    the conversation it just left.
+    """
+    if not pid:
+        return ""
+    end = time.time() + timeout
+    while True:
+        newest, newest_at = "", ""
+        try:
+            raw = json.loads(BRIDGES_FILE.read_text())
+        except Exception:
+            raw = {}
+        for sid, info in raw.items():
+            if not isinstance(info, dict) or sid == old_sid:
+                continue
+            try:
+                if int(info.get("pid") or 0) != pid:
+                    continue
+            except Exception:
+                continue
+            stamp = str(info.get("updatedAt") or "")
+            if stamp >= newest_at:
+                newest, newest_at = str(sid), stamp
+        if newest:
+            _LIVE_CACHE[0] = 0.0   # the next request must see the new registration
+            return newest
+        if time.time() >= end:
+            return ""
+        time.sleep(0.15)
+
+
 SESSION_META_CACHE = {}
 
 
@@ -327,13 +390,64 @@ def session_meta(path: Path) -> dict:
     return meta
 
 
+# One request resolves the same id several times (resolve_view -> session_selected ->
+# session_path_by_id, then newest_session -> session_path_by_id again). Each walk is a
+# directory listing plus a stat per file, so it is memoized for the duration of ONE
+# request - and never longer: a stale index reads as "this session is gone", which is
+# the failure that swaps the conversation. Direct calls (tests, main()) get no memo.
+_INDEX_MEMO = threading.local()
+
+
+def begin_request() -> None:
+    """Start a fresh per-request memo. Called once at the top of both handlers."""
+    _INDEX_MEMO.active = True
+    _INDEX_MEMO.value = None
+
+
+def session_index() -> dict:
+    """{id -> path} for every real pi session file on disk.
+
+    The id has to come from the file's own header row, not from the file name. pi
+    names a file `<timestamp>_<id>.jsonl` when it creates it, but writing into an
+    existing file (or `--session <path>`) keeps the old name, so id and file name
+    disagree for real sessions - 14 of 60 on this machine. Looking the id up as
+    `id[-8:] in name` missed those, and the picker's `?s=` then did not resolve: the
+    viewer read it as "that session is gone" and fell back to the newest live one,
+    so tapping a session in the list showed the running conversation again and the
+    page jumped to whichever agent had started last. Files with no session header
+    are not pi sessions at all (subagent `*_transcript.jsonl`) and stay out.
+
+    Cached for exactly one request (see `_INDEX_MEMO`), never longer. One walk is a
+    directory listing plus a `stat` per file (the header parse behind it is cached by
+    mtime), and a request resolves the same id up to four times; but a session written
+    seconds ago is exactly the one a fresh link points at, and a stale index reads as
+    "gone" - the failure that swaps the conversation. So the memo dies with the
+    request. Duplicate ids (a copied file) resolve to the newest copy.
+    """
+    memo = getattr(_INDEX_MEMO, "value", None)
+    if memo is not None:
+        return memo
+    index, seen = {}, {}
+    for path in SESSIONS.rglob("*.jsonl"):
+        sid = str(session_meta(path).get("id") or "")
+        if not sid:
+            continue
+        try:
+            stamp = path.stat().st_mtime
+        except Exception:
+            continue
+        if sid not in seen or stamp > seen[sid]:
+            seen[sid] = stamp
+            index[sid] = path
+    if getattr(_INDEX_MEMO, "active", False):
+        _INDEX_MEMO.value = index
+    return index
+
+
 def session_path_by_id(session_id: str):
     if not session_id:
         return None
-    for path in SESSIONS.rglob("*.jsonl"):
-        if session_id[-8:] in path.name:
-            return path
-    return None
+    return session_index().get(session_id)
 
 
 def session_selected(session_id: str) -> bool:
@@ -346,8 +460,10 @@ def session_selected(session_id: str) -> bool:
     """
     if not session_id:
         return True
-    info = live_bridges().get(session_id)
-    if info and info.get("sessionFile") and Path(str(info["sessionFile"])).exists():
+    if session_id in live_bridges():
+        # running counts even before its file lands: a session created from the
+        # picker a second ago has a bridge and no jsonl yet, and answering "gone"
+        # would bounce the reader back to the session they just left
         return True
     return session_path_by_id(session_id) is not None
 
@@ -400,18 +516,19 @@ def sessions_html(lang: str = "") -> str:
     rows = []
     for sid, info in sorted(live.items(), key=lambda kv: kv[1].get("updatedAt", ""), reverse=True):
         cwd = info.get("cwd") or ""
-        rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
+        rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>%s'
                     '<div class="mono dim">%s</div></div>'
                     % (quote(str(sid), safe=""), esc(short_path(cwd) or sid[:8]),
+                       new_session_form(str(sid), lang),
                        esc(tr("running_at", lang, short_path(cwd), str(info.get("port", ""))))))
 
-    files = sorted(SESSIONS.rglob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True)
+    files = sorted(session_index().values(), key=lambda f: f.stat().st_mtime, reverse=True)
     shown = 0
     for path in files:
         meta = session_meta(path)
-        sid = meta.get("id") or path.stem.rsplit("_", 1)[-1]
-        if sid in live:
-            continue
+        sid = str(meta.get("id") or "")
+        if not sid or sid in live:
+            continue   # a file with no session header is not a session (transcripts)
         when = time.strftime("%m-%d %H:%M", time.localtime(path.stat().st_mtime))
         rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
                     '<div class="mono dim">%s \u00b7 %s</div>'
@@ -424,6 +541,18 @@ def sessions_html(lang: str = "") -> str:
             break
     return "".join(rows) or '<div class="body">%s</div>' % esc(tr("no_sessions", lang))
 
+
+def new_session_form(sid: str, lang: str = "") -> str:
+    """"+ new session" for a running pi process.
+
+    Only a live process can create a session: the tap is proxied to that session's
+    bridge, which asks its command context for one. That is why the button sits on
+    the rows of the running sessions and not in the page header - a file-only
+    session has nothing to create a session with.
+    """
+    return ('<form class="new" method="POST" action="/act/new?s=%s">'
+            '<button class="btn" type="submit">%s</button></form>'
+            % (quote(str(sid), safe=""), esc(tr("new_session", lang))))
 
 
 def bridge_state():
@@ -523,8 +652,11 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 # on purpose: cutting a runaway agent loose from an untrusted LAN is the one
 # action that is safe without a secret.
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
+# The queue lives in the session's bridge; these actions read and mutate it.
+QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear", "qrun"}
 BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny",
-                  "stop", "status"}
+                  "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear",
+                  "qrun"}
 
 
 def action_allowed(caps: str, action: str) -> bool:
@@ -923,6 +1055,28 @@ def _bridge_opener():
     return urllib.request.build_opener(_NoRedirect)
 
 
+def bridge_queue(port: int = 0):
+    """(items, pi_has_its_own, armed) for this session's bridge queue, or None.
+
+    The bridge owns the queue: pi's own pending messages are a boolean behind
+    ctx.hasPendingMessages() and cannot be listed, edited or reordered from an
+    extension, so what the page below lists is what the box queued itself.
+    """
+    if port <= 0:
+        return None
+    try:
+        req = urllib.request.Request("http://127.0.0.1:%d/queue" % port,
+                                     headers={"Cookie": "%s=%s" % (COOKIE, token()),
+                                              "User-Agent": "viewer"})
+        with _bridge_opener().open(req, timeout=2.0) as resp:
+            data = json.loads(resp.read())
+    except Exception:
+        return None
+    if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+        return None
+    return data["items"], bool(data.get("pending")), bool(data.get("armed", True))
+
+
 def agent_state(port: int = 0):
     """Ask the bridge whether the agent is running. None when unavailable."""
     if port <= 0:
@@ -1014,6 +1168,102 @@ def pending_html(sid: str = "", port: int = 0, caps: str = "full", lang: str = "
     ) % (esc(tr("awaiting", lang)), reason, command, suffix, esc(tr("allow", lang)),
          suffix, esc(tr("deny", lang)))
 
+
+def queue_html(items: list, external: bool = False, sid: str = "", caps: str = "full",
+               lang: str = "", armed: bool = True) -> str:
+    """The queue page: what the box typed while the agent was busy.
+
+    One row per message, with only the controls that can act on that row (no 上移 on
+    the first, no 下移 on the last), because a button that does nothing is a fake
+    control and this device has room for about four of them.
+
+    `armed` is the bridge saying "this process may deliver by itself". A queue restored
+    with a resumed session is not armed: it is listed, and 开始投递 is the only way to
+    start it, so a week-old plan cannot execute behind the reader's back.
+    """
+    suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    can_edit = caps == "full"
+    rows = []
+    for n, item in enumerate(items):
+        try:
+            ident = int(item.get("i"))
+        except Exception:
+            continue
+        text = str(item.get("text") or "")
+        when = ""
+        try:
+            at = float(item.get("at") or 0)
+            if at > 0:
+                when = time.strftime("%H:%M", time.localtime(at / 1000.0))
+        except Exception:
+            when = ""
+        buttons = ""
+        if can_edit:
+            if n > 0:
+                buttons += ('<form method="POST" action="/act/qmove%s">'
+                            '<input type="hidden" name="i" value="%d">'
+                            '<input type="hidden" name="d" value="-1">'
+                            '<button class="btn" type="submit">%s</button></form>'
+                            % (suffix, ident, esc(tr("queue_up", lang))))
+            if n < len(items) - 1:
+                buttons += ('<form method="POST" action="/act/qmove%s">'
+                            '<input type="hidden" name="i" value="%d">'
+                            '<input type="hidden" name="d" value="1">'
+                            '<button class="btn" type="submit">%s</button></form>'
+                            % (suffix, ident, esc(tr("queue_down", lang))))
+            buttons += ('<a class="btn" href="/queue/edit%s&amp;i=%d">%s</a>'
+                        % (suffix, ident, esc(tr("queue_edit", lang))))
+            buttons += ('<form method="POST" action="/act/qdel%s">'
+                        '<input type="hidden" name="i" value="%d">'
+                        '<button class="btn" type="submit">%s</button></form>'
+                        % (suffix, ident, esc(tr("queue_del", lang))))
+        rows.append('<div class="sess"><div class="mono dim">%s</div>'
+                    '<div class="body">%s</div><div class="qacts">%s</div></div>'
+                    % (esc(("%d \u00b7 " % (n + 1)) + when if when else str(n + 1)),
+                       esc(text[:400]), buttons))
+    head = '<div class="body"><b>%s</b></div>' % esc(tr("queue_title", lang, len(items)))
+    if external:
+        head += '<div class="body dim">%s</div>' % esc(tr("queue_external", lang))
+    if items and not armed:
+        head += '<div class="body dim">%s</div>' % esc(tr("queue_paused", lang))
+    if not items:
+        head += '<div class="body dim">%s</div>' % esc(tr("queue_empty", lang))
+    if not can_edit:
+        return head + "".join(rows) + '<div class="body dim">%s</div>' % esc(tr("readonly_hint", lang))
+    run = ""
+    if items and not armed:
+        run = ('<form method="POST" action="/act/qrun%s">'
+               '<button class="btn" type="submit">%s</button></form>'
+               % (suffix, esc(tr("queue_run", lang))))
+    add = ('<form method="POST" action="/act/qadd%s" id="qadd">'
+           '<textarea name="text" rows="2" maxlength="2000" placeholder="%s"></textarea>'
+           '<button class="btn" type="submit">%s</button></form>'
+           % (suffix, esc(tr("queue_add", lang)), esc(tr("queue_add", lang))))
+    clear = ""
+    if items:
+        clear = ('<form method="POST" action="/act/qclear%s">'
+                 '<button class="btn" type="submit">%s</button></form>'
+                 % (suffix, esc(tr("queue_clear", lang, len(items)))))
+    return head + "".join(rows) + run + add + clear
+
+
+def queue_edit_html(ident: int, text: str, sid: str = "", lang: str = "", pos: int = 0) -> str:
+    """Edit one queued message. Its own page: a textarea per row would not fit.
+
+    `ident` is the item's stable id (what the form posts); `pos` is where it sits now,
+    which is what the reader sees - an id that jumps around after a reorder would be
+    the only number on the page they cannot match to a row.
+    """
+    suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    title = tr("queue_edit_title", lang, pos or ident)
+    return ('<div class="body"><b>%s</b></div>'
+            '<form method="POST" action="/act/qedit%s" id="qadd">'
+            '<input type="hidden" name="i" value="%d">'
+            '<textarea name="text" rows="6" maxlength="2000">%s</textarea>'
+            '<button class="btn" type="submit">%s</button></form>'
+            '<div class="body"><a href="/queue%s">%s</a></div>'
+            % (esc(title), suffix, ident, esc(text),
+               esc(tr("queue_save", lang)), suffix, esc(tr("queue_cancel", lang))))
 
 
 def bridge_alive() -> bool:
@@ -1109,7 +1359,11 @@ pre {
 }
 h1, h2, h3, h4 { font-size: 1.05em; margin: 14px 0 6px; }
 ul, ol { margin: 6px 0; padding-left: 26px; }
-li { margin: 2px 0; }
+/* A list item is rendered OUTSIDE .body (which carries word-wrap), so a long token -
+   a path, a key=value, a URL - pushed the li wider than the page: 21 CSS px of overflow
+   and a horizontal scrollbar on every page that had such a bullet. Measured on the
+   Kindle with the /diag beacon (dw 520 vs iw 511), see DEVELOPMENT.md 19. */
+li { margin: 2px 0; word-wrap: break-word; overflow-wrap: break-word; }
 table { border-collapse: collapse; margin: 10px 0; font-size: 0.82em; width: 100%; table-layout: fixed; }
 th, td { border: 1px solid #000; padding: 3px 6px; text-align: left; vertical-align: top; word-wrap: break-word; overflow-wrap: anywhere; }
 th { background: #eee; }
@@ -1165,6 +1419,25 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 }
 .sess { border-bottom: 1px solid #000; padding: 8px 0; }
 .sess a { color: #000; }
+/* "+ new session" sits on the running rows: one running pi process per row, and
+   only a running process can create a session in its own project. */
+.sess form.new { display: inline-block; vertical-align: middle; margin: 0 0 0 8px; }
+.sess .btn { font-size: 11px; min-height: 20px; padding: 0 6px; line-height: 16px; }
+/* Queue page: one action row per message. `a.btn` has to look like the buttons next
+   to it (改 is a link because editing needs its own page), so it carries the same
+   border and gets `display:inline-block` - the shared `.btn` rule is written for
+   <button>, which is a block-level-ish box in these engines. */
+.qacts { margin-top: 6px; }
+.qacts form { display: inline-block; margin: 0 6px 0 0; line-height: 1; }
+.qacts .btn { font-size: 11px; min-height: 20px; padding: 0 6px; line-height: 16px; }
+a.btn { display: inline-block; text-decoration: none; font-size: 11px;
+  min-height: 20px; padding: 0 6px; line-height: 16px; }
+#qadd { margin-top: 12px; }
+#qadd textarea {
+  display: block; width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
+  font-family: inherit; font-size: 14px; line-height: 1.3;
+  border: 2px solid #000; padding: 4px 8px; margin: 0 0 6px 0; background: #fff; color: #000;
+}
 #note { font-size: 20px; font-weight: bold; padding: 6px 0 0; }
 #result { padding: 3px 8px; font-size: 14px; font-weight: bold; color: #000; min-height: 20px; }
 
@@ -1199,6 +1472,7 @@ hr { border-top-color: #fff; }
 #acts #sayform textarea::placeholder, #acts #sayform input::placeholder { color: #eee; }
 .sess { border-bottom-color: #fff; }
 .sess a { color: #fff; }
+#qadd textarea { background: #000; color: #fff; border-color: #fff; }
 #note, #result { color: #fff; }
 a { color: #fff; }
 """
@@ -1316,6 +1590,7 @@ function paint(j) {
     window.scrollTo(0, document.body.scrollHeight);
     STICK = true;   // the synthetic scroll event lands after this paint
   }
+  if (!GEO) { GEO = true; geoBeacon(); }
 }
 var POLL_MS_BUSY = 1200, POLL_MS_IDLE = 3000, POLL_MS = POLL_MS_IDLE;
 // The working indicator is animated here, not on the server: a server-side frame had to
@@ -1354,16 +1629,46 @@ function poll() {
   fetchData(function () { setTimeout(poll, POLL_MS); });
 }
 poll();
-// one-shot geometry beacon so the server side can see the device's real viewport
-(function () {
+// One-shot geometry beacon so the server side can see the device's real viewport.
+// Fired after the FIRST PAINT, not on load: the shell is empty until /data lands, and a
+// beacon taken before that measured an empty document (dw == iw) and hid the very
+// overflow it was added to find.
+var GEO = false;
+function geoBeacon() {
   try {
     var x = new XMLHttpRequest();
+    // sw/dw vs iw: a horizontal scrollbar means some box is wider than the viewport.
+    // `who` names it (tag#id.class + its width), because "the page is 3px too wide" is
+    // otherwise unattributable on a device with no devtools.
+    var de = document.documentElement, iw = de.clientWidth, who = "";
+    try {
+      // Two shapes of overflow: a box wider than the viewport, and a box whose CONTENT
+      // is wider than the box (long unbreakable text inside a pre-wrap block - the box
+      // stays 511 wide, so only scrollWidth gives it away).
+      var all = document.getElementsByTagName("*"), hits = [];
+      for (var n = 0; n < all.length; n++) {
+        var el = all[n], r = el.getBoundingClientRect();
+        var over = Math.max(r.right - iw, el.scrollWidth - el.clientWidth);
+        if (over > 0.5) {
+          var name = el.tagName.toLowerCase() +
+            (el.id ? "#" + el.id : "") +
+            (el.className ? "." + String(el.className).split(" ")[0] : "");
+          var d = 0, up = el;
+          while (up.parentNode) { d++; up = up.parentNode; }
+          hits.push({ o: over, d: d, s: name + ":" + Math.round(over) });
+        }
+      }
+      // deepest first: the ancestors overflow for the same reason, only the innermost
+      // box says which element is actually too wide
+      hits.sort(function (a, b) { return (b.d - a.d) || (b.o - a.o); });
+      who = hits.slice(0, 3).map(function (h) { return h.s; }).join(",");
+    } catch (e) { who = "err"; }
     x.open("GET", "/diag?w=" + window.innerWidth + "&h=" + window.innerHeight +
       "&sw=" + document.body.scrollWidth + "&dpr=" + (window.devicePixelRatio || 1) +
-      "&iw=" + document.documentElement.clientWidth, true);
+      "&iw=" + iw + "&dw=" + de.scrollWidth + "&who=" + encodeURIComponent(who), true);
     x.send(null);
   } catch (e) {}
-})();
+}
 document.addEventListener("submit", function (e) {
   var form = e.target;
   var action = form.getAttribute("action") || "";
@@ -1521,9 +1826,10 @@ def newest_session(session_id: str = "") -> Path | None:
     if session_id:
         info = live_bridges().get(session_id)
         if info and info.get("sessionFile"):
-            target = Path(str(info["sessionFile"]))
-            if target.exists():
-                return target
+            # the file may not exist yet (a session created moments ago); render()
+            # copes with a missing path, and jumping to "the newest" instead would
+            # show a different conversation under the id the page asked for
+            return Path(str(info["sessionFile"]))
         target = session_path_by_id(session_id)
         if target:
             return target
@@ -1543,7 +1849,7 @@ def newest_session(session_id: str = "") -> Path | None:
     env = os.environ.get("PI_SESSION_FILE")
     if env and Path(env).exists():
         return Path(env)
-    files = sorted(SESSIONS.rglob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True)
+    files = sorted(session_index().values(), key=lambda p: p.stat().st_mtime, reverse=True)
     return files[0] if files else None
 
 
@@ -2001,8 +2307,10 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         bridge_note += tr("pending_note", lang)
     short = ""
     if path:
-        stem = path.stem
-        short = stem.rsplit("_", 1)[-1][:8] if "_" in stem else stem[-8:]
+        # the id from the header row, not the file name: they disagree for sessions
+        # written into an existing file, and the picker's links use the header id
+        tail = str(session_meta(path).get("id") or "") or path.stem.rsplit("_", 1)[-1]
+        short = tail[:8]
     line2 = " ".join(parts) + bridge_note
     status = (line1 + " \u00b7 " + line2) if line1 else line2
     if short:
@@ -2010,21 +2318,33 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
     # hash both: the page repaints only when this changes, and the status line
     # carries the Working spinner
     digest = hashlib.sha1((frag + status).encode("utf-8")).hexdigest()[:12]
-    theme_link = ('<a href="/theme?d=0">%s</a>' % esc(tr("theme_day", lang)) if dark
-                  else '<a href="/theme?d=1">%s</a>' % esc(tr("theme_night", lang)))
-    reload_link = '<a href="/%s">%s</a>' % (("?s=" + quote(sid, safe="")) if sid else "",
-                                            esc(tr("redraw", lang)))
+    suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    # ?d= is already in the query, so the id needs an &amp;, not a second ?
+    more = ("&amp;s=" + quote(sid, safe="")) if sid else ""
+    theme_link = ('<a href="/theme?d=0%s">%s</a>' % (more, esc(tr("theme_day", lang))) if dark
+                  else '<a href="/theme?d=1%s">%s</a>' % (more, esc(tr("theme_night", lang))))
+    reload_link = '<a href="/%s">%s</a>' % (suffix, esc(tr("redraw", lang)))
     picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions", lang))) if caps == "full" else ""
+    # The queue link is shown while a queue exists and while the agent is busy (then
+    # there is something to queue *into*), never as a bare "0" on every page.
+    queued = 0
+    try:
+        queued = int((state or {}).get("queued") or 0)
+    except Exception:
+        queued = 0
+    queue_link = ""
+    if caps == "full" and sid and (queued > 0 or busy):
+        queue_link = '<a href="/queue%s">%s</a> \u00b7 ' % (suffix, esc(tr("queue", lang, queued)))
     # target language is the other one: the label doubles as the switch
     lang_link = '<a href="/lang?l=%s%s">%s</a>' % (
         "zh" if lang == "en" else "en",
-        ("&amp;s=" + quote(sid, safe="")) if sid else "",
+        more,
         esc(tr("lang_switch", lang)))
-    foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
+    foot = queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     if path:
         # the picker lists every project on this machine: not on a read-only network
         picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions_short", lang))) if caps == "full" else ""
-        foot = picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
+        foot = queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
     return digest, frag, status, foot, items, busy
 
 
@@ -2415,6 +2735,7 @@ class Handler(BaseHTTPRequestHandler):
         return False, extra, "bad or missing token"
 
     def do_POST(self):
+        begin_request()
         try:
             self._do_post()
         except (BrokenPipeError, ConnectionResetError):
@@ -2423,6 +2744,7 @@ class Handler(BaseHTTPRequestHandler):
             self._fail(err)
 
     def do_GET(self):
+        begin_request()
         try:
             self._do_get()
         except (BrokenPipeError, ConnectionResetError):
@@ -2545,16 +2867,23 @@ class Handler(BaseHTTPRequestHandler):
             back(tr("readonly_need_pin", lang), 403)
             return
 
-        # Routing only: on a read-only network the page must not *choose* another
-        # session's history, but its stop/status still has to reach the session it
-        # displays, so the id is kept for routing and never used to pick a view.
-        # Route to the session the page displays. In read-only mode ?s= is ignored
-        # entirely (no choosing another session's history), so the id comes from the
-        # rendered page rather than from the request.
-        # The ?s= hint is not honoured even at full caps: a request that could
-        # name any live session would let one credential steer every project's
-        # agent, so routing always follows the session the viewer renders.
-        post_sid = rendered_session_id()
+        # Routing: follow the session the page names, because that is the session it
+        # shows. Every request from a full-capability page carries that id (the
+        # viewer pins the resolved one into the poll and the buttons), so two devices
+        # can read two projects without tapping each other's stop button - routing
+        # from one global "rendered" slot is what made the buttons land in the wrong
+        # conversation. It is not a widening of authority: the same credential can
+        # open any session with ?s= anyway. On a read-only network ?s= stays ignored
+        # (the page may not choose), so the id comes from what the viewer renders.
+        post_sid = ""
+        if caps == "full" and sid_hint:
+            post_sid = sid_hint if session_selected(sid_hint) else ""
+            if not post_sid:
+                # the page named a session that no longer resolves: refuse instead of
+                # quietly steering whichever one the viewer happens to render
+                back(tr("session_no_bridge", lang), 502)
+                return
+        post_sid = post_sid or rendered_session_id()
         if not post_sid:
             # approval requests belong to whichever session parked them: match its pid
             try:
@@ -2570,6 +2899,15 @@ class Handler(BaseHTTPRequestHandler):
             # Never fall back to BRIDGE_PORT: that is a different process, or nothing
             back(tr("session_no_bridge", lang), 502)
             return
+        target_pid = 0
+        if action == "new":
+            # "+ new session" is only possible inside a running pi process: the bridge
+            # asks its command context for one. Its pid is how the replacement session
+            # is recognised in the registry a moment later.
+            try:
+                target_pid = int(live_bridges().get(post_sid, {}).get("pid") or 0)
+            except Exception:
+                target_pid = 0
         target = "http://127.0.0.1:%d/act/%s" % (port_target, action)
         req = urllib.request.Request(target, data=body, method="POST")
         # forward credentials: the bridge gates on the same cookie
@@ -2624,6 +2962,16 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        if action == "new" and status < 400 and target_pid:
+            # The bridge answers before it is torn down, so the replacement session is
+            # not in its reply: wait for it to register under the same pid. Failing
+            # that, stay put and say so instead of landing on a page that will hop.
+            new_sid = wait_for_new_session(target_pid, post_sid)
+            if new_sid:
+                payload["sid"] = new_sid
+            else:
+                payload["msg"] = str(payload.get("msg") or "") + " " + tr("new_session_failed", lang)
+
         if not js_client:
             what = u.path.rsplit("/", 1)[-1]
             text = str(payload.get("msg") or "").strip()
@@ -2634,6 +2982,16 @@ class Handler(BaseHTTPRequestHandler):
                 text = {"approve": tr("allowed", lang), "deny": tr("denied", lang)}.get(what, tr("sent", lang))
                 if status >= 400:
                     text = tr("failed_code", lang, status)
+            if payload.get("sid"):
+                # a session that was just created: land on it, not back on the old one
+                loc = "/?" + urlencode([("s", str(payload["sid"])), ("msg", text[:60])])
+                self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", loc)])
+                return
+            if action in QUEUE_ACTIONS:
+                # the reader was on the queue page: come back to it, with the outcome
+                loc = "/queue?" + urlencode([("s", post_sid), ("msg", text[:60])])
+                self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", loc)])
+                return
             back = "/static?" + urlencode(keep + [("msg", text[:60])])
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", back)])
             return
@@ -2662,11 +3020,23 @@ class Handler(BaseHTTPRequestHandler):
         # history. Both drop ?s=; both then fall back to the session this viewer last
         # rendered, so the page stops hopping between running sessions.
         path, sid, gone = resolve_view(requested, caps)
+        if not sid and path is not None:
+            # nothing requested and nothing remembered (a fresh viewer): pin the id of
+            # the session about to be rendered, or this page would re-derive "the"
+            # session from view.json on every poll and follow another device's pick
+            sid = str(session_meta(path).get("id") or "")
         port = bridge_port_for(sid) if sid else bridge_port_for(rendered_session_id())
         live_here = (sid in live_bridges()) if sid else bool(live_bridges())
-        keep = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
-        if caps != "full":
-            keep = [(k, v) for k, v in keep if k != "s"]   # never echo a dropped choice
+        # What every later request from THIS page must carry. A page that does not
+        # name its session re-derives "the" session on every poll, and there is only
+        # one such slot for the whole viewer: another device browsing, or a new pi
+        # session starting on the laptop, then swapped the conversation under the
+        # reader. Naming the resolved id in the poll (and in the buttons, which take
+        # the same id) makes each page follow its own session; view.json only decides
+        # which session a page with no id at all lands on.
+        keep = [(k, q[k][0]) for k in ("n", "think", "tools") if k in q]
+        if caps == "full" and sid:
+            keep.insert(0, ("s", sid))
         limit = qint(q, "n", 12, 1, 200)
         show_thinking = q.get("think", ["0"])[0] == "1"
         show_tools = q.get("tools", ["0"])[0] == "1"
@@ -2697,22 +3067,19 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         # The only writer of view.json: whatever this page is about to show becomes
-        # "the session" for every later request that cannot name one itself.
+        # "the session" a page with no id of its own lands on.
         if u.path == "/" and path is not None:
-            remember_sid(str(session_meta(path).get("id") or ""))
+            remember_sid(sid or str(session_meta(path).get("id") or ""))
 
-        # Opening the page without ?s= used to mean "whichever session heartbeats
-        # last", re-resolved on every poll: with two pi sessions running, the whole
-        # page swapped conversations whenever the other heartbeat landed later.
-        # Pin the id into the URL once — the poll then carries it forever.
-        # Read-only networks skip this on purpose: ?s= is dropped there (above), so
-        # the redirect would loop.
-        if not sid and caps == "full" and u.path == "/" and path is not None:
-            pinned = str(session_meta(path).get("id") or "")
-            if pinned and session_path_by_id(pinned) == path:
-                self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
-                    ("Location", "/?" + urlencode(keep + [("s", pinned)]))])
-                return
+        # A page opened by a bare URL (a bookmark, or the address bar after a
+        # reboot) gets the resolved id pinned into its address once, so the URL in
+        # the bar is the session on screen - and stays that session after a reload.
+        # Read-only networks skip this on purpose: ?s= is dropped there, so the
+        # redirect would loop.
+        if not requested and caps == "full" and u.path == "/" and sid:
+            self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
+                ("Location", "/?" + urlencode(keep))])
+            return
         if caps != "full" and u.path == "/sessions":
             self._send(auth_page(tr("list_locked", lang), self._dark()).encode("utf-8"),
                        "text/html; charset=utf-8", 403, extra=extra)
@@ -2829,14 +3196,64 @@ class Handler(BaseHTTPRequestHandler):
         note = (q.get("msg") or [""])[0]
         note_html = ('<div id="note">%s</div>' % esc(note[:40])) if note else ""
 
-        if u.path == "/sessions":
+        if u.path in ("/queue", "/queue/edit"):
+            # The queue belongs to the session this page names (the same id the poll and
+            # the buttons carry), and its content comes from that session's bridge: the
+            # viewer keeps no queue state of its own.
+            suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+            got = bridge_queue(port)
+            note_msg = (q.get("msg") or [""])[0][:60]
+            if u.path == "/queue/edit":
+                # the way back from an edit is the queue it came from, not the session
+                back_path = "/queue" + suffix
+                back_label = "queue_back"
+                refresh = ""
+            else:
+                back_path = ("/?" + urlencode(keep)) if keep else "/"
+                back_label = "back_to_session"
+                # No meta refresh on this page: it shares the add box with the list, and a
+                # reload would wipe what the reader is typing. One tap re-reads instead.
+                refresh = (' \u00b7 <a href="/queue%s">%s</a>'
+                           % (suffix, esc(tr("queue_refresh", lang))))
+            body = ('<div class="body"><a href="%(back_url)s">%(back)s</a>%(refresh)s</div>'
+                    '%(note)s%(queue)s')
+            if got is None:
+                inner = '<div class="body dim">%s</div>' % esc(tr("queue_no_bridge", lang))
+            elif u.path == "/queue/edit":
+                want = (q.get("i") or [""])[0]
+                pos, item = next(((n + 1, x) for n, x in enumerate(got[0])
+                                  if str(x.get("i")) == want), (0, None))
+                inner = (queue_edit_html(int(item["i"]), str(item.get("text") or ""),
+                                         sid, lang, pos=pos)
+                         if item else '<div class="body dim">%s</div>' % esc(tr("queue_empty", lang)))
+            else:
+                inner = queue_html(got[0], got[1], sid, caps, lang, armed=got[2])
             page = ("<!DOCTYPE html><html><head>"
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
                     '<link rel="icon" type="image/png" href="/favicon.png">'
                     "<style>%(css)s</style></head><body>"
-                    '<div id="wrap"><div class="body"><a href="/">%(back)s</a></div>'
+                    '<div id="wrap">%(body)s</div></body></html>')
+            self._send((page % {"css": css, "body": body % {
+                "back_url": esc(back_path),
+                "back": esc(tr(back_label, lang)),
+                "refresh": refresh,
+                "note": ('<div id="note">%s</div>' % esc(note_msg)) if note_msg else "",
+                "queue": inner}}).encode("utf-8"),
+                       "text/html; charset=utf-8", extra=extra)
+            return
+
+        if u.path == "/sessions":
+            # The way back is the session this picker was opened from, not "whatever the
+            # viewer rendered last": with two devices in use that is the other one's pick.
+            back_path = ("/?" + urlencode(keep)) if keep else "/"
+            page = ("<!DOCTYPE html><html><head>"
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    '<link rel="icon" type="image/png" href="/favicon.png">'
+                    "<style>%(css)s</style></head><body>"
+                    '<div id="wrap"><div class="body"><a href="%(back_url)s">%(back)s</a></div>'
                     "%(list)s</div></body></html>")
             self._send((page % {"css": css, "list": sessions_html(lang),
+                                "back_url": esc(back_path),
                                 "back": esc(tr("back_to_session", lang))}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
             return

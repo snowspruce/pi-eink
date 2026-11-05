@@ -15,6 +15,10 @@ Cost and context sit in the status line, the conversation below it, then 停下 
 message list in place, so the screen does not flicker. 1.2 s polling while the agent is
 busy, 3 s when idle.
 
+While the agent works, what you type does not disappear into pi's queue: it waits in the
+box's own queue, the footer grows a 排队中（3） link, and `/queue` lists the messages with
+上移 / 下移 / 改 / 删 (see [The queue](#the-queue)).
+
 Scope: personal use, one viewer, a handful of sessions, a network you control. It is not
 a multi-user service, and it is not a sandbox: the page can drive an agent that has a
 shell.
@@ -111,7 +115,7 @@ State is kept; `rm -rf ~/.pi/eink` deletes the token and the history config.
 |---|---|---|
 | `extensions/eink-bridge.ts` | a pi extension, loaded inside every pi process | Sending a prompt needs the in-process API (`pi.sendUserMessage()`, `ctx.abort()`); an outside process cannot do it |
 | `viewer/server.py` | its own process (launchd / systemd) | It only reads session `.jsonl` snapshots, so it survives pi restarts and keeps showing the last state |
-| `~/.pi/eink/` | runtime state and secrets, never committed | `token`, `pin`, `allow_ips`, `uas`, `bridge.json`, `bridges.json`, `pending.json`, `answer.json`, `view.json`, logs |
+| `~/.pi/eink/` | runtime state and secrets, never committed | `token`, `pin`, `allow_ips`, `uas`, `bridge.json`, `bridges.json`, `pending.json`, `answer.json`, `view.json`, `queue.json`, logs |
 
 Each pi process binds its own bridge port, base `8010`, offset by a hash of the session id,
 walking forward on collision, and registers itself in `~/.pi/eink/bridges.json`. One viewer
@@ -135,6 +139,39 @@ Both sides check ownership and both checks must stay. The viewer only shows a bl
 `pid` owns the session being rendered (`pending_owned_by()`), so the page never quotes
 another project's command line. The bridge refuses to answer a block whose `pid` is not its
 own (HTTP 409, `eink-bridge.ts:394`), because `pending.json` is shared by every pi process.
+
+### The queue
+
+pi's own queue cannot be read or edited from an extension: `ExtensionContext` offers
+`hasPendingMessages(): boolean` and nothing else. The arrays behind it and `clearQueue()`
+live on `AgentSession` and are bound to the RPC/JSON clients only, and the `queue_update`
+event goes to those clients too. So the box keeps **its own** queue
+(`~/.pi/eink/queue.json`, one entry per session) and leaves pi's queue empty:
+
+- anything the page sends while the agent is busy (free text, and 继续 / 审查 / 执行) joins
+  that queue instead of being handed to pi as a follow-up;
+- the footer shows 排队中（3） and `/queue` lists the messages, with 上移 / 下移 / 改 / 删, a
+  加一条 box and 清空. Each row only carries the buttons that can act on it: no 上移 on the
+  first message, no 下移 on the last;
+- one message is delivered per settled run (`agent_settled`), so the queue is a run-after-run
+  plan, not a mid-run interruption. A queued `/skill:` or prompt template expands exactly as
+  an immediate send would. If a hook swallows the message and no run starts at all, the next
+  one follows 400 ms later instead of the queue stalling;
+- 停下 clears the queue along with aborting (the same thing Escape does in the TUI) and says
+  how many were dropped;
+- the page is a snapshot, not a live list: it shares the page with the add box, so a
+  meta-refresh would wipe what you are typing. 刷新 re-reads it, and every button re-renders;
+- delivery is *armed* by queueing something, and by `/reload` (the reader was mid-flight);
+  a queue restored with a resumed session is listed but not armed, because three messages
+  queued before a crash must not execute by themselves a week later. 开始投递 is the way out.
+  Queue entries nobody came back for are dropped after a week;
+- the file survives `/reload` and a pi restart; a viewer restart does not matter because the
+  viewer keeps no queue state at all. Writes are read-modify-write like `bridges.json`, so two
+  pi processes queueing in the same instant can lose one write.
+
+The honest limit: a message typed **in the terminal** during a run sits in pi's queue, which
+this page cannot list, edit or reorder. The queue page says so when pi reports pending
+messages of its own.
 
 ---
 
@@ -169,8 +206,9 @@ State files under `~/.pi/eink/`, all ignored by git:
 | `install-meta` | `install.sh` | label, port and os of the installed unit, read back by `--uninstall` |
 | `actions.log` | viewer | one line per action: time, peer IP, capability, action, result |
 | `bridge.json` | bridge | most recent heartbeat, "is any bridge alive" |
-| `view.json` | viewer | the session the page last rendered; re-rendered whenever a request cannot name one itself (`?s=`, read-only networks), so the page cannot hop between running sessions |
+| `view.json` | viewer | the session a page with no id of its own lands on (a bookmark, the first open after a restart); every page pins its own session after that |
 | `bridges.json` | bridge | session id to `{port, pid, cwd, sessionFile, updatedAt}`, heartbeat 60 s, entries older than 10 min ignored |
+| `queue.json` | bridge | session id to the messages the box queued while that session was busy; survives `/reload`, deleted when the queue empties |
 | `pending.json`, `answer.json` | safety-gate and bridge | a parked risky command and the page's verdict |
 | `bridge.log` | bridge | why a session is not serving the page, for example a busy port |
 | `diag.log`, `ua_seen.log` | viewer | page beacons and rejected UAs; both rotate to `.1` at 256 KB |
@@ -181,15 +219,18 @@ State files under `~/.pi/eink/`, all ignored by git:
 Viewer on `:8000`: `/` page shell (a first visit without `?s=` is redirected once to
 `/?s=<id>`, so the poll stays on the conversation you opened), `/data` JSON fragment,
 `/static` no-JS fallback (a form POST from a browser without JS lands here), `/sessions`
-picker, `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`, `/diag`, `/glyphs`,
-`/favicon.png`, `/done/<key>` relayed from the bridge's confirmation page, and
-`POST /act/<action>` proxied to the session's bridge. Two actions are viewer-local:
-`/act/unlock` enters the pin to unlock a network, `/act/readonly` drops back to read-only.
+picker (each running session carries a `+ New session` button), `/queue` and
+`/queue/edit` (the queue, see above), `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`,
+`/diag`, `/glyphs`, `/favicon.png`, `/done/<key>` relayed from the bridge's confirmation
+page, and `POST /act/<action>` proxied to the session's bridge. Three actions are
+viewer-local: `/act/unlock` enters the pin to unlock a network, `/act/readonly` drops back
+to read-only, `/act/new` creates a session inside that session's pi process (and lands on
+it; refused while that session is running).
 
-Bridge on `:8010`+ or `EINK_BRIDGE_PORT`: `GET /`, `/state`, and
-`POST /act/{stop,continue,review,execute,status,say,approve,deny}`. Only `stop` and
-`status` are accepted from a non-loopback peer; free text, approvals and prompts must come
-through the viewer's proxy.
+Bridge on `:8010`+ or `EINK_BRIDGE_PORT`: `GET /`, `/state`, `/queue`, and
+`POST /act/{stop,continue,review,execute,status,say,approve,deny,new,qadd,qedit,qdel,qmove,qclear,qrun}`.
+Only `stop` and `status` are accepted from a non-loopback peer; free text, approvals,
+prompts, new sessions and the queue must come through the viewer's proxy.
 
 ### Interface language
 
@@ -244,6 +285,7 @@ sniffed a cookie promote an unknown network to `full`.
 
 `readonly` means no free text, no 继续/审查/执行, no session picker (that list exposes every
 project on the machine) and `?s=` is ignored, so only the default session can be read.
+The queue page stays readable there, without its buttons: every mutation would only 403.
 Stopping a runaway agent stays available on purpose: it is the one action that is safe
 without a secret. Read-only decisions, pin unlocks and every proxied action land in
 `actions.log`.
@@ -273,6 +315,17 @@ is needed.
 
 ## Troubleshooting
 
+**A black strip sits between the status bar and the page** that is the browser, not the
+page: with quick controls the toolbar container collapses to 0 height but the page area is
+not moved up, so the window background shows through ~42 CSS px of space and the page gets
+that much less height. The page can neither see nor paint there (`#wrap`'s padding scrolls
+away; nothing in the document is full-width black at the top). Fix by restarting the
+browser with `enable_quick_controls=true` - `~/bin/eink-addr off` does exactly that
+(force-stop, patch the pref, relaunch). Verify with `adb shell dumpsys activity top`:
+`main_content` must start at `0,` and `BrowserWebView` must be the full height
+(`0,0-1072,1332` here); a `main_content` starting at `0,89` is the half-applied state.
+Full measurements in `DEVELOPMENT.md` §18.
+
 **`/reload` hangs on "Reloading keybindings, extensions, skills…"** pi awaits
 `session_start`, and the bridge binds a port there. An unbounded `EADDRINUSE` retry blocks
 the whole reload with no error anywhere. The retry is bounded on purpose: keep it that way.
@@ -287,11 +340,15 @@ only `safety-gate` writes. Check that it is loaded in `~/.pi/agent/extensions/sa
 With a gate loaded but no risky call pending, an empty block is the correct, silent state.
 `install.sh` prints what it found.
 
-**The page switched to another conversation by itself** that was a bug: without `?s=` the
-page re-resolved "the newest live session" on every poll, so a second pi session's
-heartbeat swapped the whole page. Two fixes: the first visit pins `?s=`, and whenever no
-session can be named (read-only network, bookmark without `?s=`) the viewer re-renders what
-it recorded in `view.json` instead of re-deriving "newest".
+**The page switched to another conversation by itself** that was a bug, with three
+separate causes. The page re-resolved "the newest live session" on every poll; the session
+id was looked up by guessing from the file name, which is wrong for every session written
+into an existing file, and a failed lookup was read as "that session is gone" and answered
+by showing the newest one - that is why tapping a session in the picker came back to the
+running conversation; and `view.json` was the single "the session" for every device. Now
+each page pins the id it resolved into every request it makes (poll, buttons, footer
+links), a first visit always answers `303 /?s=<id>`, ids are read from the session file's
+header row, and buttons are routed by the id the page names.
 
 **A conversation is gone and the page says so** the `?s=` in your URL no longer resolves:
 session file deleted, moved, or forked into a new id. The page falls back to the current

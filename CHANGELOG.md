@@ -4,6 +4,73 @@ All notable changes to this project. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), versions follow
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **The queue is visible and editable from the page.** While the agent is busy, what the box
+  sends waits in the bridge's own queue (`~/.pi/eink/queue.json`, survives `/reload`); the
+  footer shows `排队中（3）` and `/queue` lists the messages with 上移 / 下移 / 改 / 删, a 加一条
+  box and 清空. One message is delivered per settled run, 停下 drops the queue along with
+  aborting (the same thing Escape does in the TUI) and says how many went.
+- `+ New session` in the picker — one tap on a running session's row starts a new
+  session in that session's pi process (`POST /act/new` → the extension's `eink:new`
+  command) and lands the page on it. Refused while that session is running, so a stray tap
+  cannot throw away a turn. The new id is read from `bridges.json` (same pid, new id),
+  because the bridge that answers is the instance being replaced.
+- **开始投递** on the queue page: a queue restored with a *resumed* session is listed but not
+  armed, so a plan queued before a crash cannot execute a week later; queuing something or a
+  `/reload` arms it, and 开始投递 is the explicit way out of the paused state.
+- Bridge `GET /queue` and `POST /act/{qadd,qedit,qdel,qmove,qclear,qrun}`; `/state` also reports
+  the count so the footer costs no extra request.
+
+### Fixed
+
+- **A horizontal scrollbar that was always there.** Markdown list items render outside
+  `.body`, which is where `word-wrap` lives, so a long token in a bullet (a path, a
+  `key=value`, a URL) pushed the row 9 CSS px past the viewport. `/diag` now also reports
+  `dw` (document scrollWidth) and `who` (the deepest element that overflows, measured after
+  the first paint), which is what named the `<li>` on the device.
+
+- **Queue delivery was inconsistent with what the page said, in four ways found on review:**
+  `加一条` while idle replied "queued" but sent immediately; `session_start` ignored its
+  reason, so a resumed session auto-ran leftovers from days ago; queued text was delivered
+  without `expandPromptTemplates`, so a queued `/skill:` reached the model as chat; and an
+  empty `qadd` answered 500 instead of 400. Also: a missing timestamp rendered as 08:00, and
+  the page had no way to refresh (no meta refresh on purpose - it would wipe the add box),
+  and "Removed #5" reported the internal id of the second row instead of its position.
+  The 400 ms retry that keeps a swallowed message from stalling the queue is now gated on the
+  `agent_start` event instead of on the clock: with a slow run start it used to pipeline two
+  queued messages into one run.
+
+### Changed
+
+- A message sent while the agent is busy no longer goes into pi's queue with
+  `deliverAs: "followUp"`, and the old "messages are already queued" refusal is gone: the
+  box queues several messages and delivers them run by run.
+- **Limitation, stated in the README:** pi's own queue cannot be read or edited from an
+  extension (`ctx.hasPendingMessages()` is a boolean), so messages typed in the terminal
+  during a run are not shown on the queue page. The page says so when pi reports pending
+  messages of its own.
+
+### Fixed
+
+- **Tapping a session in the picker showed the running conversation again.** Session ids
+  were resolved by guessing from the file name (`id[-8:] in name`), which is wrong for
+  every session written into an existing file; the miss was read as "that session is
+  gone", and the page fell back to the newest live session.
+- **The page jumped to another conversation when a second agent started.** Same root cause
+  plus one global "current session" slot: a page that did not name a session re-derived it
+  on every poll. Each page now pins the id it resolved into every request it makes, a bare
+  `/` always answers `303 /?s=<id>` (the old pin only fired when `view.json` was empty, so
+  it never fired in daily use), and buttons are routed by the id the page names.
+- The picker is built from session files that actually have a `session` header, so subagent
+  `*_transcript.jsonl` artifacts no longer appear as sessions.
+- The id→path index is cached for one request instead of four walks per poll (a dead session
+  cost 4 directory walks every 1.2 s; a live one still costs none).
+- A session created seconds ago counts as live before its `.jsonl` exists, instead of being
+  reported as "gone".
+
 ## [1.0.0] — 2026-11-01
 
 First tagged release: a Kindle (or any barely-rendering browser) as a second screen
