@@ -132,6 +132,10 @@ All notable changes to this project. The format follows
 
 ### Changed
 
+- Reverted the thinner control frames: 1px borders are unreadable on this panel (e-ink
+  renders them as pale grey). 2px is the thinnest legible stroke here; the table lines stay
+  at 1px because they are background, not controls.
+
 - The kiosk app is the device's **HOME**: pressing HOME or rebooting lands on the page, and
   the launcher no longer sits in front of it. `⋮ → 桌面` starts whichever other HOME app is
   installed, so nothing is locked away. The watchdog now decides on the *process* being
