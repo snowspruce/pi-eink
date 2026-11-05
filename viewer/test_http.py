@@ -343,6 +343,17 @@ class FullNetwork(unittest.TestCase):
         server.SESSION_META_CACHE.pop("last:" + str(f), None)
         self.assertEqual(server.session_last_user(f), "the new question")
 
+    def test_the_font_size_is_a_button_not_a_hidden_parameter(self):
+        """/fs?d=+2 sets the size and comes back to the session; the page then renders
+        with it (18px was too small on this panel, but a query string nobody can reach is
+        not a control)."""
+        seen = {}
+        sid = "aaaabbbb-1111-2222-3333-444455556666"
+        status, _d = request(self.viewer.port, "/fs?d=2&s=" + sid, out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("piefs=", " ".join("%s: %s" % kv for kv in seen.items()))
+        self.assertIn("s=" + sid, seen.get("Location", ""))
+
     def test_whois_answers_without_credentials(self):
         """LAN discovery needs one unauthenticated line: the device has no mDNS and must
         not depend on a router-reserved address, so it scans its own /24 and looks for

@@ -70,6 +70,7 @@ PROJECT_ROOTS = [p.strip() for p in
                  if p.strip()]
 COOKIE = "pieink"
 LANG_COOKIE = "pielang"
+FONT_COOKIE = "piefs"
 # Page furniture only (~35 strings). Conversation content is never translated.
 # Default is Chinese: that is what the reader uses daily; English is opt-in with
 # ?lang or /lang?l=en, because an English README reader should still be able to
@@ -802,6 +803,9 @@ def menu_html(lang: str = "", next_url: str = "/home") -> str:
     rows = [
         ("\u4e3b\u9875", "/home"),
         ("\u91cd\u65b0\u52a0\u8f7d", next_url or "/home"),
+        # 字号：页脚那两个 9px 的 A-/A+ 在触屏上点不中，菜单里给整行
+        ("\u5b57\u53f7 A\uff0b", "/fs?d=2"),
+        ("\u5b57\u53f7 A\uff0d", "/fs?d=-2"),
         ("\u684c\u9762", "pi-eink://desktop"),
     ]
     out = ['<div id="home">',
@@ -2773,11 +2777,16 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         "zh" if lang == "en" else "en",
         more,
         esc(tr("lang_switch", lang)))
-    foot = queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
+    fs_suffix = (("&amp;" if sid else "?") + "s=" + quote(sid, safe="")) if sid else ""
+    font_links = ('<a href="/fs?d=-2%s">A-</a> <a href="/fs?d=2%s">A+</a>'
+                  % (fs_suffix, fs_suffix))
+    foot = (queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 "
+            + font_links + " \u00b7 " + lang_link)
     if path:
         # the picker lists every project on this machine: not on a read-only network
         picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions_short", lang))) if caps == "full" else ""
-        foot = queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 " + lang_link
+        foot = (queue_link + picker + reload_link + " \u00b7 " + theme_link + " \u00b7 "
+                + font_links + " \u00b7 " + lang_link)
     return digest, frag, status, foot, items, busy
 
 
@@ -3542,7 +3551,20 @@ class Handler(BaseHTTPRequestHandler):
         limit = qint(q, "n", 12, 1, 200)
         show_thinking = q.get("think", ["0"])[0] == "1"
         show_tools = q.get("tools", ["0"])[0] == "1"
-        fs = qint(q, "fs", 18, 10, 48)
+        # 字号：?fs= 优先（一次性的链接），否则用 cookie 记住的选择，否则 21
+        # ——18 在 511px 宽、2.1dpr 的这块屏上偏小。
+        fs_cookie = parse_cookies(self.headers.get("Cookie") or "").get(FONT_COOKIE, "")
+        fs_default = 21
+        try:
+            fs_default = max(10, min(48, int(fs_cookie)))
+        except Exception:
+            pass
+        if q.get("fs"):
+            fs = qint(q, "fs", fs_default, 10, 48)
+            extra = extra + [("Set-Cookie", "%s=%d; Path=/; Max-Age=%d; SameSite=Lax"
+                              % (FONT_COOKIE, fs, COOKIE_MAX_AGE))]
+        else:
+            fs = fs_default
         lang = lang_of(self)
         hint = ('<div class="body dim">%s</div>' % esc(tr("readonly_hint", lang))
                 if caps != "full" else "")
@@ -3607,6 +3629,27 @@ class Handler(BaseHTTPRequestHandler):
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
                 ("Location", back),
                 ("Set-Cookie", "%s=%s; Path=/; Max-Age=31536000; SameSite=Lax" % (LANG_COOKIE, want)),
+            ])
+            return
+
+        if u.path == "/fs":
+            # 字号没有输入框：两个链接就够，改动写进 cookie，之后每个页面都跟着变。
+            cur = 21
+            try:
+                cur = int(parse_cookies(self.headers.get("Cookie") or "").get(FONT_COOKIE, "21"))
+            except Exception:
+                pass
+            try:
+                step = int((q.get("d") or ["0"])[0])
+            except Exception:
+                step = 0
+            want = max(10, min(48, cur + step))
+            keep_fs = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
+            back = ("/?" + urlencode(keep_fs)) if keep_fs else "/"
+            self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
+                ("Location", back),
+                ("Set-Cookie", "%s=%d; Path=/; Max-Age=%d; SameSite=Lax"
+                               % (FONT_COOKIE, want, COOKIE_MAX_AGE)),
             ])
             return
 

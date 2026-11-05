@@ -638,7 +638,7 @@ public class Kiosk extends Activity {
     private void showMenu() {
         new AlertDialog.Builder(this)
                 .setTitle("pi")
-                .setItems(new String[]{"主页", "重新加载", "输入地址", "桌面"},
+                .setItems(new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址", "桌面"},
                         new DialogInterface.OnClickListener() {
                             public void onClick(DialogInterface d, int which) {
                                 switch (which) {
@@ -649,6 +649,12 @@ public class Kiosk extends Activity {
                                         web.reload();
                                         break;
                                     case 2:
+                                        fontStep(2);
+                                        break;
+                                    case 3:
+                                        fontStep(-2);
+                                        break;
+                                    case 4:
                                         showAddressPrompt();
                                         break;
                                     default:
@@ -684,6 +690,29 @@ public class Kiosk extends Activity {
             return PUBLIC.replaceAll("/+$", "") + "/home";
         }
         return origin + "/home";
+    }
+
+    /** 字号：走 viewer 的 /fs，带上当前会话 id，改完回到同一页。 */
+    private void fontStep(int step) {
+        String now = web.getUrl() == null ? "" : web.getUrl();
+        String base = "", sid = null;
+        try {
+            android.net.Uri u = android.net.Uri.parse(now);
+            if (u.getScheme() != null && u.getHost() != null) {
+                base = u.getScheme() + "://" + u.getHost() + (u.getPort() > 0 ? ":" + u.getPort() : "");
+                sid = u.getQueryParameter("s");
+            }
+        } catch (Exception ignored) {
+            // no current URL: fall back to the home origin below
+        }
+        if (base.length() == 0) {
+            String home = homeUrl();
+            if (home.length() == 0) {
+                return;
+            }
+            base = home.substring(0, home.length() - "/home".length());
+        }
+        load(withToken(base + "/fs?d=" + step + (sid != null ? "&s=" + sid : "")));
     }
 
     private void goHome() {
