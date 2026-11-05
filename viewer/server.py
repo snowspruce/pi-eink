@@ -330,6 +330,25 @@ def bridge_port_for(session_id: str) -> int:
         return 0
 
 
+def live_session_in(directory: str) -> str:
+    """The session id of a pi running in this directory, or "" - the home screen's
+    "enter it" vs "start one" decision."""
+    try:
+        want = os.path.realpath(directory)
+    except Exception:
+        return ""
+    for sid, info in live_bridges().items():
+        if not isinstance(info, dict):
+            continue
+        cwd = str(info.get("cwd") or "")
+        try:
+            if cwd and os.path.realpath(cwd) == want:
+                return sid
+        except Exception:
+            continue
+    return ""
+
+
 def wait_for_new_session_in(directory: str, known: set, timeout: float = 30.0) -> str:
     """The session that appeared in `directory` after we asked for a new window.
 
@@ -606,6 +625,89 @@ def project_choices(limit: int = 40) -> tuple:
     return out[:limit], hidden
 
 
+
+HOME_CSS = """
+#home { padding: 0; }
+#home .brand { text-align: center; padding: 22px 0 14px; }
+#home .brand img { width: 96px; height: 96px; }
+#home .brand .name { font-size: 15px; letter-spacing: 3px; margin-top: 6px; color: #000; }
+#home ul { list-style: none; margin: 0; padding: 0; }
+#home li { border-bottom: 1px solid #000; }
+#home li a, #home li button, #home li form { display: block; margin: 0; }
+#home li a, #home li button {
+  display: block; width: 100%; text-align: left; background: #fff; color: #000;
+  border-radius: 0; -webkit-appearance: none; appearance: none;
+  font-family: inherit; font-size: 16px; line-height: 1.2;
+  /* 2 CSS px: 这块屏上 1px 会摊成浅灰（DEVELOPMENT 31） */
+  border: 0; border-left: 2px solid #fff; padding: 14px 10px; margin: 0;
+  -webkit-box-sizing: border-box; box-sizing: border-box;
+}
+#home li a { text-decoration: none; }
+#home li .dir { font-size: 11px; color: #444; margin-top: 3px; }
+#home li .live { font-size: 11px; color: #000; margin-top: 3px; }
+#home .foot { padding: 12px 10px 4px; font-size: 11px; color: #444; }
+/* 主页不是会话页：底部的状态行/链接在这里是噪音（而且显示的是上一个会话的数字） */
+#bar { display: none; }
+#wrap { padding: 0 0 8px 0; }
+"""
+
+
+def home_html(lang: str = "", target: str = "") -> str:
+    """The device's home screen: the mark, then the projects, nothing else.
+
+    Tapping a project enters it - and "entering" means different things depending on
+    whether pi already runs there, which is exactly the choice a reader should not have to
+    make on an e-ink screen: a running session is opened (its id is right there in the
+    registry), otherwise a new window is started in that directory by the existing
+    /act/new path. Both end on the same page.
+    """
+    choices, hidden = project_choices()
+    suffix = ("?s=" + quote(target, safe="")) if target else ""
+    rows = []
+    for path, live in choices:
+        rows.append(("live" if live else "idle", path))
+    out = ['<div id="home">',
+           '<div class="brand"><img src="/logo.png" alt="pi"><div class="name">pi</div></div>',
+           "<ul>"]
+    for live, path in rows:
+        name = esc(Path(path).name or path)
+        note = ('<div class="live">\u5728\u8fd9\u91cc\u8fd0\u884c\u00b7\u70b9\u5f00\u8fdb\u5165</div>'
+                if live == "live" else
+                '<div class="dir">%s</div>' % esc(short_path(path) or path))
+        if live == "live":
+            sid = live_session_in(path)
+            if sid:
+                out.append('<li><a href="/?s=%s">%s%s</a></li>' % (quote(sid, safe=""), name, note))
+                continue
+        out.append('<li><form method="POST" action="/act/enter%s">'
+                   '<input type="hidden" name="dir" value="%s">'
+                   '<button type="submit">%s%s</button></form></li>'
+                   % (suffix, esc(path), name, note))
+    out.append("</ul>")
+    if not rows:
+        out.append('<div class="foot">%s</div>' % esc(tr("new_session_none", lang)))
+    if hidden:
+        out.append('<div class="foot">%s</div>' % esc(tr("new_session_hidden", lang, hidden)))
+    out.append("</div>")
+    return "".join(out)
+
+
+def home_page(lang: str = "", target: str = "", fs: float = 1.0) -> str:
+    """The home screen as a standalone document: no poll, no status bar, no JS.
+
+    Rendering it through the session shell put the page under the shell's polling code,
+    whose "stick to the bottom" scroll ran on every paint - the list opened scrolled into
+    the middle. A home screen is static; it does not need any of that.
+    """
+    css = (CSS.replace("__FS__", str(fs)) + HOME_CSS
+           + "body { margin: 0; } #home ul { margin: 0; }")
+    return ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            '<link rel="icon" type="image/png" href="/favicon.png">'
+            "<style>%s</style></head><body>%s</body></html>"
+            % (css, home_html(lang, target)))
+
+
 def new_session_html(sid: str = "", lang: str = "") -> str:
     """Choose the DIRECTORY a new session starts in.
 
@@ -744,7 +846,7 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
 # The queue lives in the session's bridge; these actions read and mutate it.
 QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear", "qrun"}
-BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny",
+BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny", "enter",
                   "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear",
                   "qrun"}
 
@@ -1592,6 +1694,14 @@ hr { border-top-color: #fff; }
 a { color: #fff; }
 """
 
+def _load_logo() -> bytes:
+    """128x128 PNG of the pi mark, white background: the home screen's only decoration."""
+    try:
+        return (Path(__file__).resolve().parent / "logo.png").read_bytes()
+    except Exception:
+        return _make_icon()
+
+
 def _make_icon() -> bytes:
     """32x32 white square with a black pi glyph: browsers cache favicons per origin,
     and without one the Kindle keeps showing the icon of whatever served this port."""
@@ -1626,6 +1736,7 @@ def _make_icon() -> bytes:
 
 
 FAVICON = _make_icon()
+LOGO = _load_logo()
 
 SHELL = r"""<!DOCTYPE html>
 <html><head>
@@ -3013,6 +3124,28 @@ class Handler(BaseHTTPRequestHandler):
             confirm_network(self)
             back(tr("unlocked", lang))
             return
+        if action == "enter":
+            # The home screen's tap. Entering a project that already runs pi means going
+            # to that session; only an idle directory needs a new window, which is what
+            # /act/new does - so rewrite and fall through to the normal proxy.
+            try:
+                want = (parse_qs(body.decode("utf-8", "replace")).get("dir") or [""])[0]
+            except Exception:
+                want = ""
+            if not want:
+                back("no directory", 400)
+                return
+            hit = live_session_in(want)
+            if hit:
+                log_action(ip, caps, action, 200, hit)
+                if "json" in (self.headers.get("Accept") or "").lower():
+                    self._send(json.dumps({"ok": True, "sid": hit}, ensure_ascii=False).encode("utf-8"),
+                               "application/json; charset=utf-8", extra=extra)
+                else:
+                    self._send(b"", "text/html; charset=utf-8", 303,
+                               extra=extra + [("Location", "/?" + urlencode([("s", hit)]))])
+                return
+            action = "new"        # idle directory: start one there, then follow it
         if action == "readonly":
             state = trust_state()
             state["readonly"] = True
@@ -3128,6 +3261,11 @@ class Handler(BaseHTTPRequestHandler):
             # upgraded by a restart, a bridge only by /reload inside pi)
             payload["msg"] = tr("bridge_old", lang)
 
+        if action == "enter" and status < 400:
+            # "/act/enter" is answered by the viewer itself: a running session in that
+            # directory is entered directly (no reason to spawn a second pi there), and
+            # only an idle directory is forwarded to the bridge's /act/new.
+            pass
         if action == "new" and status < 400:
             # The bridge replies before the window is up, so the new session is not in
             # its answer: wait for that directory to register a session we had not seen.
@@ -3186,6 +3324,9 @@ class Handler(BaseHTTPRequestHandler):
         q = parse_qs(u.query)
         if u.path in ("/favicon.ico", "/favicon.png"):
             self._send(FAVICON, "image/png", cache="public, max-age=86400")
+            return
+        if u.path == "/logo.png":
+            self._send(LOGO, "image/png", cache="public, max-age=86400")
             return
         requested = (q.get("s") or [""])[0]
         caps = caps_for(self)
@@ -3441,6 +3582,15 @@ class Handler(BaseHTTPRequestHandler):
                 "note": ('<div id="note">%s</div>' % esc(note_msg)) if note_msg else "",
                 "queue": inner}}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
+            return
+
+        if u.path == "/home":
+            # 设备的主屏：logo + 项目列表。只读网络也能看，但不给"进入"的表单按钮
+            # ——那是动作，和 /new 一样的规矩。
+            page = home_page(lang, sid if caps == "full" else "", fs)
+            if caps != "full":
+                page = page.replace('<form method="POST"', '<form onsubmit="return false" method="POST"')
+            self._send(page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
             return
 
         if u.path == "/new":

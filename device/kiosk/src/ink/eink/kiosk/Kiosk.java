@@ -94,16 +94,20 @@ public class Kiosk extends Activity {
             @Override
             public void onReceivedError(WebView view, int code, String desc, String url) {
                 Log.i(TAG, "error " + code + " " + desc + " " + url);
-                // A remembered LAN address stops working the moment the network changes.
-                // Try discovery once per launch, then fall back to the public address.
+                // A LAN address stops working the moment the networks differ (this device
+                // and the Mac ended up on 192.168.3.x and 192.168.2.x once: the page was
+                // blank and nothing said why). Any failure on a non-public address now
+                // falls back to the public entry instead of showing nothing.
                 if (foundThisLaunch) {
                     return;
                 }
-                String home = prefs.getString(KEY_HOME, "");
-                if (url != null && url.equals(home) && !home.startsWith("https://")) {
-                    foundThisLaunch = true;
-                    discoverOrFallback();
+                if (url != null && url.startsWith("https://")) {
+                    return;         // already on the public path
                 }
+                foundThisLaunch = true;
+                String pub = PUBLIC.replaceAll("/+$", "") + "/home";
+                Log.i(TAG, "falling back to " + pub);
+                load(withToken(pub));
             }
 
             /**
@@ -155,7 +159,13 @@ public class Kiosk extends Activity {
             remember(url);
         }
         if (url == null) {
-            url = withToken(prefs.getString(KEY_HOME, ""));
+            url = homeUrl();
+            if (url.length() == 0) {
+                foundThisLaunch = true;
+                discoverOrFallback();
+                return;
+            }
+            url = withToken(url);
         }
         if (url == null || url.length() == 0) {
             foundThisLaunch = true;
@@ -315,6 +325,7 @@ public class Kiosk extends Activity {
     private void load(String url) {
         Log.i(TAG, "load " + url);
         remember(url);
+        learnOrigin(url);
         plantTokenCookie(url);
         plantOtpCookie(url);
         if (web.getParent() == null) {
@@ -330,6 +341,36 @@ public class Kiosk extends Activity {
      *  token is remembered here, the address is discovered per network, and every URL is
      *  built from both. Type or push the tokenised address once and it survives every
      *  change of network. */
+    /** scheme://host[:port] of whatever we last loaded - the base for the home URL. */
+    private void learnOrigin(String url) {
+        if (url == null) {
+            return;
+        }
+        try {
+            android.net.Uri u = android.net.Uri.parse(url);
+            if (u.getScheme() == null || u.getHost() == null) {
+                return;
+            }
+            String origin = u.getScheme() + "://" + u.getHost()
+                    + (u.getPort() > 0 ? ":" + u.getPort() : "");
+            if (!origin.equals(prefs.getString("origin", ""))) {
+                prefs.edit().putString("origin", origin).commit();
+            }
+        } catch (Exception ignored) {
+            // a URL we cannot parse simply does not update the origin
+        }
+    }
+
+    private String homeUrl() {
+        String origin = prefs.getString("origin", "");
+        if (origin.length() == 0) {
+            // upgrade path: older builds only stored the full URL it last loaded
+            learnOrigin(prefs.getString(KEY_HOME, ""));
+            origin = prefs.getString("origin", "");
+        }
+        return origin.length() > 0 ? origin + "/home" : "";
+    }
+
     private String token() {
         return prefs.getString("token", "");
     }
@@ -354,7 +395,7 @@ public class Kiosk extends Activity {
 
     /** Add the remembered token to an address that has none. */
     private String withToken(String url) {
-        if (url == null || url.indexOf("k=") >= 0 || token().length() == 0) {
+        if (url == null || url.length() == 0 || url.indexOf("k=") >= 0 || token().length() == 0) {
             return url;
         }
         return url + (url.indexOf('?') >= 0 ? "&" : "?") + "k=" + token();
@@ -376,7 +417,8 @@ public class Kiosk extends Activity {
                 runOnUiThread(new Runnable() {
                     public void run() {
                         Log.i(TAG, "discovery " + (found != null ? "found " + found : "found nothing"));
-                        load(withToken(found != null ? found : PUBLIC));
+                        String base = found != null ? found : PUBLIC;
+                        load(withToken(base.replaceAll("/+$", "") + "/home"));
                     }
                 });
             }
@@ -593,6 +635,16 @@ public class Kiosk extends Activity {
                             url = "http://" + url;
                         }
                         load(withToken(url));
+                    }
+                })
+                .setNeutralButton("主页", new DialogInterface.OnClickListener() {
+                    public void onClick(DialogInterface d, int which) {
+                        String home = homeUrl();
+                        if (home.length() > 0) {
+                            load(withToken(home));
+                        } else {
+                            discoverOrFallback();
+                        }
                     }
                 })
                 .setNeutralButton("桌面", new DialogInterface.OnClickListener() {

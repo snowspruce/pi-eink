@@ -317,6 +317,48 @@ class FullNetwork(unittest.TestCase):
         _s, other = request(self.viewer.port, "/whois?n=zzz", cookie=False)
         self.assertNotIn(want.encode(), other)
 
+    def test_the_home_screen_is_static_and_lists_projects(self):
+        """The device's home: the mark, then the projects. It is a standalone document -
+        rendering it through the session shell put it under the polling code, whose
+        stick-to-bottom scroll opened the list scrolled into the middle."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        live = {"aaaabbbb-1111-2222-3333-444455556666": {
+            "port": self.bridge_port, "pid": os.getpid(), "cwd": str(root / "alpha"),
+            "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())}}
+        with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
+             mock.patch.object(server, "live_bridges", lambda: live):
+            status, data = request(self.viewer.port, "/home")
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn("/logo.png", body)
+        self.assertIn('href="/?s=aaaabbbb-1111-2222-3333-444455556666"', body)  # running: enter it
+        self.assertNotIn("poll(", body)          # no polling loop on a static page
+        self.assertNotIn('id="bar"', body)       # no session status bar
+
+    def test_entering_a_running_project_goes_straight_to_it(self):
+        with mock.patch.object(server, "live_session_in", lambda _d: "aaaa-1111"):
+            seen = {}
+            status, data = request(self.viewer.port, "/act/enter", "POST",
+                                   "dir=" + urllib.parse.quote("/tmp/x"),
+                                   accept="application/json", out=seen)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(data).get("sid"), "aaaa-1111")
+
+    def test_entering_an_idle_project_starts_one_there(self):
+        """No pi in that directory: the tap becomes /act/new, which spawns a window."""
+        del FakeBridge.seen[:]
+        FakeBridge.reply_body = json.dumps({"ok": True, "msg": "opening"}).encode()
+        with mock.patch.object(server, "live_session_in", lambda _d: ""), \
+             mock.patch.object(server, "wait_for_new_session_in", lambda _d, _k: "new-sid"):
+            status, data = request(self.viewer.port, "/act/enter", "POST",
+                                   "dir=" + urllib.parse.quote("/tmp/x"),
+                                   accept="application/json")
+        self.assertEqual(status, 200)
+        self.assertEqual(FakeBridge.seen[-1][1], "/act/new")
+        self.assertEqual(json.loads(data).get("sid"), "new-sid")
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")

@@ -132,6 +132,11 @@ All notable changes to this project. The format follows
 
 ### Changed
 
+- The device's home screen is `/home`: the pi mark, then the project list - tap a running
+  project to enter that session, tap an idle one to start a window there. It is a
+  standalone minimal document; rendered through the session shell it inherited the polling
+  code's stick-to-bottom scroll and opened scrolled into the middle.
+
 - Reverted the thinner control frames: 1px borders are unreadable on this panel (e-ink
   renders them as pale grey). 2px is the thinnest legible stroke here; the table lines stay
   at 1px because they are background, not controls.
