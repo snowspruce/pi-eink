@@ -315,6 +315,11 @@ is needed.
 
 ## Troubleshooting
 
+**`＋ New session` or 排队 answers "bridge is an older build"** the viewer restarted but
+that pi process still runs the extension it loaded earlier. Run `/reload` inside it (or
+send `/reload` from the page's own box) once; until then the page deliberately hides the
+queue link rather than offering a page that can only answer "unknown action".
+
 **A black strip sits between the status bar and the page** that is the browser, not the
 page: with quick controls the toolbar container collapses to 0 height but the page area is
 not moved up, so the window background shows through ~42 CSS px of space and the page gets

@@ -129,6 +129,10 @@ STRINGS = {
                      "This queue was restored with the session and will not run by itself: tap Deliver now"),
     "queue_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff0c\u6ca1\u6709\u961f\u5217",
                         "This session is not running, so there is no queue"),
+    "queue_stale": ("\u8be5\u4f1a\u8bdd\u7684 bridge \u662f\u65e7\u7248\uff1a\u6392\u961f\u8981\u5728 pi \u91cc /reload \u4e4b\u540e\u624d\u6709",
+                    "This session's bridge is an older build - queueing needs a /reload in pi"),
+    "bridge_old": ("\u8be5\u4f1a\u8bdd\u7684 bridge \u662f\u65e7\u7248\uff08\u5728 pi \u91cc /reload \u540e\u53ef\u7528\uff09",
+                   "This session's bridge is an older build (run /reload in pi)"),
     "truncated": ("\u2026 \u5df2\u622a\u65ad\uff08\u5171 %d \u5b57\u7b26\uff09", "\u2026 clipped (%d chars)"),
     "ua_not_allowed": ("ua not allowed\uff08\u5df2\u8bb0\u5f55\uff0c\u53ef\u52a0\u5165 ~/.pi/eink/uas\uff09",
                        "ua not allowed (logged; add it to ~/.pi/eink/uas)"),
@@ -2327,13 +2331,16 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
     picker = ('<a href="/sessions">%s</a> \u00b7 ' % esc(tr("sessions", lang))) if caps == "full" else ""
     # The queue link is shown while a queue exists and while the agent is busy (then
     # there is something to queue *into*), never as a bare "0" on every page.
-    queued = 0
+    # `queued` only exists on a bridge that has the queue: an older build returns a
+    # /state without it, and offering the link there would advertise a page that can
+    # only answer "unknown action".
+    queued = (state or {}).get("queued")
     try:
-        queued = int((state or {}).get("queued") or 0)
+        queued = int(queued or 0)
     except Exception:
         queued = 0
     queue_link = ""
-    if caps == "full" and sid and (queued > 0 or busy):
+    if caps == "full" and sid and state is not None and "queued" in state and (queued > 0 or busy):
         queue_link = '<a href="/queue%s">%s</a> \u00b7 ' % (suffix, esc(tr("queue", lang, queued)))
     # target language is the other one: the label doubles as the switch
     lang_link = '<a href="/lang?l=%s%s">%s</a>' % (
@@ -2962,6 +2969,11 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             payload = {}
 
+        if status == 404 and (action == "new" or action in QUEUE_ACTIONS):
+            # the bridge answered "unknown action": it predates this button (a viewer is
+            # upgraded by a restart, a bridge only by /reload inside pi)
+            payload["msg"] = tr("bridge_old", lang)
+
         if action == "new" and status < 400 and target_pid:
             # The bridge answers before it is torn down, so the replacement session is
             # not in its reply: wait for it to register under the same pid. Failing
@@ -3218,7 +3230,12 @@ class Handler(BaseHTTPRequestHandler):
             body = ('<div class="body"><a href="%(back_url)s">%(back)s</a>%(refresh)s</div>'
                     '%(note)s%(queue)s')
             if got is None:
-                inner = '<div class="body dim">%s</div>' % esc(tr("queue_no_bridge", lang))
+                # a bridge that answers /state but not /queue is an older build, not a
+                # session that is gone: saying "not running" sends the reader hunting a
+                # pi process that is right there
+                stale = agent_state(port) is not None
+                inner = '<div class="body dim">%s</div>' % esc(
+                    tr("queue_stale" if stale else "queue_no_bridge", lang))
             elif u.path == "/queue/edit":
                 want = (q.get("i") or [""])[0]
                 pos, item = next(((n + 1, x) for n, x in enumerate(got[0])

@@ -41,14 +41,21 @@ class FakeBridge(BaseHTTPRequestHandler):
     # per-path bodies: the viewer asks the bridge for /state on every poll and for
     # /queue when it renders the queue page, and those are different shapes
     routes: dict = {}
+    # paths an older bridge build simply does not have (it answers 404 "unknown action")
+    missing: set = set()
 
     def _record(self):
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
         FakeBridge.seen.append((self.command, self.path, body.decode("utf-8", "replace"),
                                dict(self.headers)))
-        payload = FakeBridge.routes.get(self.path.split("?", 1)[0], FakeBridge.reply_body)
-        self.send_response(FakeBridge.reply_status)
+        route = self.path.split("?", 1)[0]
+        if route in FakeBridge.missing:
+            payload = b'{"ok": false, "msg": "unknown action"}'
+            self.send_response(404)
+        else:
+            payload = FakeBridge.routes.get(route, FakeBridge.reply_body)
+            self.send_response(FakeBridge.reply_status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(payload)))
         for key, value in FakeBridge.reply_headers:
@@ -398,6 +405,66 @@ class PerPageSession(unittest.TestCase):
         self.assertEqual(status, 200)
         head = data.decode("utf-8").split('<div class="sess">', 1)[0]   # the back link only
         self.assertIn('href="/?s=%s"' % self.B, head)
+
+
+class OlderBridge(QueuePage.__mro__[1] if False else unittest.TestCase):
+    """A viewer that is newer than the bridge it drives.
+
+    That is the normal state right after an upgrade: the viewer is restarted, each pi
+    process keeps the extension it loaded until someone runs /reload. Everything the
+    page renders has to degrade honestly - no link to a page that cannot work, and no
+    "this session is not running" for a session that is plainly running.
+    """
+
+    SID = "aaaabbbb-1111-2222-3333-444455556666"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.bridge = ThreadingHTTPServer(("127.0.0.1", 0), FakeBridge)
+        cls.bridge_port = cls.bridge.server_address[1]
+        threading.Thread(target=cls.bridge.serve_forever, daemon=True).start()
+        cls.viewer = Viewer()
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.viewer.close()
+        cls.bridge.shutdown()
+        cls.bridge.server_close()
+
+    def setUp(self):
+        FakeBridge.seen = []
+        FakeBridge.reply_status = 200
+        FakeBridge.reply_headers = []
+        FakeBridge.routes = {
+            # an older /state: running, but no `queued` field at all
+            "/state": json.dumps({"idle": False, "pending": False}).encode(),
+        }
+        FakeBridge.missing = {"/queue", "/act/new", "/act/qadd"}
+        self.addCleanup(setattr, FakeBridge, "missing", set())
+        self.addCleanup(mock.patch.stopall)
+        mock.patch.object(server, "caps_for", lambda _h: "full").start()
+        mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port).start()
+        mock.patch.object(server, "live_bridges", lambda: {}).start()
+
+    def test_the_footer_does_not_offer_a_queue_the_bridge_cannot_serve(self):
+        status, data = request(self.viewer.port, "/data?s=" + self.SID)
+        self.assertEqual(status, 200)
+        foot = json.loads(data)["foot"]
+        self.assertNotIn("/queue", foot)
+        self.assertNotIn("排队中（0）", foot)
+
+    def test_the_queue_page_says_old_bridge_not_session_gone(self):
+        status, data = request(self.viewer.port, "/queue?s=" + self.SID)
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn("旧版", body)
+        self.assertNotIn("未在运行", body)
+
+    def test_a_new_session_tap_explains_the_old_bridge(self):
+        status, data = request(self.viewer.port, "/act/new?s=" + self.SID, "POST", "",
+                               accept="application/json")
+        self.assertEqual(status, 404)
+        self.assertIn("旧版", json.loads(data)["msg"])
 
 
 class QueuePage(unittest.TestCase):

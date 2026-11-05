@@ -26,6 +26,13 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- **A newer viewer driving an older bridge** (the normal state right after an upgrade:
+  the viewer is a service restart, a bridge only by `/reload` inside pi) used to advertise
+  a queue the bridge could not serve - `排队中（0）` in the footer, and tapping
+  `＋ New session` answered "unknown action". The footer link now appears only when the
+  bridge reports the field, the queue page distinguishes "older bridge" from "session not
+  running", and a 404 from `new`/`q*` says "run /reload in pi".
+
 - **A horizontal scrollbar that was always there.** Markdown list items render outside
   `.body`, which is where `word-wrap` lives, so a long token in a bullet (a path, a
   `key=value`, a URL) pushed the row 9 CSS px past the viewport. `/diag` now also reports
