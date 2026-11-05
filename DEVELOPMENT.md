@@ -408,6 +408,26 @@ content / main_content / BrowserWebView   0,0-1072,1356   ← 连系统状态栏
 每 2 分钟）在黑带回来时重启浏览器——判据是隔 20 秒读两次 `main_content` 的 y，两次都 >0 才算，
 因为页面加载过程中它会短暂跳到 89 再落回 0（一次读数会误判）。10 分钟内最多修一次，防止循环重启。
 
+### 23. TLS 层的错误不在 viewer 日志里
+
+`ERR_SSL_PROTOCOL_ERROR`、`ERR_CONNECTION_RESET` 这类报错意味着**握手就没成**，请求根本到不了
+viewer，所以 `~/.pi/eink/server.log` 里一个字都不会有——去哪里找都是白找。公网访问时 TLS 由另一层
+终止（见 `~/Library/Application Support/pi-eink-tls/RUNBOOK.md`：VPS 只搬字节，Mac 上 nginx 才解密），
+失败记录留在这三处：
+
+| 位置 | 能看到什么 |
+|---|---|
+| 中转机 nginx stream 日志 | 每次 TCP 连接一行；`status=502` / `sent=0` = 上游（反向隧道）不在，此刻页面必然打不开 |
+| 中转机 nginx error.log | `connect() failed (111: Connection refused) while proxying`，按小时聚簇 = 隧道在反复掉 |
+| 本机隧道日志 + `launchctl print` | ssh 自己的退场原因（`remote port forwarding failed for listen port …`、`Timeout`）和重启次数、退出码 |
+
+诊断顺序：`curl -o /dev/null -w '%{http_code}' https://<域名>/` → `000` 是 TLS/隧道，
+`401`/`403` 是链路通、只是认证没过，有数字才去 viewer 日志里找。
+
+一条教训：`ExitOnForwardFailure=yes` 的隧道里**不要混装不同用途的转发**。ACME 的 9080 只是因为
+上一个死会话还占着端口，就让整条隧道退出——连带把 9443（正在看的页面）带走。拆成两条隧道后，
+续期那条爱掉掉。
+
 ## 三、排查阶梯（设备打不开时按顺序）
 
 ```sh

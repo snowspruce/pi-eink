@@ -24,12 +24,7 @@ All notable changes to this project. The format follows
 - `+ New session` is one entry at the top of the picker and asks **which directory**
   (`/new`): the sub-directories of `EINK_PROJECT_ROOTS` (default `~/Documents/Program`)
   plus anywhere pi already runs, recently-touched first, capped with the count of what is
-  not shown. `ctx.newSession()` has no cwd option, so the bridge writes a header-only
-  session file naming that `cwd` and switches to it - the process takes the cwd from the
-  session header. Directories outside the roots are refused by the bridge (`POST /act/new` → the extension's `eink:new`
-  command) and lands the page on it. Refused while that session is running, so a stray tap
-  cannot throw away a turn. The new id is read from `bridges.json` (same pid, new id),
-  because the bridge that answers is the instance being replaced.
+  not shown. Directories outside the roots are refused by the bridge.
 - **开始投递** on the queue page: a queue restored with a *resumed* session is listed but not
   armed, so a plan queued before a crash cannot execute a week later; queuing something or a
   `/reload` arms it, and 开始投递 is the explicit way out of the paused state.

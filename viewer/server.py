@@ -118,9 +118,9 @@ STRINGS = {
     "new_session_hidden": ("\u8fd8\u6709 %d \u4e2a\u76ee\u5f55\u672a\u5217\u51fa\uff08\u8fd9\u91cc\u53ea\u5217\u6700\u8fd1\u52a8\u8fc7\u7684\uff09",
                             "%d more directories not listed (recently touched first)"),
     "new_session_live": ("pi \u5728\u8fd9\u91cc\u8dd1\u7740", "pi is running here"),
-    "new_session_old_bridge": ("\u8be5\u9879\u76ee\u7684 bridge \u662f\u65e7\u7248\uff0c\u5728\u90a3\u4e2a\u4f1a\u8bdd\u91cc /reload \u540e\u624d\u80fd\u5f00\u65b0\u4f1a\u8bdd",
+    "new_session_old_bridge": ("\u8fd9\u4e2a\u9875\u9762\u7684 bridge \u662f\u65e7\u7248\uff0c\u5728\u8be5\u4f1a\u8bdd\u91cc /reload \u540e\u624d\u80fd\u5f00\u65b0\u7a97\u53e3",
                                 "that project's bridge is an older build - /reload there first"),
-    "new_session_failed": ("\u65b0\u5efa\u4f1a\u8bdd\u672a\u51fa\u73b0\uff08bridge \u6ca1\u4e0a\u62a5\uff09",
+    "new_session_failed": ("\u65b0\u7a97\u53e3\u6ca1\u51fa\u73b0\uff08\u7b49\u4e86 30 \u79d2\u6ca1\u6709\u65b0\u4f1a\u8bdd\u6ce8\u518c\uff09",
                            "The new session did not appear (no bridge reported it)"),
     "queue": ("\u6392\u961f\u4e2d\uff08%d\uff09", "Queued (%d)"),
     "queue_title": ("\u6392\u961f\u4e2d\uff08%d \u6761\uff09", "Queued (%d)"),
@@ -1780,11 +1780,14 @@ document.addEventListener("submit", function (e) {
   };
   // An e-ink browser on flaky WiFi may never reach readyState 4; without this the
   // button stays disabled and the only way out is the 9px "redraw" link in the footer.
+  // A new session waits for a whole terminal window to come up on the desktop; the
+  // 8s meant for a slow WiFi POST would abort it and, worse, invite a second tap that
+  // opens a second window.
   var guard = setTimeout(function () {
     try { x.abort(); } catch (e) {}
     release();
     showResult(T.timeout);
-  }, 8000);
+  }, /\/act\/new/.test(action) ? 45000 : 8000);
   var x = new XMLHttpRequest();
   x.open("POST", action, true);
   x.setRequestHeader("Content-Type", "application/x-www-form-urlencoded");
