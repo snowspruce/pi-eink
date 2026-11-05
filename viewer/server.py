@@ -1452,7 +1452,7 @@ body {
 .msg { margin: 0 0 26px 0; }
 .role {
   font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
-  border: 2px solid #000; padding: 0 8px; display: inline-block;
+  border: 1px solid #000; padding: 0 8px; display: inline-block;
   margin-bottom: 6px;
 }
 .role.user { background: #000; color: #fff; }
@@ -1518,8 +1518,8 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
   display: block;
   -webkit-box-flex: 1; flex: 1 1 auto; min-width: 0;
   -webkit-box-sizing: border-box; box-sizing: border-box;
-  font-family: inherit; font-size: 14px; line-height: 1.3;
-  border: 2px solid #000; padding: 4px 8px; margin: 0;
+  font-family: inherit; font-size: 14px; line-height: 1.34;
+  border: 1px solid #000; padding: 5px 9px; margin: 0;
   background: #fff; color: #000; resize: none;
 }
 #acts #sayform button {
@@ -1532,8 +1532,12 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
 #acts #sayform #hist { min-width: 0; width: auto; margin: 0 8px 0 0; padding: 4px 8px; }
 #acts button, .btn {
   font-family: inherit; font-size: 12px; min-height: 26px;
-  background: #fff; color: #000; border: 2px solid #000;
-  padding: 1px 9px; margin: 0;
+  background: #fff; color: #000;
+  /* 1px, not 2: the device is dpr 2.1, so this is still two device pixels - solid on
+     e-ink - while the heavy 2px frame made the controls look like boxes drawn around
+     text. Padding takes over the lost pixel so nothing gets smaller to tap. */
+  border: 1px solid #000;
+  padding: 2px 10px; margin: 0;
 }
 .sess { border-bottom: 1px solid #000; padding: 8px 0; }
 .sess a { color: #000; }
@@ -1550,8 +1554,8 @@ a.btn { display: inline-block; text-decoration: none; font-size: 11px;
 #qadd { margin-top: 12px; }
 #qadd textarea {
   display: block; width: 100%; -webkit-box-sizing: border-box; box-sizing: border-box;
-  font-family: inherit; font-size: 14px; line-height: 1.3;
-  border: 2px solid #000; padding: 4px 8px; margin: 0 0 6px 0; background: #fff; color: #000;
+  font-family: inherit; font-size: 14px; line-height: 1.34;
+  border: 1px solid #000; padding: 5px 9px; margin: 0 0 6px 0; background: #fff; color: #000;
 }
 #note { font-size: 20px; font-weight: bold; padding: 6px 0 0; }
 #result { padding: 3px 8px; font-size: 14px; font-weight: bold; color: #000; min-height: 20px; }

@@ -132,6 +132,11 @@ All notable changes to this project. The format follows
 
 ### Changed
 
+- Thinner frames on the controls: buttons, the command box, the queue box and the
+  USER/AGENT badges go from 2px to 1px, with the lost pixel moved into padding so nothing
+  gets smaller to tap. At dpr 2.1 that is still two device pixels - solid on e-ink - but
+  it stops the controls from looking like boxes drawn around text.
+
 - The kiosk app is the device's **HOME**: pressing HOME or rebooting lands on the page, and
   the launcher no longer sits in front of it. `⋮ → 桌面` starts whichever other HOME app is
   installed, so nothing is locked away. The watchdog now decides on the *process* being
