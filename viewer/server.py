@@ -1665,7 +1665,8 @@ function atBottom() {
 window.addEventListener("scroll", function () { STICK = atBottom(); }, false);
 function paint(j) {
   setSpin(!!j.busy, j.spin);
-  if (j.v === V) { return; }
+  POLL_MS = j.busy ? POLL_MS_BUSY : POLL_MS_IDLE;
+  if (j.v === V) { return; }        // {"same":true} or an unchanged tick: nothing to paint
   V = j.v;
   var stick = STICK;   // decided before the DOM grows
   var content = document.getElementById("content");
@@ -1698,7 +1699,6 @@ function paint(j) {
   content.appendChild(frag);
   KEYS = newKeys;
   if (!items.length) { content.innerHTML = j.html; }
-  POLL_MS = j.busy ? POLL_MS_BUSY : POLL_MS_IDLE;
   document.getElementById("status").innerHTML = j.status;
   document.getElementById("foottxt").innerHTML = j.foot;
   if (stick) {
@@ -1727,7 +1727,7 @@ function setSpin(busy, list) {
 }
 function fetchData(done) {
   var x = new XMLHttpRequest();
-  x.open("GET", "/data%(qs)st=" + (new Date().getTime()), true);
+  x.open("GET", "/data%(qs)st=" + (new Date().getTime()) + "&v=" + encodeURIComponent(V), true);
   x.onreadystatechange = function () {
     if (x.readyState !== 4) { return; }
     if (x.status === 200) {
@@ -3329,6 +3329,16 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/data":
             digest, frag, status, foot, items, busy = render(path, limit, show_thinking, show_tools, port, dark, sid, caps,
                                                               note=gone_note, lang=lang)
+            # A poll that changes nothing is the common case (idle window, or a long
+            # agent turn). The full fragment is 14-26 KB and it used to cross the link
+            # every tick - 1.4 MB/min from this machine's own access log, over a
+            # 250ms/12%-loss tunnel. `v` is the digest the client already has: if it
+            # still matches, nothing needs to travel but this.
+            if (q.get("v") or [""])[0] == digest:
+                self._send(json.dumps({"v": digest, "same": True, "busy": busy,
+                                       "spin": list(SPIN)}).encode("utf-8"),
+                           "application/json; charset=utf-8", extra=extra)
+                return
             payload = json.dumps({"v": digest, "html": frag, "status": status, "foot": foot,
                                   "items": [{"k": k, "h": h} for k, h in items],
                                   "busy": busy, "spin": list(SPIN)},

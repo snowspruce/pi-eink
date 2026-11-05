@@ -237,6 +237,37 @@ class FullNetwork(unittest.TestCase):
         self.assertNotIn("msg=", location)      # no stale line above the new page's box
         self.assertEqual(FakeBridge.seen[0][1], "/act/new")
 
+    def test_an_unchanged_poll_ships_no_transcript(self):
+        """The fragment is 14-26 KB; every poll used to carry it even when nothing had
+        changed (1.4 MB/min through a 250ms/lossy tunnel, measured in nginx access.log).
+        A poll whose digest the client already has must come back as a short "same"."""
+        sid = "01234567-89ab-cdef-0123-456789abcdef"
+        status, data = request(self.viewer.port, "/data?s=" + sid)
+        self.assertEqual(status, 200)
+        full = json.loads(data)
+        self.assertIn("html", full)
+        self.assertGreater(len(data), 500)
+
+        status, data = request(self.viewer.port, "/data?s=" + sid + "&v=" + full["v"])
+        self.assertEqual(status, 200)
+        same = json.loads(data)
+        self.assertTrue(same.get("same"))
+        self.assertNotIn("html", same)
+        self.assertNotIn("items", same)
+        self.assertLess(len(data), 200)          # two orders of magnitude smaller
+
+    def test_the_page_asks_with_the_digest_it_already_has(self):
+        """Half a fix is worse than none: a server that can short-circuit is no use if
+        the page never sends its digest back."""
+        status, data = request(self.viewer.port, "/?s=01234567-89ab-cdef-0123-456789abcdef")
+        self.assertEqual(status, 200)
+        self.assertIn('encodeURIComponent(V)', data.decode("utf-8"))
+
+    def test_a_stale_digest_gets_the_whole_fragment_again(self):
+        status, data = request(self.viewer.port, "/data?s=01234567-89ab-cdef-0123-456789abcdef&v=deadbeef0000")
+        self.assertEqual(status, 200)
+        self.assertIn("html", json.loads(data))
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")
