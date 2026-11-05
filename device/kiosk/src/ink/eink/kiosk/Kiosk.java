@@ -276,20 +276,31 @@ public class Kiosk extends Activity {
         });
     }
 
+    /** Cookies that are per origin but whose *value* is one setting the reader made once.
+     *
+     *  The OTP session and the font size both live in cookies, so the LAN address and the
+     *  public address each keep their own copy: enter the code at home and travel, and the
+     *  code is asked for again; pick a font on the public entry and the LAN page is back
+     *  to the default. Remember the value and plant it on every origin we load.
+     */
+    private static final String[] SHARED_COOKIES = {"pieink_otp", "piefs"};
+
     private void plantOtpCookie(String url) {
-        String saved = prefs.getString("otp_cookie", "");
-        if (saved.length() < 16) {
-            return;
-        }
         try {
             CookieManager cm = CookieManager.getInstance();
             String have = cm.getCookie(url);
-            if (have != null && have.contains("pieink_otp=")) {
-                return;
+            for (String name : SHARED_COOKIES) {
+                String saved = prefs.getString("cookie:" + name, "");
+                if (saved.length() == 0) {
+                    continue;
+                }
+                if (have != null && have.contains(name + "=")) {
+                    continue;
+                }
+                cm.setCookie(url, name + "=" + saved + "; path=/");
             }
-            cm.setCookie(url, "pieink_otp=" + saved + "; path=/");
         } catch (Exception ignored) {
-            // cookie store unavailable: worst case the code is asked for once more
+            // cookie store unavailable: worst case the value is picked again
         }
     }
 
@@ -301,10 +312,17 @@ public class Kiosk extends Activity {
             }
             for (String part : have.split(";")) {
                 part = part.trim();
-                if (part.startsWith("pieink_otp=")) {
-                    String value = part.substring("pieink_otp=".length());
-                    if (value.length() >= 16 && !value.equals(prefs.getString("otp_cookie", ""))) {
-                        prefs.edit().putString("otp_cookie", value).commit();
+                for (String name : SHARED_COOKIES) {
+                    if (!part.startsWith(name + "=")) {
+                        continue;
+                    }
+                    String value = part.substring(name.length() + 1);
+                    if (value.length() == 0) {
+                        continue;
+                    }
+                    String key = "cookie:" + name;
+                    if (!value.equals(prefs.getString(key, ""))) {
+                        prefs.edit().putString(key, value).commit();
                     }
                 }
             }
@@ -712,7 +730,17 @@ public class Kiosk extends Activity {
             }
             base = home.substring(0, home.length() - "/home".length());
         }
-        load(withToken(base + "/fs?d=" + step + (sid != null ? "&s=" + sid : "")));
+        String here = "";
+        try {
+            here = android.net.Uri.parse(now).getPath();
+        } catch (Exception ignored) {
+            here = "";
+        }
+        String back = "";
+        if (sid == null && here != null && here.length() > 1) {
+            back = "&next=" + android.net.Uri.encode(here);
+        }
+        load(withToken(base + "/fs?d=" + step + (sid != null ? "&s=" + sid : "") + back));
     }
 
     private void goHome() {

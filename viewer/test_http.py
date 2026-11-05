@@ -354,6 +354,12 @@ class FullNetwork(unittest.TestCase):
         self.assertIn("piefs=", " ".join("%s: %s" % kv for kv in seen.items()))
         self.assertIn("s=" + sid, seen.get("Location", ""))
 
+        # 没有会话的页面（/home、/menu）改字号要回到那一页，不是"最新会话"
+        seen2 = {}
+        status, _d = request(self.viewer.port, "/fs?d=2&next=/home", out=seen2)
+        self.assertEqual(status, 303)
+        self.assertEqual(seen2.get("Location"), "/home")
+
     def test_whois_answers_without_credentials(self):
         """LAN discovery needs one unauthenticated line: the device has no mDNS and must
         not depend on a router-reserved address, so it scans its own /24 and looks for

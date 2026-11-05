@@ -804,8 +804,8 @@ def menu_html(lang: str = "", next_url: str = "/home") -> str:
         ("\u4e3b\u9875", "/home"),
         ("\u91cd\u65b0\u52a0\u8f7d", next_url or "/home"),
         # 字号：页脚那两个 9px 的 A-/A+ 在触屏上点不中，菜单里给整行
-        ("\u5b57\u53f7 A\uff0b", "/fs?d=2"),
-        ("\u5b57\u53f7 A\uff0d", "/fs?d=-2"),
+        ("\u5b57\u53f7 A\uff0b", "/fs?d=2&next=/menu"),
+        ("\u5b57\u53f7 A\uff0d", "/fs?d=-2&next=/menu"),
         ("\u684c\u9762", "pi-eink://desktop"),
     ]
     out = ['<div id="home">',
@@ -3645,7 +3645,15 @@ class Handler(BaseHTTPRequestHandler):
                 step = 0
             want = max(10, min(48, cur + step))
             keep_fs = [(k, q[k][0]) for k in ("n", "think", "tools", "s") if k in q]
-            back = ("/?" + urlencode(keep_fs)) if keep_fs else "/"
+            nxt = (q.get("next") or [""])[0]
+            if keep_fs:
+                back = "/?" + urlencode(keep_fs)
+            elif nxt.startswith("/") and not nxt.startswith("//"):
+                # /home or /menu: without this the redirect to "/" makes the viewer pick
+                # "the newest session" and the reader lands somewhere else entirely.
+                back = nxt
+            else:
+                back = "/"
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
                 ("Location", back),
                 ("Set-Cookie", "%s=%d; Path=/; Max-Age=%d; SameSite=Lax"
