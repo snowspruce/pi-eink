@@ -239,7 +239,8 @@ class RenderPage(unittest.TestCase):
         self.assertIn("hello", frag)
         self.assertIn("world", frag)
         self.assertIn("↑100", status)
-        self.assertIn("$0.500", status)
+        # the dollar total is deliberately not on the page any more
+        self.assertNotIn("$", status)
         self.assertIn("重绘", foot)
         self.assertFalse(busy)
         self.assertEqual(len(items), 2)

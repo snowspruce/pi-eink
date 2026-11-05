@@ -32,6 +32,9 @@ All notable changes to this project. The format follows
   `＋ New session` answered "unknown action". The footer link now appears only when the
   bridge reports the field, the queue page distinguishes "older bridge" from "session not
   running", and a 404 from `new`/`q*` says "run /reload in pi".
+- The dollar total is gone from the status line (`↑255k ↓330k 55%`): a number to look up
+  on the computer, not something to act on from the Kindle, and the line has to share
+  9 px with the footer links.
 - The `排队中（N）` footer link no longer hides itself when the agent is idle with an empty
   queue: that is exactly when a reader opens the page to look at it.
 

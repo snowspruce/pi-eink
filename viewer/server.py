@@ -2284,12 +2284,11 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         line1 += " (%s)" % esc(branch)
 
     # One short line, not three: the reader glances at this, so it keeps only what
-    # changes a decision - how much context is left and what it has cost. Dropped:
-    # cache-read total, cache-hit ratio, cache-write, and the raw window size - all
-    # of them were noise on a 9px line that also had to carry the footer links.
+    # changes a decision - how much context is left. Dropped: the dollar total (asked
+    # for: it is a number to look up on the computer, not something to act on from a
+    # Kindle), cache-read total, cache-hit ratio, cache-write, and the raw window size -
+    # all of them were noise on a 9px line that also has to carry the footer links.
     parts = ["\u2191%s" % human(total["input"]), "\u2193%s" % human(total["output"])]
-    if total["cost"]:
-        parts.append("$%.3f" % total["cost"] if total["cost"] < 10 else "$%.2f" % total["cost"])
     if state and state.get("context"):
         pct = state["context"].get("percent")
         if pct is not None:
