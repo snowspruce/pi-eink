@@ -74,6 +74,9 @@ APK 约 12 KB，装在 `/data`（不是系统应用），`adb uninstall ink.eink
    `PI-EINK <port> <HMAC-SHA256(token, nonce)[:32]>`，验证不过就不用这个地址。
 3. **token 只交给记得住的主机**。没有 token 时不做发现（第一次要手输/推送带 token 的地址）。
 
+换 token 用 `~/bin/eink-rotate-token`：它同时换本机的 token、作废服务端 OTP 会话、清掉设备上
+的 prefs（旧 token 和 OTP cookie）并重新拉起 kiosk。
+
 ## 出门（公网）
 
 公网这条路要用到的三处，都是上一版会白屏的原因：

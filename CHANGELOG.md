@@ -33,6 +33,11 @@ All notable changes to this project. The format follows
 
 ### Security
 
+- `~/bin/eink-rotate-token`: one command to rotate the token, invalidate the server-side OTP
+  sessions, restart the viewer, wipe the device's copy and bring the kiosk back up - then
+  verify the viewer answers and the public entry accepts the new token. nginx no longer
+  holds the token at all, so there is nothing else to edit.
+
 - The public entry no longer has nginx inject the viewer token into every request: that
   made "anyone who can reach the VPS" already authenticated, with Basic as the only real
   gate (`curl https://eink.blueberry.cafe/` returned 200 the moment Basic was off). nginx
