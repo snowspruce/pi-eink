@@ -27,6 +27,7 @@ import { BlockList, isIPv4, isIPv6 } from "node:net";
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { execFile } from "node:child_process";
 import { join, resolve, sep } from "node:path";
 
 const REGISTRY_FILE = join(homedir(), ".pi/eink/bridges.json");
@@ -75,7 +76,6 @@ const BRIDGE_LOG = join(homedir(), ".pi/eink/bridge.log");
 // ExtensionCommandContext, i.e. a command handler. Commands are namespaced
 // "eink:" so they do not collide with the TUI built-ins of the same function.
 const BRIDGE_COMMANDS: Record<string, string> = {
-	new: "eink:new",
 	reload: "eink:reload",
 	compact: "eink:compact",
 	quit: "eink:quit",
@@ -87,6 +87,9 @@ const TUI_ONLY_COMMANDS = new Set([
 	"settings", "model", "tree", "thinking", "scoped-models", "export", "import",
 	"share", "bug", "copy", "name", "session", "changelog", "hotkeys", "fork",
 	"clone", "trust", "login", "logout", "resume",
+	// no in-process implementation any more: a new session is a new window, and a
+	// spawned process is not something an extension command can do
+	"new",
 ]);
 
 const MAX_LISTEN_ATTEMPTS = 4;
@@ -164,6 +167,41 @@ export function ipAllowed(rawIp: string, localIp = ""): boolean {
 
 /** Existing directory, inside a project root or already running pi.
  *  Exported for tests, like the other gates in this file. */
+/** Single-quote for /bin/sh. A directory name is filesystem input: `x'; rm -rf ~; '`
+ *  is a legal name, and this string is typed into a shell by iTerm. */
+export function shellQuote(s: string): string {
+	return "'" + s.replace(/'/g, `'\\''`) + "'";
+}
+
+/** Open a new terminal window at `dir` and run pi there.
+ *
+ * This is the only way to get a session without disturbing the current one: pi is a
+ * full-screen TUI, its `--print`/`--mode` flags do not start an interactive session,
+ * and its cwd comes from the process, not a flag. So: a fresh `pi` in a fresh shell.
+ *
+ * The command travels as an osascript *argument* (`on run argv`), not inside the
+ * AppleScript source: one less quoting layer over an attacker-adjacent string.
+ */
+export const spawnRunner: { run: typeof execFile } = { run: execFile };
+
+export function spawnPiWindow(dir: string, app = process.env.EINK_TERMINAL || "iTerm",
+	run: typeof execFile = spawnRunner.run): void {
+	const script = [
+		"on run argv",
+		"\tset cmd to item 1 of argv",
+		'\ttell application "' + app.replace(/"/g, "") + '"',
+		"\t\tactivate",
+		"\t\tset w to (create window with default profile)",
+		"\t\ttell current session of w to write text cmd",
+		"\tend tell",
+		"end run",
+	].join("\n");
+	const command = "cd " + shellQuote(dir) + " && exec pi";
+	run("osascript", ["-e", script, "--", command], (err, _out, errOut) => {
+		if (err) console.error("[eink] could not open a window in " + app + ":", (errOut || err.message).trim());
+	});
+}
+
 export function mayStartSessionIn(dir: string, roots: string[] = [], known: string[] = []): boolean {
 	let resolved: string;
 	try {
@@ -331,12 +369,10 @@ const TEXT: Record<string, [string, string]> = {
 	aborted: ["已中止当前运行", "Stopped the current run"],
 	nothing_running: ["当前没有运行", "Nothing is running"],
 	empty_input: ["没有输入内容", "Nothing to send"],
-	new_session: ["已新建会话", "New session created"],
-	new_session_in: ["已在该目录新建会话：%s", "New session started in %s"],
-	new_queue_left: ["排队里还有 %s 条，先清空或等它投完再新建", "%s messages are still queued - clear or deliver them first"],
+	new_spawning: ["正在新窗口里开会话：%s", "Opening a new window in %s"],
+	new_no_dir: ["没有指定目录", "No directory given"],
 	new_dir_refused: ["不能在这个目录开会话：%s（要项目根目录下、或已经跑着 pi 的目录）",
 		"Cannot start a session there: %s (must be under a project root or already running pi)"],
-	new_busy: ["当前会话正在运行，先停下再新建", "This session is running - stop it before starting a new one"],
 	reloading: ["正在重载扩展与配置", "Reloading extensions and config"],
 	compacting: ["开始压缩上下文", "Compacting the context"],
 	quitting: ["正在退出该 pi 会话", "Quitting this pi session"],
@@ -598,20 +634,16 @@ export default function einkBridge(pi: ExtensionAPI) {
 				return;
 			}
 			if (action === "new") {
-				// Only a running pi process can create a session, and only through the command
-				// context. Refused while busy on purpose: a stray tap on a 511px button must not
-				// throw away a run in progress.
-				if (!ctx) throw new Error("no session context");
-				if (!ctx.isIdle()) {
-					reply(res, "new", tt(lang, "new_busy"), req, 409);
-					return;
-				}
-				if (queue.length > 0) {
-					// switching away strands them: they belong to the session being left
-					reply(res, "new", tt(lang, "new_queue_left", queue.length), req, 409);
-					return;
-				}
+				// A new session is a NEW pi process in a new terminal window - not this one.
+				// `ctx.newSession()` ends the conversation the reader is looking at, and
+				// `switchSession` (with a header cwd) moves this very process to another
+				// directory; both hijack what is open. Nothing below touches the current
+				// session, so this also works while a run is in progress.
 				const dir = (new URLSearchParams(body).get("dir") ?? "").trim();
+				if (!dir) {
+					reply(res, "new", tt(lang, "new_no_dir"), req, 400);
+					return;
+				}
 				const fresh = Date.now() - STATE_MAX_AGE_MS;
 				const running = Object.values(readRegistry())
 					.filter((e) => {
@@ -619,17 +651,19 @@ export default function einkBridge(pi: ExtensionAPI) {
 						return Number.isFinite(at) && at >= fresh;
 					})
 					.map((e) => String((e as { cwd?: string })?.cwd ?? ""));
-				if (dir && !mayStartSessionIn(dir, PROJECT_ROOTS, running)) {
+				// the same gate the page uses: only directories the reader was offered
+				if (!mayStartSessionIn(dir, PROJECT_ROOTS, running)) {
 					reply(res, "new", tt(lang, "new_dir_refused", dir), req, 400);
 					return;
 				}
-				// Answer first: creating the session replaces this extension instance,
-				// which closes the HTTP server this response is being written from.
-				reply(res, "new", tt(lang, dir ? "new_session_in" : "new_session", dir), req);
-				const command = dir ? "/eink:new-in " + dir : "/eink:new";
-				setTimeout(() => {
-					void pi.sendUserMessage(command, { expandPromptTemplates: true });
-				}, 100);
+				// Answer first: the window takes seconds to come up, and the viewer waits
+				// for the new session to register in bridges.json, not for this reply.
+				reply(res, "new", tt(lang, "new_spawning", dir), req);
+				try {
+					spawnPiWindow(dir);
+				} catch (err) {
+					console.error("[eink] spawn failed:", (err as Error).message);
+				}
 				return;
 			}
 			if (action === "stop") {
@@ -755,7 +789,6 @@ export default function einkBridge(pi: ExtensionAPI) {
 					const mapped = BRIDGE_COMMANDS[name];
 					if (mapped) {
 						const label: Record<string, string> = {
-							new: tt(lang, "new_session"),
 							reload: tt(lang, "reloading"),
 							compact: tt(lang, "compacting"),
 							quit: tt(lang, "quitting"),
@@ -863,6 +896,9 @@ export default function einkBridge(pi: ExtensionAPI) {
 				pending: ctx ? ctx.hasPendingMessages() : false,
 				// queued = the box's queue, which the page renders and edits
 				queued: queue.length,
+				// spawn = "/act/new" opens a window elsewhere instead of moving this
+				// process: a bridge without it must not be offered the button
+				spawn: true,
 				armed,
 				model: ctx?.model ? `${ctx.model.provider}/${ctx.model.id}` : null,
 				thinking: ctx?.thinkingLevel ?? null,
@@ -1024,52 +1060,6 @@ export default function einkBridge(pi: ExtensionAPI) {
 		});
 	};
 
-	pi.registerCommand("eink:new", {
-		description: "Kindle: start a new pi session",
-		handler: async (_args, cctx) => {
-			await cctx.newSession();
-		},
-	});
-
-	// pi has no "new session in this other directory" call: `ctx.newSession()` inherits
-	// the process cwd, and NewSessionOptions has no cwd. What DOES carry one is the
-	// session header - `AgentSessionRuntime.switchSession(path)` opens the file, takes
-	// `cwd` from its header and rebuilds the runtime around it. So: write an empty
-	// session whose header says `cwd: <dir>`, then switch to it. The trade-off is
-	// explicit - this pi process moves to that project (its old session ends), which is
-	// the same thing `/new` already does, only in a different directory.
-	pi.registerCommand("eink:new-in", {
-		description: "Kindle: start a new pi session in another directory",
-		handler: async (args, cctx) => {
-			const dir = args.trim();
-			if (!dir) return;
-			const cwd = dir;
-			const sessionDir = defaultSessionDir(cwd);
-			mkdirSync(sessionDir, { recursive: true });
-			const id = randomUUID();
-			const stamp = new Date().toISOString();
-			const file = join(sessionDir, `${stamp.replace(/[:.]/g, "-")}_${id}.jsonl`);
-			// header only: an empty session, exactly what newSession() would leave behind
-			writeFileSync(file, JSON.stringify({
-				type: "session", version: 3, id, timestamp: stamp, cwd,
-			}) + "\n");
-			try {
-				const result = await cctx.switchSession(file);
-				// cancelled by a session_before_switch handler: else the empty file stays
-				// behind and shows up in every session list as a blank conversation
-				if (result.cancelled) unlinkSync(file);
-			} catch (err) {
-				try { unlinkSync(file); } catch { /* already gone */ }
-				throw err;
-			}
-		},
-	});
-
-	/** Mirrors pi's own getDefaultSessionDir() encoding (`--<path with - for />--`). */
-	function defaultSessionDir(cwd: string): string {
-		const safe = "--" + cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-") + "--";
-		return join(homedir(), ".pi", "agent", "sessions", safe);
-	}
 	pi.registerCommand("eink:reload", {
 		description: "Kindle: reload extensions, skills, prompts, themes",
 		// the reply has to flush before the runtime (and this HTTP server) is replaced

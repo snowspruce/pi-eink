@@ -411,7 +411,7 @@ class SessionPicker(unittest.TestCase):
         with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
              mock.patch.object(server, "live_bridges", lambda: live), \
              mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
-             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "queued": 0}), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "spawn": True}), \
              mock.patch.object(server, "rendered_session_id", lambda: "running-here"):
             html = server.new_session_html("running-here")
         self.assertIn('/act/new?s=running-here', html)
@@ -429,7 +429,7 @@ class SessionPicker(unittest.TestCase):
         with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
              mock.patch.object(server, "live_bridges", lambda: {}), \
              mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
-             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "queued": 0}), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "spawn": True}), \
              mock.patch.object(server, "rendered_session_id", lambda: "some-session"):
             html = server.new_session_html("some-session")
         tag = re.search(r'<input type="hidden" name="dir"[^>]*>', html).group(0)
@@ -450,7 +450,7 @@ class SessionPicker(unittest.TestCase):
         with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
              mock.patch.object(server, "live_bridges", lambda: {}), \
              mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
-             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True}), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "spawn": False}), \
              mock.patch.object(server, "rendered_session_id", lambda: "some-session"):
             html = server.new_session_html("some-session")
         self.assertNotIn("/act/new", html)       # no button that can only 404
@@ -545,9 +545,9 @@ class IndexMemo(unittest.TestCase):
 
 
 class NewSessionDiscovery(unittest.TestCase):
-    """`/act/new` answers from the instance that is about to be replaced, so the new
-    session is read from the registry: the replacement registers itself under the same
-    pid with a fresh id."""
+    """`/act/new` opens a terminal window elsewhere, so the reply cannot name the new
+    session: it appears in bridges.json a few seconds later, and is recognised by its
+    working directory among the ids that were not live before the tap."""
 
     def setUp(self):
         self.saved = server.BRIDGES_FILE.read_text() if server.BRIDGES_FILE.exists() else None
@@ -561,17 +561,31 @@ class NewSessionDiscovery(unittest.TestCase):
 
     def _registry(self, entries):
         server.BRIDGES_FILE.parent.mkdir(parents=True, exist_ok=True)
+        fresh = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        for info in entries.values():
+            info.setdefault("updatedAt", fresh)
         server.BRIDGES_FILE.write_text(json.dumps(entries))
+        server._LIVE_CACHE[0] = 0    # else the previous test's registry is still cached
 
-    def test_returns_the_session_that_registered_under_the_same_pid(self):
-        self._registry({"old-session": {"pid": 4242, "updatedAt": "2026-01-01T00:00:00Z"},
-                        "new-session": {"pid": 4242, "updatedAt": "2026-01-01T00:00:05Z"},
-                        "someone-else": {"pid": 9999, "updatedAt": "2026-01-01T00:00:09Z"}})
-        self.assertEqual(server.wait_for_new_session(4242, "old-session", timeout=0), "new-session")
+    def test_finds_the_session_that_appeared_in_that_directory(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        # live_bridges() keeps only entries whose pid answers: use our own
+        self._registry({"old-session": {"pid": os.getpid(), "cwd": str(root / "alpha")},
+                        "new-session": {"pid": os.getpid(), "cwd": str(root / "alpha")},
+                        "elsewhere": {"pid": os.getpid(), "cwd": str(root)}})
+        self.assertEqual(
+            server.wait_for_new_session_in(str(root / "alpha"), {"old-session"}, timeout=0),
+            "new-session")
 
-    def test_gives_up_instead_of_pointing_at_the_old_session(self):
-        self._registry({"old-session": {"pid": 4242, "updatedAt": "2026-01-01T00:00:00Z"}})
-        self.assertEqual(server.wait_for_new_session(4242, "old-session", timeout=0.2), "")
+    def test_a_session_that_was_already_running_there_is_not_it(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        self._registry({"old-session": {"pid": os.getpid(), "cwd": str(root / "alpha")}})
+        self.assertEqual(
+            server.wait_for_new_session_in(str(root / "alpha"), {"old-session"}, timeout=0.2), "")
 
 
 class SessionResolutionById(unittest.TestCase):
@@ -1001,6 +1015,7 @@ class BridgeRegistry(unittest.TestCase):
 
     def _write(self, entries):
         server.BRIDGES_FILE.write_text(json.dumps(entries))
+        server._LIVE_CACHE[0] = 0    # else the previous test's registry is still cached
         server._LIVE_CACHE[0] = 0
 
     def test_only_entries_with_a_live_pid_and_a_recent_heartbeat_survive(self):

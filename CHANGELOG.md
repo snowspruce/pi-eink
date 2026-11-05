@@ -13,6 +13,14 @@ All notable changes to this project. The format follows
   footer shows `排队中（3）` and `/queue` lists the messages with 上移 / 下移 / 改 / 删, a 加一条
   box and 清空. One message is delivered per settled run, 停下 drops the queue along with
   aborting (the same thing Escape does in the TUI) and says how many went.
+- `+ New session` opens a **new terminal window** with a fresh pi in the chosen directory
+  instead of hijacking the session being read (which is what `ctx.newSession()` /
+  `switchSession` did). The outcome note no longer sticks above the new page's input box,
+  and the two in-process commands (`eink:new`, `eink:new-in`) are gone.
+- The black band at the top is the browser's `fullscreen` preference, not `quick_controls`:
+  with only quick-controls the titlebar collapses to zero height while the WebView keeps a
+  stale 89px offset. `eink-addr off` now sets both, and `~/bin/eink-heal` (launchd, every
+  2 min) relaunches the browser if the band ever comes back.
 - `+ New session` is one entry at the top of the picker and asks **which directory**
   (`/new`): the sub-directories of `EINK_PROJECT_ROOTS` (default `~/Documents/Program`)
   plus anywhere pi already runs, recently-touched first, capped with the count of what is

@@ -25,6 +25,7 @@ const TEST_PORT = 0;
 const PENDING = join(EINK, "pending.json");
 const ANSWER = join(EINK, "answer.json");
 
+let spawnPiWindow, shellQuote, spawnRunner;
 let handlers = {};
 let commands = {};
 let aborted = 0;
@@ -42,7 +43,12 @@ async function load() {
 	// 0.0.0.0: a request from this machine's LAN address is not loopback, which is
 	// the only way to exercise the UA gate without a second host
 	process.env.EINK_BIND = "0.0.0.0";
+	// the suite's fixtures live in a mkdtemp dir; project roots are what /act/new checks
+	process.env.EINK_PROJECT_ROOTS = tmpdir();
 	mod = await import("../extensions/eink-bridge.ts");
+	spawnPiWindow = mod.spawnPiWindow;
+	shellQuote = mod.shellQuote;
+	spawnRunner = mod.spawnRunner;
 }
 
 const pi = {
@@ -178,47 +184,48 @@ describe("eink bridge", () => {
 		assert.equal(sent.length, 0);
 	});
 
-	it("starts a new session through the extension command", async () => {
+	it("opens a window in the chosen directory instead of moving this session", async () => {
 		sent = [];
-		const res = await post("/act/new");
-		assert.equal(res.status, 200);
-		assert.equal(res.json.msg, "已新建会话");
-		// the command goes out after the reply: creating a session replaces this
-		// extension instance, and the reply is written by the server it closes
-		await new Promise((r) => setTimeout(r, 300));
-		assert.deepEqual(sent, [{ text: "/eink:new", opts: { expandPromptTemplates: true } }]);
+		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));
+		const spawned = [];
+		const run = spawnRunner.run;
+		spawnRunner.run = (_cmd, argv, _opts, cb) => { spawned.push(argv); if (cb) cb(null, "", ""); };
+		try {
+			const res = await post("/act/new", "dir=" + encodeURIComponent(dir));
+			assert.equal(res.status, 200);
+			assert.match(res.json.msg, /新窗口|new window/);
+		} finally {
+			spawnRunner.run = run;
+		}
+		// nothing is sent to the model, no command runs in this session
+		await new Promise((r) => setTimeout(r, 200));
+		assert.equal(sent.length, 0);
+		assert.equal(spawned.length, 1);
+		assert.ok(spawned[0].at(-1).includes(dir), spawned[0].at(-1));
 	});
 
-	it("refuses a new session while messages are queued", async () => {
-		await post("/act/qclear");
-		const wasIdle = ctx.isIdle;
+	it("opens a window even while this session is busy", async () => {
+		// the whole point: the reader keeps their run, the new session is elsewhere
+		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));
+		const idle = ctx.isIdle;
 		ctx.isIdle = () => false;
-		try { await post("/act/qadd", "text=queued"); } finally { ctx.isIdle = wasIdle; }
-		const res = await post("/act/new", "dir=" + encodeURIComponent(tmpdir()));
-		assert.equal(res.status, 409);
-		assert.match(res.json.msg, /排队里还有 1 条|still queued/);
-		await post("/act/qclear");
+		let calls = 0;
+		const run = spawnRunner.run;
+		spawnRunner.run = (_c, _a, _o, cb) => { calls++; if (cb) cb(null, "", ""); };
+		try {
+			const res = await post("/act/new", "dir=" + encodeURIComponent(dir));
+			assert.equal(res.status, 200);
+			assert.equal(calls, 1);
+		} finally {
+			ctx.isIdle = idle;
+			spawnRunner.run = run;
+		}
 	});
 
 	it("refuses a directory outside the project roots", async () => {
 		const res = await post("/act/new", "dir=" + encodeURIComponent("/etc"));
 		assert.equal(res.status, 400);
 		assert.match(res.json.msg, /不能在这个目录|Cannot start/);
-	});
-
-	it("refuses a new session while this one is running", async () => {
-		// a stray tap on a 511px button must not throw away a turn in progress
-		const idle = ctx.isIdle;
-		ctx.isIdle = () => false;
-		try {
-			sent = [];
-			const res = await post("/act/new");
-			assert.equal(res.status, 409);
-			await new Promise((r) => setTimeout(r, 200));
-			assert.equal(sent.length, 0);
-		} finally {
-			ctx.isIdle = idle;
-		}
 	});
 
 	it("redirects the bare bridge port to the viewer", async () => {
@@ -603,10 +610,12 @@ describe("eink bridge", () => {
 		await post("/act/qclear");
 	});
 
-	it("maps /new and refuses a TUI-only built-in", async () => {
+	it("refuses /new typed into the box: a new session is a new window", async () => {
+		sent = [];
 		const created = await post("/act/say", "text=" + encodeURIComponent("/new"));
-		assert.equal(created.status, 200);
-		assert.match(created.json.msg, /新建|New session/);
+		assert.equal(created.status, 400);
+		assert.match(created.json.msg, /TUI/);
+		assert.equal(sent.length, 0);
 		const refused = await post("/act/say", "text=" + encodeURIComponent("/settings"));
 		assert.equal(refused.status, 400);
 		assert.match(refused.json.msg, /TUI/);
@@ -668,50 +677,41 @@ describe("port collision", () => {
 	});
 });
 
-describe("new session in a directory", () => {
-	// pi has no cwd option on newSession(); the session HEADER carries the cwd and
-	// switchSession() rebuilds the runtime around it. So the box writes a header-only
-	// session file for the chosen directory and switches to it.
-	const run = async (args) => {
-		let switched = "";
-		await commands["eink:new-in"].handler(args, {
-			switchSession: async (path) => { switched = path; return { cancelled: false }; },
+describe("spawnPiWindow", () => {
+	// A new session is a new `pi` in a new terminal window: pi is a full-screen TUI and
+	// takes its cwd from the process, not from a flag. The command travels as an
+	// osascript argument, so the only string that reaches a shell is our own - and it
+	// has to survive any directory name.
+	const capture = (dir, app) => {
+		const calls = [];
+		spawnPiWindow(dir, app, (cmd, argv, _opts, cb) => {
+			calls.push({ cmd, argv });
+			if (cb) cb(null, "", "");
 		});
-		return switched;
+		return calls[0];
 	};
 
-	it("writes an empty session whose header points at the directory, then switches", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));
-		const file = await run(dir);
-		assert.ok(file.endsWith(".jsonl"), file);
-		assert.ok(file.includes("--" + dir.replace(/^\//, "").replace(/[/:]/g, "-") + "--"), file);
-		const header = JSON.parse(readFileSync(file, "utf8").trim());
-		assert.equal(header.type, "session");
-		assert.equal(header.cwd, dir);
-		assert.equal(header.version, 3);
-		assert.ok(header.id && header.timestamp);
+	it("runs pi in the directory, quoted for a shell", () => {
+		const call = capture("/tmp/plain dir");
+		assert.equal(call.cmd, "osascript");
+		assert.equal(call.argv.at(-1), "cd '/tmp/plain dir' && exec pi");
+		assert.ok(call.argv.join(" ").includes("create window with default profile"));
 	});
 
-	it("removes the file again when the switch is refused", async () => {
-		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));
-		let written = "";
-		// cancelled by a session_before_switch handler
-		await commands["eink:new-in"].handler(dir, {
-			switchSession: async (path) => { written = path; return { cancelled: true }; },
-		});
-		assert.ok(written);
-		assert.equal(existsSync(written), false, "an empty session must not be left behind");
-
-		// and the same when the switch throws
-		let thrown = "";
-		await assert.rejects(commands["eink:new-in"].handler(dir, {
-			switchSession: async (path) => { thrown = path; throw new Error("boom"); },
-		}), /boom/);
-		assert.equal(existsSync(thrown), false);
+	it("survives a directory name that would end the quoting", () => {
+		const dir = "/tmp/x'; rm -rf ~; '";
+		assert.equal(shellQuote(dir), "'/tmp/x'\\''; rm -rf ~; '\\'''");
+		assert.equal(capture(dir).argv.at(-1), "cd " + shellQuote(dir) + " && exec pi");
 	});
 
-	it("ignores an empty argument", async () => {
-		assert.equal(await run("  "), "");
+	it("keeps the directory out of the AppleScript source", () => {
+		const call = capture('/tmp/a" & (do shell script "kaboom")');
+		assert.ok(!call.argv[1].includes("kaboom"),
+			"the path must travel as argv, not as script text");
+	});
+
+	it("takes the terminal from the environment or the argument", () => {
+		assert.ok(capture("/tmp/x", "Terminal").argv[1].includes('tell application "Terminal"'));
 	});
 });
 

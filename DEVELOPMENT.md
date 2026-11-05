@@ -373,6 +373,41 @@ BrowserWebView            0,0-1072,1332     ← 页面拿到全部高度
 教训：**转义函数要按"将被用在哪里"分档**（文本 / 属性 / URL / JS），只写一个 `esc()` 迟早
 会在属性里出一次事。这个项目现在只有一种，所以把最严的那档当默认。
 
+### 21. 新会话必须是新进程，不是"换个目录的同一个进程"
+
+`ctx.newSession()` 结束当前会话，`switchSession(header-cwd 的空会话)` 把这个进程搬到另一个目录。
+两者都会毁掉读者正在看的东西，所以都不对。pi 是全屏 TUI、没有 `--cwd`（cwd 来自进程），因此唯一
+干净的做法是**开一个新窗口**跑 `cd <dir> && pi`：
+
+```applescript
+tell application "iTerm" to create window with default profile  -- 再 write text "cd ... && pi"
+```
+
+命令通过 osascript 的 argv 传（`on run argv`），不拼进 AppleScript 源码——目录名是文件系统输入，
+`x'; rm -rf ~; '` 是合法名字。`shellQuote()` 负责单引号转义，这两层缺一层就是一个注入点。
+
+代价：需要一次 iTerm 自动化授权；新进程要几秒才注册，所以 viewer 侧按"该目录出现了没见过的会话 id"
+轮询 bridges.json（`wait_for_new_session_in`），而不是等 bridge 的回复——回复在窗口起来之前就写了。
+
+### 22. 黑带是 `fullscreen` 偏好，不是 `quick_controls`
+
+只设 `enable_quick_controls=true` 时，浏览器把标题栏压成 0 高却给 WebView 留了陈旧的 89px 偏移：
+
+```
+fixed_titlebar_container  0,0-1072,0      ← 高度 0
+main_content              0,89-1072,1312  ← 却从 89 开始 → 顶部 42 CSS px 黑带
+```
+
+而且它在运行中会复现（重启也照样）。`fullscreen=true` 一起设才有干净布局：
+
+```
+content / main_content / BrowserWebView   0,0-1072,1356   ← 连系统状态栏那 44px 也收回来了
+```
+
+`~/bin/eink-addr off` 现在同时写这两个键；`~/bin/eink-heal`（launchd `com.wangke.eink-heal`，
+每 2 分钟）在黑带回来时重启浏览器——判据是隔 20 秒读两次 `main_content` 的 y，两次都 >0 才算，
+因为页面加载过程中它会短暂跳到 89 再落回 0（一次读数会误判）。10 分钟内最多修一次，防止循环重启。
+
 ## 三、排查阶梯（设备打不开时按顺序）
 
 ```sh

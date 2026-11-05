@@ -330,42 +330,35 @@ def bridge_port_for(session_id: str) -> int:
         return 0
 
 
-def wait_for_new_session(pid: int, old_sid: str, timeout: float = 6.0) -> str:
-    """The session a pi process reports after it was asked for a new one.
+def wait_for_new_session_in(directory: str, known: set, timeout: float = 30.0) -> str:
+    """The session that appeared in `directory` after we asked for a new window.
 
-    Read from the registry rather than from the bridge's reply: the instance that
-    answers `/act/new` is the one being replaced. It replies, then shuts down (its
-    registry entries for this pid are dropped), and the replacement registers itself
-    under the same pid with a fresh session id and a fresh port. Waiting for that
-    entry is what makes the picker's button land on the new session instead of on
-    the conversation it just left.
+    A new session is now a new pi process (a spawned terminal window), so it is not the
+    bridge's reply that names it: the reply is written before the window is even up.
+    Wait for an entry in bridges.json whose cwd is that directory and whose id was not
+    there before the tap - an already-running pi in the same directory is in `known`,
+    so it cannot be mistaken for the one we just opened.
     """
-    if not pid:
+    try:
+        want = os.path.realpath(directory)
+    except Exception:
         return ""
     end = time.time() + timeout
     while True:
-        newest, newest_at = "", ""
-        try:
-            raw = json.loads(BRIDGES_FILE.read_text())
-        except Exception:
-            raw = {}
-        for sid, info in raw.items():
-            if not isinstance(info, dict) or sid == old_sid:
+        for sid, info in live_bridges().items():
+            if sid in known or not isinstance(info, dict):
                 continue
+            cwd = str(info.get("cwd") or "")
             try:
-                if int(info.get("pid") or 0) != pid:
-                    continue
+                if cwd and os.path.realpath(cwd) == want:
+                    return sid
             except Exception:
                 continue
-            stamp = str(info.get("updatedAt") or "")
-            if stamp >= newest_at:
-                newest, newest_at = str(sid), stamp
-        if newest:
-            _LIVE_CACHE[0] = 0.0   # the next request must see the new registration
-            return newest
         if time.time() >= end:
+            print("%s WARN new window in %s did not register within %.0fs"
+                  % (time.strftime("%H:%M:%S"), directory, timeout), flush=True)
             return ""
-        time.sleep(0.15)
+        time.sleep(0.4)
 
 
 SESSION_META_CACHE = {}
@@ -630,7 +623,7 @@ def new_session_html(sid: str = "", lang: str = "") -> str:
     for path, live in choices:
         label = "\uff0b " + (Path(path).name or path)
         note = (" \u00b7 %s" % esc(tr("new_session_live", lang))) if live else ""
-        if cap is not None and "queued" in cap:
+        if cap is not None and cap.get("spawn"):
             action = ('<form method="POST" action="/act/new?s=%s">'
                       '<input type="hidden" name="dir" value="%s">'
                       '<button class="btn" type="submit">%s</button></form>'
@@ -639,9 +632,9 @@ def new_session_html(sid: str = "", lang: str = "") -> str:
             action = '<div class="body dim">%s</div>' % esc(label)
         rows.append('<div class="sess">%s<div class="mono dim">%s%s</div></div>'
                     % (action, esc(short_path(path) or path), note))
-    if cap is None or "queued" not in cap:
-        # the session that would move cannot start one: say why instead of rendering
-        # buttons that can only answer "unknown action" (or 502, with no session at all)
+    if cap is None or not cap.get("spawn"):
+        # this bridge cannot spawn a window: say why instead of rendering buttons that
+        # would hijack the open session (older builds moved the process)
         head = '<div class="body dim">%s</div>' % esc(
             tr("new_session_old_bridge" if target else "new_session_none", lang))
         return head + "".join(rows)
@@ -1807,6 +1800,12 @@ document.addEventListener("submit", function (e) {
     var ok = x.status >= 200 && x.status < 400;
     var msg = (j && j.msg) ? j.msg : (ok ? T.sent : T.failed + (x.status || T.netError));
     diag("ev=done&a=" + encodeURIComponent(action) + "&st=" + x.status + "&m=" + encodeURIComponent(msg));
+    if (ok && j && j.sid) {
+      // a session that was just created: the page belongs to it now, and the outcome
+      // line ("opening a window in ...") would otherwise sit above its input box
+      location.href = "/?s=" + encodeURIComponent(j.sid);
+      return;
+    }
     showResult(msg);
     if (ok) {
       var ta = form.querySelector("textarea");
@@ -3002,15 +3001,15 @@ class Handler(BaseHTTPRequestHandler):
             # Never fall back to BRIDGE_PORT: that is a different process, or nothing
             back(tr("session_no_bridge", lang), 502)
             return
-        target_pid = 0
+        # "+ new session" opens a terminal window elsewhere; which session it becomes is
+        # only known once that process registers, so remember who was already live.
+        new_dir, before_sids = "", set()
         if action == "new":
-            # "+ new session" is only possible inside a running pi process: the bridge
-            # asks its command context for one. Its pid is how the replacement session
-            # is recognised in the registry a moment later.
             try:
-                target_pid = int(live_bridges().get(post_sid, {}).get("pid") or 0)
+                new_dir = (parse_qs(body.decode("utf-8", "replace")).get("dir") or [""])[0]
             except Exception:
-                target_pid = 0
+                new_dir = ""
+            before_sids = set(live_bridges())
         target = "http://127.0.0.1:%d/act/%s" % (port_target, action)
         req = urllib.request.Request(target, data=body, method="POST")
         # forward credentials: the bridge gates on the same cookie
@@ -3070,13 +3069,16 @@ class Handler(BaseHTTPRequestHandler):
             # upgraded by a restart, a bridge only by /reload inside pi)
             payload["msg"] = tr("bridge_old", lang)
 
-        if action == "new" and status < 400 and target_pid:
-            # The bridge answers before it is torn down, so the replacement session is
-            # not in its reply: wait for it to register under the same pid. Failing
-            # that, stay put and say so instead of landing on a page that will hop.
-            new_sid = wait_for_new_session(target_pid, post_sid)
+        if action == "new" and status < 400:
+            # The bridge replies before the window is up, so the new session is not in
+            # its answer: wait for that directory to register a session we had not seen.
+            new_sid = wait_for_new_session_in(new_dir, before_sids)
             if new_sid:
                 payload["sid"] = new_sid
+                # the page is about to move there; a note about it would sit above the
+                # input box of the new page until something else replaced it
+                payload["msg"] = ""
+                payload["quiet"] = True     # nothing to report: the page is moving
             else:
                 payload["msg"] = str(payload.get("msg") or "") + " " + tr("new_session_failed", lang)
 
@@ -3091,8 +3093,13 @@ class Handler(BaseHTTPRequestHandler):
                 if status >= 400:
                     text = tr("failed_code", lang, status)
             if payload.get("sid"):
-                # a session that was just created: land on it, not back on the old one
-                loc = "/?" + urlencode([("s", str(payload["sid"])), ("msg", text[:60])])
+                # a session that was just created: land on it, not back on the old one.
+                # No note there: "opening a window in ..." describes the page we are
+                # leaving, and it would sit above the new page's input box.
+                params = [("s", str(payload["sid"]))]
+                if text and not payload.get("quiet"):
+                    params.append(("msg", text[:60]))
+                loc = "/?" + urlencode(params)
                 self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", loc)])
                 return
             if action in QUEUE_ACTIONS:

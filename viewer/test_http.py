@@ -18,6 +18,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import test_server as base  # noqa: E402  (sets up the temp HOME first)
 import threading
 import types
+import urllib.parse
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest import mock
@@ -206,30 +207,34 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(status, 200, data[:200])
         self.assertEqual(json.loads(data)["items"], ["hello"])
 
-    def test_new_session_lands_on_the_session_that_replaces_it(self):
-        """The bridge answers from the instance being replaced, so the new id is read
-        from the registry (same pid, new id). Landing back on the old conversation -
-        or on a page with no id - is the failure this guards."""
+    def test_new_session_lands_on_the_window_it_opened(self):
+        """`/act/new` spawns a pi in another directory, so its reply cannot name the new
+        session: the viewer waits for that directory to register one and sends the page
+        there - without the outcome note, which would otherwise sit above the input box
+        of the page it just opened."""
         old, new = "aaaabbbb-1111-2222-3333-444455556666", "eeeeffff-1111-2222-3333-444455556666"
         pid = os.getpid()
-        live = {old: {"pid": pid, "port": self.bridge_port, "updatedAt": "2026-04-04T00:00:00Z"}}
-        saved = server.BRIDGES_FILE.read_text() if server.BRIDGES_FILE.exists() else None
-        self.addCleanup(lambda: server.BRIDGES_FILE.write_text(saved) if saved is not None
-                        else server.BRIDGES_FILE.unlink(missing_ok=True))
-        FakeBridge.reply_body = json.dumps({"ok": True, "msg": "\u5df2\u65b0\u5efa\u4f1a\u8bdd"}).encode()
+        target = tempfile.mkdtemp(prefix="eink-proj-")
+        self.addCleanup(shutil.rmtree, target, True)
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        live = {old: {"pid": pid, "port": self.bridge_port, "cwd": "/tmp/elsewhere",
+                      "updatedAt": stamp}}
+        FakeBridge.reply_body = json.dumps({"ok": True, "msg": "\u5f00\u65b0\u7a97\u53e3"}).encode()
 
-        def register():
-            time.sleep(0.3)   # the replacement registers after the old one answered
-            server.BRIDGES_FILE.parent.mkdir(parents=True, exist_ok=True)
-            server.BRIDGES_FILE.write_text(json.dumps(
-                {new: {"pid": pid, "updatedAt": "2026-04-04T00:00:01Z"}}))
+        def appear():
+            time.sleep(0.3)   # the window comes up after the bridge answered
+            live[new] = {"pid": pid, "port": self.bridge_port, "cwd": target,
+                         "updatedAt": stamp}
 
-        threading.Thread(target=register, daemon=True).start()
+        threading.Thread(target=appear, daemon=True).start()
         with mock.patch.object(server, "live_bridges", lambda: live):
             seen = {}
-            status, _d = request(self.viewer.port, "/act/new?s=" + old, "POST", out=seen)
+            status, _d = request(self.viewer.port, "/act/new?s=" + old, "POST",
+                                 "dir=" + urllib.parse.quote(target), out=seen)
         self.assertEqual(status, 303)
-        self.assertIn("s=" + new, seen.get("Location", ""))
+        location = seen.get("Location", "")
+        self.assertIn("s=" + new, location)
+        self.assertNotIn("msg=", location)      # no stale line above the new page's box
         self.assertEqual(FakeBridge.seen[0][1], "/act/new")
 
     def test_language_reaches_the_bridge(self):
@@ -510,7 +515,8 @@ class QueuePage(unittest.TestCase):
             "/queue": json.dumps({"items": [{"i": 7, "text": "first", "at": 1767225600000},
                                             {"i": 9, "text": "second", "at": 1767225660000}],
                                   "pending": False, "armed": True}).encode(),
-            "/state": json.dumps({"idle": False, "pending": False, "queued": 2}).encode(),
+            "/state": json.dumps({"idle": False, "pending": False, "queued": 2,
+                                  "spawn": True}).encode(),
         }
         self.addCleanup(mock.patch.stopall)
         mock.patch.object(server, "caps_for", lambda _h: "full").start()
@@ -582,7 +588,8 @@ class QueuePage(unittest.TestCase):
     def test_the_footer_link_is_there_even_when_idle_and_empty(self):
         # it disappeared while the agent was idle with nothing queued, which is exactly
         # when a reader goes looking for it
-        FakeBridge.routes["/state"] = json.dumps({"idle": True, "pending": False, "queued": 0}).encode()
+        FakeBridge.routes["/state"] = json.dumps({"idle": True, "pending": False, "queued": 0,
+                                                  "spawn": True}).encode()
         status, data = request(self.viewer.port, "/data?s=" + self.SID)
         self.assertEqual(status, 200)
         foot = json.loads(data)["foot"]

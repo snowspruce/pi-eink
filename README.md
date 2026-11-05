@@ -143,17 +143,18 @@ own (HTTP 409, `eink-bridge.ts:394`), because `pending.json` is shared by every 
 ### Starting a session
 
 `+ New session` opens `/new`, which asks **which directory**: the sub-directories of
-`EINK_PROJECT_ROOTS` (default `~/Documents/Program`) plus any directory that already runs
-pi, recently-touched first. The session is started by the pi process showing the page, and
-that process **moves** to the chosen directory.
+`EINK_PROJECT_ROOTS` (default `~/Documents/Program`) plus anywhere pi already runs,
+recently-touched first. Tapping one opens a **new terminal window** (iTerm2) with a fresh
+`pi` in that directory, and the page moves to it.
 
-`ctx.newSession()` has no cwd option - it inherits the process directory - so the bridge
-writes a header-only session file whose `cwd` names the target and calls
-`ctx.switchSession()` on it: the runtime takes the cwd from the session header and rebuilds
-around it. Two consequences worth knowing: the old session in that process ends (exactly
-like `+ New session` in the same directory), and the bridge refuses a directory outside the
+It has to be a new process: `ctx.newSession()` ends the conversation you are reading, and
+`switchSession` moves this very process to another directory. pi is a full-screen TUI with
+no `--cwd` flag, so the command is `cd <dir> && pi` typed into a new window. Two things
+follow: the session you are reading is untouched (it even works mid-run), and the window
+opens in your desktop session, so it needs automation permission for iTerm once.
+
+`EINK_TERMINAL` picks the app (default `iTerm`); the bridge refuses directories outside the
 roots so a mistyped path cannot park pi in `/`.
-
 ### The queue
 
 pi's own queue cannot be read or edited from an extension: `ExtensionContext` offers
@@ -199,6 +200,7 @@ starts `pi`: the bridge is an in-process extension and never sees the unit's env
 |---|---|---|---|
 | `EINK_PORT` | both | `8000` | viewer port; the bridge also uses it to redirect its `/` |
 | `EINK_PROJECT_ROOTS` | both | `~/Documents/Program` | where `+ New session` may start one: the sub-directories listed, colon-separated; a directory that already runs pi is always allowed |
+| `EINK_TERMINAL` | bridge | `iTerm` | macOS app that gets the new window (`iTerm`, `Terminal`, …) |
 | `EINK_BIND` | both | `0.0.0.0` | interface to listen on; set the LAN address on a box that also has VPN or docker interfaces |
 | `EINK_BRIDGE_PORT` | both | unset | force one bridge port instead of the per-session hash |
 | `EINK_ALLOW_IPS` | both | unset | fallback peer allowlist when `allow_ips` is missing (comma separated, IP or CIDR) |
@@ -235,7 +237,7 @@ State files under `~/.pi/eink/`, all ignored by git:
 Viewer on `:8000`: `/` page shell (a first visit without `?s=` is redirected once to
 `/?s=<id>`, so the poll stays on the conversation you opened), `/data` JSON fragment,
 `/static` no-JS fallback (a form POST from a browser without JS lands here), `/sessions`
-picker (top entry `+ New session`, then `/new` to pick the project), `/queue` and
+picker (top entry `+ New session`, then `/new` to pick the directory), `/queue` and
 `/queue/edit` (the queue, see above), `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`,
 `/diag`, `/glyphs`, `/favicon.png`, `/done/<key>` relayed from the bridge's confirmation
 page, and `POST /act/<action>` proxied to the session's bridge. Three actions are
