@@ -1663,6 +1663,21 @@ function atBottom() {
   return (y + vh) >= (h - 40);
 }
 window.addEventListener("scroll", function () { STICK = atBottom(); }, false);
+// The soft keyboard shrinks the viewport, and the box is the last thing on the page:
+// something has to scroll it back into view. That used to be a side effect of every
+// poll repainting (scrollTo at the bottom of paint), which went away when unchanged
+// polls stopped shipping the transcript - the box then sat under the keyboard. Do it
+// where it belongs: on the resize the IME causes, and when the box takes focus.
+function showBox() {
+  var box = document.querySelector("#sayform textarea");
+  if (!box) { return; }
+  try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {}
+}
+window.addEventListener("resize", function () { setTimeout(showBox, 120); }, false);
+document.addEventListener("focus", function (e) {
+  var el = e.target;
+  if (el && el.tagName && el.tagName.toUpperCase() === "TEXTAREA") { setTimeout(showBox, 350); }
+}, true);
 function paint(j) {
   setSpin(!!j.busy, j.spin);
   POLL_MS = j.busy ? POLL_MS_BUSY : POLL_MS_IDLE;

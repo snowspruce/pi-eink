@@ -263,6 +263,15 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertIn('encodeURIComponent(V)', data.decode("utf-8"))
 
+    def test_the_box_comes_back_when_the_keyboard_resizes_the_viewport(self):
+        """Unchanged polls no longer repaint, and the repaint was what scrolled the
+        page to the bottom - without this the input box stays under the soft keyboard."""
+        status, data = request(self.viewer.port, "/?s=01234567-89ab-cdef-0123-456789abcdef")
+        self.assertEqual(status, 200)
+        html = data.decode("utf-8")
+        self.assertIn('addEventListener("resize"', html)
+        self.assertIn("function showBox()", html)
+
     def test_a_stale_digest_gets_the_whole_fragment_again(self):
         status, data = request(self.viewer.port, "/data?s=01234567-89ab-cdef-0123-456789abcdef&v=deadbeef0000")
         self.assertEqual(status, 200)
