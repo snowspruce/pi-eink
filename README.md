@@ -198,6 +198,7 @@ starts `pi`: the bridge is an in-process extension and never sees the unit's env
 | Variable | Process | Default | Meaning |
 |---|---|---|---|
 | `EINK_PORT` | both | `8000` | viewer port; the bridge also uses it to redirect its `/` |
+| `EINK_PROJECT_ROOTS` | both | `~/Documents/Program` | where `+ New session` may start one: the sub-directories listed, colon-separated; a directory that already runs pi is always allowed |
 | `EINK_BIND` | both | `0.0.0.0` | interface to listen on; set the LAN address on a box that also has VPN or docker interfaces |
 | `EINK_BRIDGE_PORT` | both | unset | force one bridge port instead of the per-session hash |
 | `EINK_ALLOW_IPS` | both | unset | fallback peer allowlist when `allow_ips` is missing (comma separated, IP or CIDR) |
