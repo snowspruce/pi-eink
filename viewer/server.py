@@ -644,6 +644,12 @@ HOME_CSS = """
 }
 #home li a { text-decoration: none; }
 #home li .dir { font-size: 11px; color: #444; margin-top: 3px; }
+/* 活着的项目后面一个实心圆点：10px 直径在 511px 宽的屏上刚好，且不靠颜色区分
+   （这块屏是灰阶，颜色没有意义）。 */
+#home li .dot {
+  display: inline-block; width: 10px; height: 10px; border-radius: 5px;
+  background: #000; margin-left: 9px; vertical-align: 1px;
+}
 #home li .live { font-size: 11px; color: #000; margin-top: 3px; }
 #home .foot { padding: 12px 10px 4px; font-size: 11px; color: #444; }
 /* 系统导航栏被 kiosk 隐藏了，菜单入口只能放在页面里 */
@@ -705,7 +711,9 @@ def home_html(lang: str = "", target: str = "") -> str:
            '<div class="brand"><img src="/logo.png" alt="pi"><div class="name">pi</div></div>',
            "<ul>"]
     for live, path in rows:
-        name = esc(Path(path).name or path)
+        label = esc(Path(path).name or path)
+        # 运行中的项目名字后面跟一个实心圆点
+        name = label + '<span class="dot"></span>' if live == "live" else label
         note = ('<div class="live">\u5728\u8fd9\u91cc\u8fd0\u884c\u00b7\u70b9\u5f00\u8fdb\u5165</div>'
                 if live == "live" else
                 '<div class="dir">%s</div>' % esc(short_path(path) or path))
