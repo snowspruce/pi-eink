@@ -117,6 +117,38 @@ class IpGate(unittest.TestCase):
             (EINK / "allow_ips").write_text("127.0.0.1\n")
 
 
+class ClientIdentity(unittest.TestCase):
+    """Behind the public entry every request comes from loopback: without the proxy's
+    X-Real-IP the log says 127.0.0.1 and caps_for() hands the internet "full"."""
+
+    def _handler(self, ip, real=""):
+        class H:
+            client_address = (ip, 1234)
+            headers = {"X-Real-IP": real} if real else {}
+        return H()
+
+    def test_the_proxy_header_names_the_real_peer(self):
+        self.assertEqual(server.client_ip(self._handler("127.0.0.1", "58.35.179.121")),
+                         "58.35.179.121")
+
+    def test_the_header_never_changes_the_trust_decision(self):
+        """Only the local proxy can reach the port, so loopback stays "full" whatever
+        X-Real-IP says - otherwise the public entry would be judged by subnet rules it
+        was never part of, and the Kindle would land in read-only."""
+        class H:
+            client_address = ("127.0.0.1", 1)
+            headers = {"X-Real-IP": "58.35.179.121"}
+        self.assertEqual(server.caps_for(H()), "full")
+
+    def test_a_direct_peer_cannot_rename_itself(self):
+        # not from loopback: the header is only trusted from the local proxy
+        self.assertEqual(server.client_ip(self._handler("192.168.1.9", "10.0.0.1")),
+                         "192.168.1.9")
+
+    def test_a_garbage_header_is_ignored(self):
+        self.assertEqual(server.client_ip(self._handler("127.0.0.1", "not-an-ip")), "127.0.0.1")
+
+
 class Capabilities(unittest.TestCase):
     def setUp(self):
         server.save_trust({"confirmed": [], "peers": [], "readonly": False})

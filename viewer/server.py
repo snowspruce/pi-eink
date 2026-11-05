@@ -900,7 +900,7 @@ def host_subnet(handler) -> str:
 
 def peer_subnet(handler) -> str:
     try:
-        return str(ipaddress.ip_network(client_ip(handler) + "/24", strict=False))
+        return str(ipaddress.ip_network(peer_ip(handler) + "/24", strict=False))
     except Exception:
         return ""
 
@@ -914,7 +914,7 @@ def caps_for(handler) -> str:
     A network the viewer has never served on therefore opens read-only, and a peer
     that is routed in from another subnet does not inherit the host's trust.
     """
-    if is_loopback(client_ip(handler)):
+    if is_loopback(peer_ip(handler)):
         return "full"
     state = trust_state()
     if state["readonly"]:
@@ -1370,9 +1370,37 @@ def is_loopback(ip: str) -> bool:
     return ip.startswith("127.") or ip in ("::1", "localhost")
 
 
-def client_ip(handler) -> str:
+def peer_ip(handler) -> str:
+    """The socket peer. This is what the trust decisions use: behind the public entry
+    the only way in is the local proxy, so loopback means "came through nginx"."""
     ip = handler.client_address[0] if handler.client_address else ""
     return ip[7:] if ip.startswith("::ffff:") else ip
+
+
+def client_ip(handler) -> str:
+    """Who to *name* in logs: the peer, or the address the local TLS proxy saw.
+
+    Behind the public entry every request arrives on loopback, so the socket address
+    says 127.0.0.1 for a Kindle in a café - useless in logs, and it made caps_for()
+    treat the whole internet as "the machine itself". The proxy passes X-Real-IP and
+    only this process can reach 127.0.0.1:8000, so the header is trusted from loopback
+    and from nowhere else.
+    """
+    ip = peer_ip(handler)
+    if is_loopback(ip):
+        headers = getattr(handler, "headers", None) or {}
+        seen = (headers.get("X-Real-IP") or "").strip()
+        if seen and _is_ip(seen):
+            return seen
+    return ip
+
+
+def _is_ip(text: str) -> bool:
+    try:
+        ipaddress.ip_address(text)
+        return True
+    except ValueError:
+        return False
 
 
 def parse_cookies(header: str) -> dict:
@@ -2775,7 +2803,7 @@ class Handler(BaseHTTPRequestHandler):
     def _authorized(self, q) -> tuple[bool, list, str]:
         """Return (ok, headers-to-set, reason). Cookie, or ?k=<token> which sets the cookie."""
         extra = []
-        ip = client_ip(self)
+        ip = peer_ip(self)
         # The token is checked before the lockout on purpose: after a token
         # rotation the reader must not be locked out of their own page for ten
         # minutes. Weaker credentials - the 6-digit pin, a stale cookie - wait
@@ -2879,14 +2907,14 @@ class Handler(BaseHTTPRequestHandler):
             code = (form.get("c") or [""])[0]
             sid = (form.get("s") or [""])[0]
             if totp_verify(code):
-                self._clear_fails(client_ip(self))
+                self._clear_fails(peer_ip(self))
                 cookie = "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (
                     OTP_COOKIE, otp_session_value(), COOKIE_MAX_AGE)
                 loc = "/" + (("?s=" + quote(sid, safe="")) if sid else "")
                 self._send(b"", "text/html; charset=utf-8", 303,
                            extra=[("Set-Cookie", cookie), ("Location", loc)])
                 return
-            self._note_fail(client_ip(self), guess=True)
+            self._note_fail(peer_ip(self), guess=True)
             self._send(otp_page(sid, self._dark(), tr("otp_bad", lang_of(self)),
                                 lang_of(self)).encode("utf-8"),
                        "text/html; charset=utf-8", 403)
