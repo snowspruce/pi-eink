@@ -105,6 +105,10 @@ STRINGS = {
     "empty_value": ("(\u7a7a)", "(empty)"),
     "running_at": ("%s \u8fd0\u884c\u4e2d :%s", "%s running :%s"),
     "new_session": ("\uff0b \u65b0\u4f1a\u8bdd", "+ New session"),
+    "new_session_hint": ("\u9009\u4e00\u4e2a\u9879\u76ee\u76ee\u5f55", "pick a project directory"),
+    "new_session_none": ("\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684 pi \u4f1a\u8bdd\uff1a\u65b0\u4f1a\u8bdd\u53ea\u80fd\u5efa\u5728\u5df2\u7ecf\u8dd1\u7740 pi \u7684\u76ee\u5f55\u91cc",
+                         "No running pi session: a new session can only start in a directory that already runs pi"),
+    "new_session_running": ("%d \u4e2a\u4f1a\u8bdd\u5728\u8fd0\u884c", "%d sessions running"),
     "new_session_failed": ("\u65b0\u5efa\u4f1a\u8bdd\u672a\u51fa\u73b0\uff08bridge \u6ca1\u4e0a\u62a5\uff09",
                            "The new session did not appear (no bridge reported it)"),
     "queue": ("\u6392\u961f\u4e2d\uff08%d\uff09", "Queued (%d)"),
@@ -514,16 +518,26 @@ def resolve_view(requested_sid: str, caps: str) -> tuple:
     return newest_session(sid), sid, gone
 
 
-def sessions_html(lang: str = "") -> str:
-    """Picker: running bridges first, then the most recently used session files."""
+def sessions_html(lang: str = "", sid: str = "") -> str:
+    """Picker: running bridges first, then the most recently used session files.
+
+    One `+ New session` entry at the top, not a button on every row: a new session is
+    "a new conversation in some project", so the second step is choosing the project,
+    not choosing which of two sessions in the same directory to hang it off.
+    """
     live = live_bridges()
     rows = []
-    for sid, info in sorted(live.items(), key=lambda kv: kv[1].get("updatedAt", ""), reverse=True):
-        cwd = info.get("cwd") or ""
-        rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>%s'
+    new_suffix = ("?s=" + quote(sid, safe="")) if sid else ""
+    if live:
+        rows.append('<div class="sess"><a href="/new%s"><b>%s</b></a>'
                     '<div class="mono dim">%s</div></div>'
-                    % (quote(str(sid), safe=""), esc(short_path(cwd) or sid[:8]),
-                       new_session_form(str(sid), lang),
+                    % (new_suffix, esc(tr("new_session", lang)),
+                       esc(tr("new_session_hint", lang))))
+    for sid_live, info in sorted(live.items(), key=lambda kv: kv[1].get("updatedAt", ""), reverse=True):
+        cwd = info.get("cwd") or ""
+        rows.append('<div class="sess"><a href="/?s=%s"><b>%s</b></a>'
+                    '<div class="mono dim">%s</div></div>'
+                    % (quote(str(sid_live), safe=""), esc(short_path(cwd) or sid_live[:8]),
                        esc(tr("running_at", lang, short_path(cwd), str(info.get("port", ""))))))
 
     files = sorted(session_index().values(), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -546,17 +560,38 @@ def sessions_html(lang: str = "") -> str:
     return "".join(rows) or '<div class="body">%s</div>' % esc(tr("no_sessions", lang))
 
 
-def new_session_form(sid: str, lang: str = "") -> str:
-    """"+ new session" for a running pi process.
+def new_session_html(sid: str = "", lang: str = "") -> str:
+    """Choose the PROJECT a new session starts in.
 
-    Only a live process can create a session: the tap is proxied to that session's
-    bridge, which asks its command context for one. That is why the button sits on
-    the rows of the running sessions and not in the page header - a file-only
-    session has nothing to create a session with.
+    A pi session cannot be born anywhere: `ctx.newSession()` inherits the working
+    directory of the process it runs in, and no extension API can set one (the session
+    header's cwd comes from the process, and there is no cwd option). So the honest list
+    is "projects that already have a running pi", one row per directory; the session is
+    created inside that project's own process. Directories nobody runs pi in are not
+    offered - a button that cannot work is worse than no button.
     """
-    return ('<form class="new" method="POST" action="/act/new?s=%s">'
-            '<button class="btn" type="submit">%s</button></form>'
-            % (quote(str(sid), safe=""), esc(tr("new_session", lang))))
+    live = live_bridges()
+    projects = {}
+    for live_sid, info in live.items():
+        cwd = str(info.get("cwd") or "")
+        if not cwd:
+            continue
+        kept = projects.get(cwd)
+        if kept is None or str(info.get("updatedAt") or "") > str(live_bridges()[kept].get("updatedAt") or ""):
+            projects[cwd] = live_sid
+    if not projects:
+        return '<div class="body dim">%s</div>' % esc(tr("new_session_none", lang))
+    rows = []
+    for cwd, live_sid in sorted(projects.items(),
+                                key=lambda kv: live[kv[1]].get("updatedAt", ""), reverse=True):
+        count = sum(1 for i in live.values() if str(i.get("cwd") or "") == cwd)
+        extra = (" \u00b7 %s" % esc(tr("new_session_running", lang, count))) if count > 1 else ""
+        rows.append('<div class="sess"><form method="POST" action="/act/new?s=%s">'
+                    '<button class="btn" type="submit">%s</button></form>'
+                    '<div class="mono dim">%s%s</div></div>'
+                    % (quote(str(live_sid), safe=""),
+                       esc("\uff0b " + (short_path(cwd) or cwd)), esc(cwd), extra))
+    return "".join(rows)
 
 
 def bridge_state():
@@ -3261,6 +3296,23 @@ class Handler(BaseHTTPRequestHandler):
                        "text/html; charset=utf-8", extra=extra)
             return
 
+        if u.path == "/new":
+            # Step two of "+ new session": which project. The rows are POSTs to
+            # /act/new?s=<that project's live session>, i.e. the process that will host
+            # the new conversation.
+            page = ("<!DOCTYPE html><html><head>"
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    '<link rel="icon" type="image/png" href="/favicon.png">'
+                    "<style>%(css)s</style></head><body>"
+                    '<div id="wrap"><div class="body"><a href="/sessions?s=%(sid)s">%(back)s</a></div>'
+                    '<div class="body"><b>%(title)s</b></div>%(list)s</div></body></html>')
+            self._send((page % {"css": css, "sid": quote(sid, safe=""),
+                                "back": esc(tr("sessions", lang)),
+                                "title": esc(tr("new_session", lang)),
+                                "list": new_session_html(sid, lang)}).encode("utf-8"),
+                       "text/html; charset=utf-8", extra=extra)
+            return
+
         if u.path == "/sessions":
             # The way back is the session this picker was opened from, not "whatever the
             # viewer rendered last": with two devices in use that is the other one's pick.
@@ -3271,7 +3323,7 @@ class Handler(BaseHTTPRequestHandler):
                     "<style>%(css)s</style></head><body>"
                     '<div id="wrap"><div class="body"><a href="%(back_url)s">%(back)s</a></div>'
                     "%(list)s</div></body></html>")
-            self._send((page % {"css": css, "list": sessions_html(lang),
+            self._send((page % {"css": css, "list": sessions_html(lang, sid),
                                 "back_url": esc(back_path),
                                 "back": esc(tr("back_to_session", lang))}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)

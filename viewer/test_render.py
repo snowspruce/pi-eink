@@ -386,15 +386,41 @@ class SessionPicker(unittest.TestCase):
             html = server.sessions_html("en")
         self.assertIn("(no sessions)", html)
 
-    def test_only_a_running_session_offers_a_new_session(self):
-        """The button belongs on the running rows: a file has no process to create a
-        session in, so a page-wide button would be a control that cannot work."""
+    def test_the_picker_offers_one_new_session_entry(self):
+        """"+ new session" is one entry at the top, not a button on every row: the second
+        step is picking the project, and two sessions in the same directory would offer
+        the same choice twice."""
         entry = {"port": 8123, "pid": os.getpid(), "cwd": "/tmp/live",
                  "sessionFile": "/tmp/live.jsonl", "updatedAt": "2026-01-01T00:00:00Z"}
         with mock.patch.object(server, "live_bridges", lambda: {SID: entry}):
             html = server.sessions_html()
-        self.assertIn('action="/act/new?s=%s"' % SID, html)
-        self.assertEqual(html.count("/act/new"), 1)
+        self.assertEqual(html.count('href="/new'), 1)
+        self.assertNotIn("/act/new", html)
+
+    def test_the_new_session_page_lists_one_row_per_project(self):
+        """A session inherits the cwd of the process it runs in, so the choice is a
+        project - two sessions in the same directory are one choice, not two."""
+        live = {
+            "old-in-demo": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/demo",
+                            "updatedAt": "2026-01-01T00:00:00Z"},
+            "new-in-demo": {"port": 2, "pid": os.getpid(), "cwd": "/tmp/demo",
+                            "updatedAt": "2026-01-02T00:00:00Z"},
+            "other-project": {"port": 3, "pid": os.getpid(), "cwd": "/tmp/other",
+                              "updatedAt": "2026-01-01T12:00:00Z"},
+        }
+        with mock.patch.object(server, "live_bridges", lambda: live):
+            html = server.new_session_html()
+        self.assertEqual(html.count("/act/new"), 2)
+        # the newest session in a directory is the one whose bridge creates it
+        self.assertIn("/act/new?s=new-in-demo", html)
+        self.assertIn("/act/new?s=other-project", html)
+        self.assertIn("2 个会话在运行", html)
+
+    def test_the_new_session_page_explains_an_empty_list(self):
+        with mock.patch.object(server, "live_bridges", lambda: {}):
+            html = server.new_session_html()
+        self.assertIn("没有运行中的 pi 会话", html)
+        self.assertNotIn("/act/new", html)
 
     def test_files_without_a_session_header_are_not_listed(self):
         """`*_transcript.jsonl` (subagent artifacts) have no session row: listing them

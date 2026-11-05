@@ -140,6 +140,14 @@ Both sides check ownership and both checks must stay. The viewer only shows a bl
 another project's command line. The bridge refuses to answer a block whose `pid` is not its
 own (HTTP 409, `eink-bridge.ts:394`), because `pending.json` is shared by every pi process.
 
+### Starting a session
+
+`+ New session` opens `/new`, which lists **projects** rather than sessions. That list is
+not a directory browser: `ctx.newSession()` inherits the working directory of the pi process
+it runs in, and no extension API can set one, so a new session can only start in a directory
+that already runs pi. Directories where nothing runs are not offered - the alternative would
+be a button that cannot work. Starting pi somewhere new is still a terminal job.
+
 ### The queue
 
 pi's own queue cannot be read or edited from an extension: `ExtensionContext` offers
@@ -220,7 +228,7 @@ State files under `~/.pi/eink/`, all ignored by git:
 Viewer on `:8000`: `/` page shell (a first visit without `?s=` is redirected once to
 `/?s=<id>`, so the poll stays on the conversation you opened), `/data` JSON fragment,
 `/static` no-JS fallback (a form POST from a browser without JS lands here), `/sessions`
-picker (each running session carries a `+ New session` button), `/queue` and
+picker (top entry `+ New session`, then `/new` to pick the project), `/queue` and
 `/queue/edit` (the queue, see above), `/theme?d=0|1` day or night cookie, `/lang?l=zh|en`,
 `/diag`, `/glyphs`, `/favicon.png`, `/done/<key>` relayed from the bridge's confirmation
 page, and `POST /act/<action>` proxied to the session's bridge. Three actions are

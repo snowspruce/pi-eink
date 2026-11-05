@@ -127,6 +127,12 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 （`pending_owned_by()`），所以页面永远不会引用别的项目的命令行；bridge 拒绝回答 `pid` 不是自己的
 块（HTTP 409，`eink-bridge.ts:394`），因为 `pending.json` 被所有 pi 进程共享。
 
+### 开新会话
+
+`＋新会话` 打开 `/new`，列的是**项目**而不是会话。它不是目录浏览器：`ctx.newSession()`
+继承所在 pi 进程的工作目录，扩展 API 没有设置 cwd 的入口，所以新会话只能生在**已经有 pi 在跑**
+的目录里。没人跑 pi 的目录不列出来——否则就是一个按不动的按钮。要在新目录开 pi，仍然得回到终端。
+
 ### 排队
 
 pi 自己的队列拿不到：扩展 API 只给了 `ExtensionContext.hasPendingMessages(): boolean`。背后那两个
@@ -198,7 +204,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 
 viewer 在 `:8000`：`/` 页面骨架（首次访问没有 `?s=` 时会被重定向一次到 `/?s=<id>`，轮询因此停在你
 打开的那个会话上）、`/data` JSON 片段、`/static` 无 JS 兜底（没有 JS 的浏览器表单 POST 落到这里）、
-`/sessions` 选择器（每个运行中的会话后面带一个 `＋新会话` 按钮）、`/queue` 与 `/queue/edit`（排队，
+`/sessions` 选择器（顶部一个 `＋新会话` 入口，进去是 `/new` 选项目）、`/queue` 与 `/queue/edit`（排队，
 见上）、`/theme?d=0|1` 昼夜 cookie、`/lang?l=zh|en`、`/diag`、`/glyphs`、`/favicon.png`、
 `/done/<key>`（从 bridge 的确认页转来），以及代理到该会话 bridge 的 `POST /act/<action>`。三个动作
 是 viewer 本地的：`/act/unlock` 输 pin 解锁当前网络，`/act/readonly` 退回只读，`/act/new` 在该会话

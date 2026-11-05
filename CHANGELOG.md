@@ -13,8 +13,10 @@ All notable changes to this project. The format follows
   footer shows `排队中（3）` and `/queue` lists the messages with 上移 / 下移 / 改 / 删, a 加一条
   box and 清空. One message is delivered per settled run, 停下 drops the queue along with
   aborting (the same thing Escape does in the TUI) and says how many went.
-- `+ New session` in the picker — one tap on a running session's row starts a new
-  session in that session's pi process (`POST /act/new` → the extension's `eink:new`
+- `+ New session` is one entry at the top of the picker and asks **which project**
+  (`/new`): the list is the directories that already run pi, deduped, because
+  `ctx.newSession()` inherits the process cwd and no extension API can set one. One tap
+  then starts a new session in that project's pi process (`POST /act/new` → the extension's `eink:new`
   command) and lands the page on it. Refused while that session is running, so a stray tap
   cannot throw away a turn. The new id is read from `bridges.json` (same pid, new id),
   because the bridge that answers is the instance being replaced.

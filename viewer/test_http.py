@@ -460,6 +460,17 @@ class OlderBridge(QueuePage.__mro__[1] if False else unittest.TestCase):
         self.assertIn("旧版", body)
         self.assertNotIn("未在运行", body)
 
+    def test_the_new_session_page_offers_projects_and_posts_to_one(self):
+        live = {"aaaabbbb-1111-2222-3333-444455556666":
+                {"port": self.bridge_port, "pid": os.getpid(), "cwd": "/tmp/demo",
+                 "updatedAt": "2026-01-01T00:00:00Z"}}
+        with mock.patch.object(server, "live_bridges", lambda: live):
+            status, data = request(self.viewer.port, "/new?s=" + self.SID)
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        self.assertIn('/act/new?s=aaaabbbb-1111-2222-3333-444455556666', body)
+        self.assertIn("/tmp/demo", body)
+
     def test_a_new_session_tap_explains_the_old_bridge(self):
         status, data = request(self.viewer.port, "/act/new?s=" + self.SID, "POST", "",
                                accept="application/json")
