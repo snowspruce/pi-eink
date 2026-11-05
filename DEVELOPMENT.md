@@ -351,6 +351,11 @@ BrowserWebView            0,0-1072,1332     ← 页面拿到全部高度
 - **量错对象也会骗人**：`who` 一开始只报"盒比视口宽"的元素，结果一个都没报（盒都是 511 宽），
   因为溢出的是**行内内容**。加上 `scrollWidth > clientWidth` 才抓到；再加"取最深"才从
   `div#content` 收敛到 `li`。
+- **探针别拷贝时间敏感的状态**：为了绕开 OTP，我习惯把 `~/.pi/eink/` 拷到临时 HOME 再起一份
+  viewer。但 `bridges.json` 的 `updatedAt` 靠心跳推进，拷过来就冻结了——`live_bridges()` 按
+  "600 秒内的心跳"过滤，冻结的副本在几分钟后整批失效，于是渲染出"所有项目都是旧 bridge"
+  这种假结论，还差点让我去改一段本来正确的代码。要验时间敏感的数据，就用真 HOME 直接调函数
+  （`python3 -c "import server; server.new_session_html()"`），别拷。
 
 ## 三、排查阶梯（设备打不开时按顺序）
 
