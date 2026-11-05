@@ -333,6 +333,7 @@ const TEXT: Record<string, [string, string]> = {
 	empty_input: ["没有输入内容", "Nothing to send"],
 	new_session: ["已新建会话", "New session created"],
 	new_session_in: ["已在该目录新建会话：%s", "New session started in %s"],
+	new_queue_left: ["排队里还有 %s 条，先清空或等它投完再新建", "%s messages are still queued - clear or deliver them first"],
 	new_dir_refused: ["不能在这个目录开会话：%s（要项目根目录下、或已经跑着 pi 的目录）",
 		"Cannot start a session there: %s (must be under a project root or already running pi)"],
 	new_busy: ["当前会话正在运行，先停下再新建", "This session is running - stop it before starting a new one"],
@@ -605,8 +606,19 @@ export default function einkBridge(pi: ExtensionAPI) {
 					reply(res, "new", tt(lang, "new_busy"), req, 409);
 					return;
 				}
+				if (queue.length > 0) {
+					// switching away strands them: they belong to the session being left
+					reply(res, "new", tt(lang, "new_queue_left", queue.length), req, 409);
+					return;
+				}
 				const dir = (new URLSearchParams(body).get("dir") ?? "").trim();
-				const running = Object.values(readRegistry()).map((e) => String((e as { cwd?: string })?.cwd ?? ""));
+				const fresh = Date.now() - STATE_MAX_AGE_MS;
+				const running = Object.values(readRegistry())
+					.filter((e) => {
+						const at = Date.parse(String((e as { updatedAt?: string })?.updatedAt ?? ""));
+						return Number.isFinite(at) && at >= fresh;
+					})
+					.map((e) => String((e as { cwd?: string })?.cwd ?? ""));
 				if (dir && !mayStartSessionIn(dir, PROJECT_ROOTS, running)) {
 					reply(res, "new", tt(lang, "new_dir_refused", dir), req, 400);
 					return;
@@ -1041,7 +1053,15 @@ export default function einkBridge(pi: ExtensionAPI) {
 			writeFileSync(file, JSON.stringify({
 				type: "session", version: 3, id, timestamp: stamp, cwd,
 			}) + "\n");
-			await cctx.switchSession(file);
+			try {
+				const result = await cctx.switchSession(file);
+				// cancelled by a session_before_switch handler: else the empty file stays
+				// behind and shows up in every session list as a blank conversation
+				if (result.cancelled) unlinkSync(file);
+			} catch (err) {
+				try { unlinkSync(file); } catch { /* already gone */ }
+				throw err;
+			}
 		},
 	});
 

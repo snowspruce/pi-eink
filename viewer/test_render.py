@@ -420,6 +420,29 @@ class SessionPicker(unittest.TestCase):
         self.assertNotIn(".hidden", html)
         self.assertIn("pi 在这里跑着", html)     # the live one is marked
 
+    def test_a_directory_name_cannot_break_out_of_the_attribute(self):
+        """`esc()` used to leave quotes alone, and the dir lands in `value="..."`: a
+        directory called `x" onmouseover="..."` injected a live attribute."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / 'hey" onmouseover="alert(1)').mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
+             mock.patch.object(server, "live_bridges", lambda: {}), \
+             mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "queued": 0}), \
+             mock.patch.object(server, "rendered_session_id", lambda: "some-session"):
+            html = server.new_session_html("some-session")
+        tag = re.search(r'<input type="hidden" name="dir"[^>]*>', html).group(0)
+        self.assertIn("&quot;", tag)
+        self.assertNotIn(' onmouseover="', tag)      # no live attribute
+
+    def test_the_otp_page_escapes_its_session_field(self):
+        # same class of bug, pre-auth surface: `s` comes straight from the URL
+        html = server.otp_page('x" onfocus="alert(1)', False, "", "en")
+        tag = re.search(r'<input type="hidden" name="s"[^>]*>', html).group(0)
+        self.assertIn("&quot;", tag)
+        self.assertNotIn(' onfocus="', tag)
+
     def test_a_directory_row_needs_a_capable_bridge(self):
         root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
         (root / "alpha").mkdir()

@@ -30,6 +30,16 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- **Attribute injection through a directory name.** `esc()` escaped `& < >` but not
+  quotes, and `/new` puts a directory into `value="..."` (the OTP page puts `?s=` into one
+  too): a folder called `x" onmouseover="alert(1)` injected a live attribute. `esc()` now
+  escapes quotes as well - `&quot;` still renders as `"` in text nodes.
+- Starting a session in another directory left an **empty session file** behind when a
+  `session_before_switch` handler cancelled it (or the switch threw): it is now removed
+  again, instead of showing up in every session list as a blank conversation.
+- `/act/new` while messages are still queued silently stranded them in the queue file of
+  the session being left; it now refuses with the count (clear or deliver first).
+
 - **A newer viewer driving an older bridge** (the normal state right after an upgrade:
   the viewer is a service restart, a bridge only by `/reload` inside pi) used to advertise
   a queue the bridge could not serve - `排队中（0）` in the footer, and tapping

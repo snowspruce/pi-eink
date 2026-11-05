@@ -1948,7 +1948,11 @@ def newest_session(session_id: str = "") -> Path | None:
 
 
 def esc(text: str) -> str:
-    return html.escape(ANSI.sub("", text or ""), quote=False)
+    """Escape for HTML. Quotes too, on purpose: this value also lands inside attributes
+    (`value="<dir>"` on /new, `value="<s>"` on the OTP page), and there a bare `"` ends
+    the attribute - a directory named `x" onmouseover="..."` was enough to inject one.
+    `&quot;` in a text node renders as `"`, so nothing is lost by escaping it."""
+    return html.escape(ANSI.sub("", text or ""), quote=True)
 
 
 FENCE = re.compile(r"```[a-zA-Z0-9+#._-]*\n(.*?)```", re.S)

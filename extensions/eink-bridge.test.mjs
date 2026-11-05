@@ -189,6 +189,17 @@ describe("eink bridge", () => {
 		assert.deepEqual(sent, [{ text: "/eink:new", opts: { expandPromptTemplates: true } }]);
 	});
 
+	it("refuses a new session while messages are queued", async () => {
+		await post("/act/qclear");
+		const wasIdle = ctx.isIdle;
+		ctx.isIdle = () => false;
+		try { await post("/act/qadd", "text=queued"); } finally { ctx.isIdle = wasIdle; }
+		const res = await post("/act/new", "dir=" + encodeURIComponent(tmpdir()));
+		assert.equal(res.status, 409);
+		assert.match(res.json.msg, /排队里还有 1 条|still queued/);
+		await post("/act/qclear");
+	});
+
 	it("refuses a directory outside the project roots", async () => {
 		const res = await post("/act/new", "dir=" + encodeURIComponent("/etc"));
 		assert.equal(res.status, 400);
@@ -679,6 +690,24 @@ describe("new session in a directory", () => {
 		assert.equal(header.cwd, dir);
 		assert.equal(header.version, 3);
 		assert.ok(header.id && header.timestamp);
+	});
+
+	it("removes the file again when the switch is refused", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));
+		let written = "";
+		// cancelled by a session_before_switch handler
+		await commands["eink:new-in"].handler(dir, {
+			switchSession: async (path) => { written = path; return { cancelled: true }; },
+		});
+		assert.ok(written);
+		assert.equal(existsSync(written), false, "an empty session must not be left behind");
+
+		// and the same when the switch throws
+		let thrown = "";
+		await assert.rejects(commands["eink:new-in"].handler(dir, {
+			switchSession: async (path) => { thrown = path; throw new Error("boom"); },
+		}), /boom/);
+		assert.equal(existsSync(thrown), false);
 	});
 
 	it("ignores an empty argument", async () => {
