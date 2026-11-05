@@ -61,6 +61,19 @@ APK 约 12 KB，装在 `/data`（不是系统应用），`adb uninstall ink.eink
 
 导航栏的 **⋮** 键 → 弹框里可以改地址，也可以点"自动发现"再扫一次。输入会记住。
 
+## 安全模型（设备端）
+
+三件今天补上的事，之前都是假的：
+
+1. **证书只认 Let's Encrypt + CN 匹配**。Chromium 30 不信任当前 LE 链，所以公网地址一定会
+   触发 `onReceivedSslError`；上一版无条件 `proceed()`，等于任何证书都接受——中间人可以拿
+   走 token 和 OTP cookie。现在只对 `issuer=Let's Encrypt`、`cn=<host>` 放行，其余 `cancel()`
+   并弹一个可见的说明。
+2. **发现要对上 HMAC**。任何同网段机器都能回 `/whois`，而 App 会把 token 拼到"发现"到的地址
+   上——那就是把 token 送给冒充者。现在 `/whois?n=<nonce>` 必须回
+   `PI-EINK <port> <HMAC-SHA256(token, nonce)[:32]>`，验证不过就不用这个地址。
+3. **token 只交给记得住的主机**。没有 token 时不做发现（第一次要手输/推送带 token 的地址）。
+
 ## 出门（公网）
 
 公网这条路要用到的三处，都是上一版会白屏的原因：

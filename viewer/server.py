@@ -3233,11 +3233,15 @@ class Handler(BaseHTTPRequestHandler):
                 print("UA %s %s" % seen, flush=True)
 
         if u.path == "/whois":
-            # Claimed identity for LAN discovery, deliberately above the token and OTP
-            # gates: a device that has no mDNS (Android 4.4) and must not depend on a
-            # router-reserved address scans its own /24 for this one line. It reveals
-            # nothing but "the page server is here, on this port".
-            self._send(("PI-EINK %d" % PORT).encode("utf-8"), "text/plain; charset=utf-8")
+            # n = nonce from the device. With it, prove we know the token without ever
+            # sending it: a rogue host on the LAN can answer "/whois" too, and the device
+            # would otherwise hand it the token (it appends ?k= to whatever it finds).
+            nonce = (q.get("n") or [""])[0][:64]
+            proof = ""
+            if nonce:
+                proof = " " + hmac.new(token().encode(), nonce.encode(), hashlib.sha256).hexdigest()[:32]
+            self._send(("PI-EINK %d" % PORT + proof).encode("utf-8"),
+                       "text/plain; charset=utf-8")
             return
 
         ok, extra, reason = self._authorized(q)

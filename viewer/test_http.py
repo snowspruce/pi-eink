@@ -304,6 +304,19 @@ class FullNetwork(unittest.TestCase):
         self.assertTrue(data.startswith(b"PI-EINK "), data)
         self.assertLess(len(data), 32)
 
+    def test_whois_proves_it_knows_the_token(self):
+        """A rogue host on the LAN can answer /whois too, and the device attaches its
+        token to whatever it finds: the reply has to carry proof, not just a claim."""
+        import hashlib, hmac
+        nonce = "abc123"
+        status, data = request(self.viewer.port, "/whois?n=" + nonce, cookie=False)
+        self.assertEqual(status, 200)
+        want = hmac.new(TOKEN.encode(), nonce.encode(), hashlib.sha256).hexdigest()[:32]
+        self.assertIn(want.encode(), data)
+        # and a different nonce gives a different proof
+        _s, other = request(self.viewer.port, "/whois?n=zzz", cookie=False)
+        self.assertNotIn(want.encode(), other)
+
     def test_language_reaches_the_bridge(self):
         request(self.viewer.port, "/act/say", "POST", "text=hi", accept="application/json", lang="en")
         self.assertEqual(FakeBridge.seen[0][3].get("X-Eink-Lang"), "en")

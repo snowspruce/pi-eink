@@ -31,7 +31,20 @@ All notable changes to this project. The format follows
 - Bridge `GET /queue` and `POST /act/{qadd,qedit,qdel,qmove,qclear,qrun}`; `/state` also reports
   the count so the footer costs no extra request.
 
-### Fixed
+### Security
+
+- The public entry no longer has nginx inject the viewer token into every request: that
+  made "anyone who can reach the VPS" already authenticated, with Basic as the only real
+  gate (`curl https://eink.blueberry.cafe/` returned 200 the moment Basic was off). nginx
+  now forwards the *client's* token and the viewer decides; Basic is off because the
+  Kindle cannot answer it.
+- The kiosk app stops accepting any certificate (Chromium 30 rejects the current
+  Let's Encrypt chain; unconditionally proceeding let anyone on the path harvest the token
+  and the OTP cookie) - only a Let's Encrypt-issued certificate for the expected host is
+  allowed through.
+- LAN discovery now has to *prove* it knows the token (`/whois?n=<nonce>` →
+  HMAC-SHA256(token, nonce)); before, any host on the same subnet could answer and receive
+  the token, which the app appends to whatever address it discovers.
 
 - The OTP form was asked for again per origin: the LAN address and the public address are
   different cookie jars, while the server keeps a single 7-day OTP session. The app now

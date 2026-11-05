@@ -117,8 +117,28 @@ public class Kiosk extends Activity {
             public void onReceivedSslError(WebView view,
                                            android.webkit.SslErrorHandler handler,
                                            android.net.http.SslError error) {
-                Log.i(TAG, "ssl " + error.getPrimaryError() + " " + error.getUrl());
-                handler.proceed();
+                // Chromium 30 does not trust the current Let's Encrypt chain, so the
+                // public address always lands here. "proceed" for *any* certificate would
+                // make the token and the OTP cookie harvestable by anyone who can answer
+                // on the address - so proceed only when the leaf really is ours:
+                // issued by Let's Encrypt for the host we are talking to.
+                String url = error.getUrl() == null ? "" : error.getUrl();
+                android.net.http.SslCertificate cert = error.getCertificate();
+                String issuer = cert == null || cert.getIssuedBy() == null
+                        ? "" : String.valueOf(cert.getIssuedBy().getOName());
+                String cn = cert == null || cert.getIssuedTo() == null
+                        ? "" : String.valueOf(cert.getIssuedTo().getCName());
+                boolean ours = issuer.toLowerCase().contains("let's encrypt")
+                        || issuer.toLowerCase().contains("lets encrypt");
+                boolean hostMatches = cn.length() > 0 && url.contains(cn);
+                Log.i(TAG, "ssl " + error.getPrimaryError() + " issuer=" + issuer
+                        + " cn=" + cn + " url=" + url);
+                if (ours && hostMatches) {
+                    handler.proceed();
+                } else {
+                    handler.cancel();
+                    showSslWarning(issuer, cn, url);
+                }
             }
 
             @Override
@@ -196,6 +216,40 @@ public class Kiosk extends Activity {
      * server-side session (7 days), so remember it once and plant it on every origin we
      * load. Answers "do I have to type the code after pressing ⋮?" with no.
      */
+    /** HMAC-SHA256(token, nonce), first 32 hex chars - what /whois must answer with. */
+    private boolean proofMatches(String nonce, String proof) {
+        String secret = token();
+        if (secret.length() < 16 || proof.length() != 32) {
+            return false;
+        }
+        try {
+            javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA256");
+            mac.init(new javax.crypto.spec.SecretKeySpec(secret.getBytes("UTF-8"), "HmacSHA256"));
+            byte[] raw = mac.doFinal(nonce.getBytes("UTF-8"));
+            StringBuilder hex = new StringBuilder();
+            for (byte b : raw) {
+                hex.append(String.format("%02x", b));
+            }
+            return hex.toString().substring(0, 32).equalsIgnoreCase(proof);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Visible stop instead of a silent blank page when a certificate is not ours. */
+    private void showSslWarning(final String issuer, final String cn, final String url) {
+        runOnUiThread(new Runnable() {
+            public void run() {
+                new AlertDialog.Builder(Kiosk.this)
+                        .setTitle("证书不可信，已停止加载")
+                        .setMessage("签发者: " + issuer + "\n证书名: " + cn + "\n地址: " + url
+                                + "\n\n不是这台机器的证书，token 不会交出去。")
+                        .setPositiveButton("知道了", null)
+                        .show();
+            }
+        });
+    }
+
     private void plantOtpCookie(String url) {
         String saved = prefs.getString("otp_cookie", "");
         if (saved.length() < 16) {
@@ -233,9 +287,35 @@ public class Kiosk extends Activity {
         }
     }
 
+    /**
+     * Seed the token cookie for this origin before navigating.
+     *
+     * The public entry lets a request through without Basic when it carries the token -
+     * as ?k= or as the pieink cookie. The query string only covers the first navigation;
+     * the favicon and the page's own XHRs have no query, so without a cookie already in
+     * place the very first load pops a password dialog the device cannot answer.
+     */
+    private void plantTokenCookie(String url) {
+        String secret = token();
+        if (secret.length() < 16) {
+            return;
+        }
+        try {
+            CookieManager cm = CookieManager.getInstance();
+            String have = cm.getCookie(url);
+            if (have != null && have.contains("pieink=")) {
+                return;
+            }
+            cm.setCookie(url, "pieink=" + secret + "; path=/");
+        } catch (Exception ignored) {
+            // worst case the ?k= in the address still gets us in
+        }
+    }
+
     private void load(String url) {
         Log.i(TAG, "load " + url);
         remember(url);
+        plantTokenCookie(url);
         plantOtpCookie(url);
         if (web.getParent() == null) {
             setContentView(web);
@@ -374,15 +454,18 @@ public class Kiosk extends Activity {
         return hit[0];
     }
 
-    /** true when this host answers the viewer's /whois line. */
-    private static String probe(String host) {
+    /** true when this host answers the viewer's /whois line, with proof it knows the
+     *  token. Without the proof a rogue host could claim the name and receive the token
+     *  (the app appends ?k= to whatever it finds). */
+    private String probe(String host) {
         Socket socket = null;
         try {
             socket = new Socket();
             socket.connect(new java.net.InetSocketAddress(host, 8000), 250);
             socket.setSoTimeout(400);
+            String nonce = Long.toHexString(System.nanoTime()) + Long.toHexString((long) (Math.random() * 1e18));
             java.io.OutputStream out = socket.getOutputStream();
-            out.write(("GET /whois HTTP/1.0\r\nHost: " + host + "\r\n\r\n").getBytes());
+            out.write(("GET /whois?n=" + nonce + " HTTP/1.0\r\nHost: " + host + "\r\n\r\n").getBytes());
             out.flush();
             byte[] buf = new byte[256];
             int n = socket.getInputStream().read(buf);
@@ -390,14 +473,16 @@ public class Kiosk extends Activity {
                 return null;
             }
             String text = new String(buf, 0, n);
-            if (!text.contains("PI-EINK")) {
+            int at = text.indexOf("PI-EINK");
+            if (at < 0) {
                 return null;
             }
-            String port = "8000";
-            int at = text.indexOf("PI-EINK");
-            String tail = text.substring(at + 7).trim();
-            if (tail.length() > 0 && tail.split("\\s")[0].matches("\\d+")) {
-                port = tail.split("\\s")[0];
+            String[] parts = text.substring(at + 7).trim().split("\\s+");
+            String port = parts.length > 0 && parts[0].matches("\\d+") ? parts[0] : "8000";
+            String proof = parts.length > 1 ? parts[1] : "";
+            if (!proofMatches(nonce, proof)) {
+                Log.i(TAG, "whois from " + host + " has no valid proof, ignoring");
+                return null;
             }
             return "http://" + host + ":" + port + "/";
         } catch (Exception ignored) {
