@@ -2852,6 +2852,13 @@ class Handler(BaseHTTPRequestHandler):
         hdr = (self.headers.get("X-Eink-Token") or "").strip()
         if hdr and hmac.compare_digest(hdr, want):
             self._clear_fails(ip)
+            # Also hand out the cookie. Behind the public entry the header arrives on
+            # every request, so this looked unnecessary - but the entry's own gate (Basic)
+            # is in front of the subresource requests too, and after the OTP form posts
+            # and redirects to "/" there is no token in the URL to carry. With the cookie
+            # set, the proxy lets the rest of the page through on the token alone.
+            if not (have and have == want):
+                extra.append(("Set-Cookie", cookie_value()))
             return True, extra, ""
         if have and have == want:
             self._clear_fails(ip)

@@ -87,6 +87,7 @@ public class Kiosk extends Activity {
         web.setWebViewClient(new WebViewClient() {
             @Override
             public void onReceivedError(WebView view, int code, String desc, String url) {
+                Log.i(TAG, "error " + code + " " + desc + " " + url);
                 // A remembered LAN address stops working the moment the network changes.
                 // Try discovery once per launch, then fall back to the public address.
                 if (foundThisLaunch) {
@@ -97,6 +98,21 @@ public class Kiosk extends Activity {
                     foundThisLaunch = true;
                     discoverOrFallback();
                 }
+            }
+
+            /**
+             * The public address serves a Let's Encrypt certificate whose chain this
+             * Chromium 30 rejects (the stock browser shows a "continue anyway" warning
+             * the reader taps through). A WebView with no handler here cancels silently,
+             * which is exactly the blank page a remote session used to show: the request
+             * never even reached the Mac.
+             */
+            @Override
+            public void onReceivedSslError(WebView view,
+                                           android.webkit.SslErrorHandler handler,
+                                           android.net.http.SslError error) {
+                Log.i(TAG, "ssl " + error.getPrimaryError() + " " + error.getUrl());
+                handler.proceed();
             }
 
             @Override
@@ -120,7 +136,7 @@ public class Kiosk extends Activity {
             discoverOrFallback();
             return;
         }
-        load(url);
+        load(withToken(url));
     }
 
     private static final String TAG = "kiosk";
@@ -129,6 +145,7 @@ public class Kiosk extends Activity {
      *  had cached credentials; this app does not, and without this a remote session is a
      *  blank page. Asked once, remembered. */
     private void askBasicAuth(final android.webkit.HttpAuthHandler handler, final String host) {
+        Log.i(TAG, "http auth requested by " + host);
         String user = prefs.getString("basic_user", "");
         String pass = prefs.getString("basic_pass", "");
         if (user.length() > 0) {
@@ -395,8 +412,9 @@ public class Kiosk extends Activity {
         super.onNewIntent(intent);
         setIntent(intent);
         if (intent != null && intent.getDataString() != null && web != null) {
-            remember(intent.getDataString());
-            web.loadUrl(intent.getDataString());
+            // through load(): it learns the token and re-attaches it, so a pushed address
+            // without ?k= still ends up authenticated
+            load(withToken(intent.getDataString()));
         }
     }
 
@@ -418,9 +436,11 @@ public class Kiosk extends Activity {
         final EditText input = new EditText(this);
         input.setInputType(InputType.TYPE_TEXT_VARIATION_URI);
         input.setSingleLine(true);
-        String current = web.getUrl() != null ? web.getUrl() : prefs.getString(KEY_HOME, PUBLIC);
+        // The remembered home, not the live URL: after the OTP redirect the live one is
+        // "/?s=<sid>" (no token, useless next time). Select all so typing replaces it.
+        String current = prefs.getString(KEY_HOME, PUBLIC);
         input.setText(current);
-        input.setSelection(input.getText().length());
+        input.setSelection(0, input.getText().length());
 
         new AlertDialog.Builder(this)
                 .setTitle("地址（⋮ 打开）")
@@ -434,8 +454,7 @@ public class Kiosk extends Activity {
                         if (!url.startsWith("http://") && !url.startsWith("https://")) {
                             url = "http://" + url;
                         }
-                        remember(url);
-                        web.loadUrl(url);
+                        load(withToken(url));
                     }
                 })
                 .setNeutralButton("自动发现", new DialogInterface.OnClickListener() {

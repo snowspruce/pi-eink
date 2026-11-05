@@ -33,6 +33,17 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- **Remote access works again from the kiosk app**, which is what the black-band fix had
+  quietly broken: the app had no `onReceivedSslError` (the stock browser shows a "continue"
+  warning, a bare WebView cancels silently, so the request never left the device), no Basic
+  handler, and it dropped the token when a URL arrived through an intent. The public entry
+  now accepts either the token (`?k=`) or the `pieink` cookie instead of Basic, `/otp` is
+  exempt from Basic (its POST carries neither), and the viewer hands out the token cookie
+  when the token arrives in the `X-Eink-Token` header.
+- Address discovery no longer needs anything on the router: broadcast, then a scan of the
+  local /24 for the viewer's `GET /whois`, with the token remembered separately so a change
+  of network only changes the address.
+
 - **The Kindle now runs a 12 KB WebView shell instead of the stock browser** (`device/kiosk`).
   The black band and the input box hiding behind the keyboard were both the stock AOSP
   Browser's own UI: it keeps a stale 89px content offset after collapsing its toolbar, and a

@@ -63,6 +63,18 @@ APK 约 12 KB，装在 `/data`（不是系统应用），`adb uninstall ink.eink
 
 ## 出门（公网）
 
+公网这条路要用到的三处，都是上一版会白屏的原因：
+
+1. **证书**：`eink.blueberry.cafe` 的证书链这台 Chromium 30 不认。原厂浏览器会弹"继续"
+   让人点，WebView 没有 `onReceivedSslError` 就**静默取消**——请求根本到不了 Mac（nginx
+   access.log 里什么都没有）。App 现在直接 `proceed()`。
+2. **Basic**：Mac 侧 nginx 现在认两种凭据——`?k=<token>` 或 `pieink` cookie（值就是 token），
+   两者都不匹配才退回 Basic。所以设备端不需要用户名密码。
+3. **OTP 表单**：它的 POST 不带 token 也不带 cookie，会被 Basic 挡在门外，所以 nginx 对
+   `/otp` 单独 `auth_basic off`（这道门本身就是 6 位动态码 + 锁定计数）。
+
+## 出门（公网旧版说明）
+
 公网那条路一直还在（VPS + ssh 隧道 + Mac 上的 TLS/Basic），没有因为 LAN 优先而被去掉。
 第一次走公网会弹一次 nginx 的 Basic 用户名/密码（原厂浏览器有缓存凭据，这个壳没有），
 输一次就存下来。之后还有 viewer 的 6 位动态码，同样一次。
