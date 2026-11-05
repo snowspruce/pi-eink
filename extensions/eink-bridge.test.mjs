@@ -26,6 +26,7 @@ const PENDING = join(EINK, "pending.json");
 const ANSWER = join(EINK, "answer.json");
 
 let handlers = {};
+let commands = {};
 let aborted = 0;
 let sent = [];
 let port = 0;
@@ -48,7 +49,7 @@ const pi = {
 	on: (name, fn) => {
 		handlers[name] = fn;
 	},
-	registerCommand: () => {},
+	registerCommand: (name, options) => { commands[name] = options; },
 	sendUserMessage: async (text, opts) => {
 		sent.push({ text, opts });
 	},
@@ -186,6 +187,12 @@ describe("eink bridge", () => {
 		// extension instance, and the reply is written by the server it closes
 		await new Promise((r) => setTimeout(r, 300));
 		assert.deepEqual(sent, [{ text: "/eink:new", opts: { expandPromptTemplates: true } }]);
+	});
+
+	it("refuses a directory outside the project roots", async () => {
+		const res = await post("/act/new", "dir=" + encodeURIComponent("/etc"));
+		assert.equal(res.status, 400);
+		assert.match(res.json.msg, /不能在这个目录|Cannot start/);
 	});
 
 	it("refuses a new session while this one is running", async () => {
@@ -647,6 +654,51 @@ describe("port collision", () => {
 		const now = reg["test-session"].port;
 		assert.notEqual(now, firstPort);
 		assert.ok(now >= 8010 && now < 8010 + 40, `unexpected bridge port ${now}`);
+	});
+});
+
+describe("new session in a directory", () => {
+	// pi has no cwd option on newSession(); the session HEADER carries the cwd and
+	// switchSession() rebuilds the runtime around it. So the box writes a header-only
+	// session file for the chosen directory and switches to it.
+	const run = async (args) => {
+		let switched = "";
+		await commands["eink:new-in"].handler(args, {
+			switchSession: async (path) => { switched = path; return { cancelled: false }; },
+		});
+		return switched;
+	};
+
+	it("writes an empty session whose header points at the directory, then switches", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));
+		const file = await run(dir);
+		assert.ok(file.endsWith(".jsonl"), file);
+		assert.ok(file.includes("--" + dir.replace(/^\//, "").replace(/[/:]/g, "-") + "--"), file);
+		const header = JSON.parse(readFileSync(file, "utf8").trim());
+		assert.equal(header.type, "session");
+		assert.equal(header.cwd, dir);
+		assert.equal(header.version, 3);
+		assert.ok(header.id && header.timestamp);
+	});
+
+	it("ignores an empty argument", async () => {
+		assert.equal(await run("  "), "");
+	});
+});
+
+describe("mayStartSessionIn", () => {
+	it("allows a project root, rejects the rest of the filesystem", async () => {
+		const root = mkdtempSync(join(tmpdir(), "eink-root-"));
+		const inside = join(root, "some-project");
+		mkdirSync(inside);
+		assert.equal(mod.mayStartSessionIn(inside, [root]), true);
+		assert.equal(mod.mayStartSessionIn(root, [root]), true);
+		assert.equal(mod.mayStartSessionIn(tmpdir(), [root]), false);
+		assert.equal(mod.mayStartSessionIn(join(root, "missing"), [root]), false);
+		// a file is not a directory
+		const file = join(root, "a.txt");
+		writeFileSync(file, "x");
+		assert.equal(mod.mayStartSessionIn(file, [root]), false);
 	});
 });
 

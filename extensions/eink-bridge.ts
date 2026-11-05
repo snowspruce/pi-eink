@@ -24,9 +24,10 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { BlockList, isIPv4, isIPv6 } from "node:net";
-import { appendFileSync, readFileSync, renameSync, writeFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, unlinkSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, resolve, sep } from "node:path";
 
 const REGISTRY_FILE = join(homedir(), ".pi/eink/bridges.json");
 const BASE_PORT = 8010;
@@ -60,6 +61,14 @@ const QUEUE_MAX = 20;
 // A queue nobody came back for is dropped after a week: long enough to survive a
 // weekend, short enough that the file does not grow one key per session for ever.
 const QUEUE_KEEP_MS = 7 * 24 * 3600_000;
+// Where a new session may be started from the page. Not a security boundary (a `full`
+// credential can already drive a shell through the agent) - it stops a mistyped or
+// hand-edited `dir` from putting pi in `/` or in a home directory with 10k files.
+// Directories that already run pi are allowed too: the page offers them.
+const PROJECT_ROOTS = (process.env.EINK_PROJECT_ROOTS || join(homedir(), "Documents", "Program"))
+	.split(":")
+	.map((s) => s.trim())
+	.filter(Boolean);
 // Why a session stopped being the bridge owner; the TUI has no room to say it.
 const BRIDGE_LOG = join(homedir(), ".pi/eink/bridge.log");
 // Session control (new session, reload, compact, quit) is only reachable through
@@ -151,6 +160,23 @@ export function ipAllowed(rawIp: string, localIp = ""): boolean {
 		localIp !== "" &&
 		sameV4Slash24(ip, localIp)
 	);
+}
+
+/** Existing directory, inside a project root or already running pi.
+ *  Exported for tests, like the other gates in this file. */
+export function mayStartSessionIn(dir: string, roots: string[] = [], known: string[] = []): boolean {
+	let resolved: string;
+	try {
+		if (!statSync(dir).isDirectory()) return false;
+		resolved = resolve(dir);
+	} catch {
+		return false;
+	}
+	if (known.some((k) => k && resolve(k) === resolved)) return true;
+	return roots.some((root) => {
+		const base = resolve(root);
+		return resolved === base || resolved.startsWith(base.endsWith(sep) ? base : base + sep);
+	});
 }
 
 function uaAllowList(): string[] {
@@ -306,6 +332,9 @@ const TEXT: Record<string, [string, string]> = {
 	nothing_running: ["当前没有运行", "Nothing is running"],
 	empty_input: ["没有输入内容", "Nothing to send"],
 	new_session: ["已新建会话", "New session created"],
+	new_session_in: ["已在该目录新建会话：%s", "New session started in %s"],
+	new_dir_refused: ["不能在这个目录开会话：%s（要项目根目录下、或已经跑着 pi 的目录）",
+		"Cannot start a session there: %s (must be under a project root or already running pi)"],
 	new_busy: ["当前会话正在运行，先停下再新建", "This session is running - stop it before starting a new one"],
 	reloading: ["正在重载扩展与配置", "Reloading extensions and config"],
 	compacting: ["开始压缩上下文", "Compacting the context"],
@@ -568,19 +597,26 @@ export default function einkBridge(pi: ExtensionAPI) {
 				return;
 			}
 			if (action === "new") {
-				// Only a running pi process can create a session in its own project, and only
-				// through the command context. Refused while busy on purpose: a stray tap on a
-				// 511px button must not throw away a run in progress.
+				// Only a running pi process can create a session, and only through the command
+				// context. Refused while busy on purpose: a stray tap on a 511px button must not
+				// throw away a run in progress.
 				if (!ctx) throw new Error("no session context");
 				if (!ctx.isIdle()) {
 					reply(res, "new", tt(lang, "new_busy"), req, 409);
 					return;
 				}
+				const dir = (new URLSearchParams(body).get("dir") ?? "").trim();
+				const running = Object.values(readRegistry()).map((e) => String((e as { cwd?: string })?.cwd ?? ""));
+				if (dir && !mayStartSessionIn(dir, PROJECT_ROOTS, running)) {
+					reply(res, "new", tt(lang, "new_dir_refused", dir), req, 400);
+					return;
+				}
 				// Answer first: creating the session replaces this extension instance,
 				// which closes the HTTP server this response is being written from.
-				reply(res, "new", tt(lang, "new_session"), req);
+				reply(res, "new", tt(lang, dir ? "new_session_in" : "new_session", dir), req);
+				const command = dir ? "/eink:new-in " + dir : "/eink:new";
 				setTimeout(() => {
-					void pi.sendUserMessage("/eink:new", { expandPromptTemplates: true });
+					void pi.sendUserMessage(command, { expandPromptTemplates: true });
 				}, 100);
 				return;
 			}
@@ -982,6 +1018,38 @@ export default function einkBridge(pi: ExtensionAPI) {
 			await cctx.newSession();
 		},
 	});
+
+	// pi has no "new session in this other directory" call: `ctx.newSession()` inherits
+	// the process cwd, and NewSessionOptions has no cwd. What DOES carry one is the
+	// session header - `AgentSessionRuntime.switchSession(path)` opens the file, takes
+	// `cwd` from its header and rebuilds the runtime around it. So: write an empty
+	// session whose header says `cwd: <dir>`, then switch to it. The trade-off is
+	// explicit - this pi process moves to that project (its old session ends), which is
+	// the same thing `/new` already does, only in a different directory.
+	pi.registerCommand("eink:new-in", {
+		description: "Kindle: start a new pi session in another directory",
+		handler: async (args, cctx) => {
+			const dir = args.trim();
+			if (!dir) return;
+			const cwd = dir;
+			const sessionDir = defaultSessionDir(cwd);
+			mkdirSync(sessionDir, { recursive: true });
+			const id = randomUUID();
+			const stamp = new Date().toISOString();
+			const file = join(sessionDir, `${stamp.replace(/[:.]/g, "-")}_${id}.jsonl`);
+			// header only: an empty session, exactly what newSession() would leave behind
+			writeFileSync(file, JSON.stringify({
+				type: "session", version: 3, id, timestamp: stamp, cwd,
+			}) + "\n");
+			await cctx.switchSession(file);
+		},
+	});
+
+	/** Mirrors pi's own getDefaultSessionDir() encoding (`--<path with - for />--`). */
+	function defaultSessionDir(cwd: string): string {
+		const safe = "--" + cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-") + "--";
+		return join(homedir(), ".pi", "agent", "sessions", safe);
+	}
 	pi.registerCommand("eink:reload", {
 		description: "Kindle: reload extensions, skills, prompts, themes",
 		// the reply has to flush before the runtime (and this HTTP server) is replaced

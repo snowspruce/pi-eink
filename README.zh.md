@@ -129,9 +129,14 @@ Kindle ──HTTP──▶ viewer :8000 ──proxy──▶ bridge :8010+N ─�
 
 ### 开新会话
 
-`＋新会话` 打开 `/new`，列的是**项目**而不是会话。它不是目录浏览器：`ctx.newSession()`
-继承所在 pi 进程的工作目录，扩展 API 没有设置 cwd 的入口，所以新会话只能生在**已经有 pi 在跑**
-的目录里。没人跑 pi 的目录不列出来——否则就是一个按不动的按钮。要在新目录开 pi，仍然得回到终端。
+`＋新会话` 打开 `/new`，问的是**哪个目录**：`EINK_PROJECT_ROOTS`（默认 `~/Documents/Program`）
+下面的一级子目录，加上已经在跑 pi 的目录，最近动过的排前面。新会话由**正在显示这个页面的 pi 进程**
+创建，那个进程会**搬到**所选目录。
+
+`ctx.newSession()` 没有 cwd 参数（继承进程目录），所以 bridge 的做法是：写一个只有会话头的空会话
+文件、头里的 `cwd` 指向目标目录，再 `ctx.switchSession()` 过去 —— 运行时从会话头取 cwd 重建。
+两个要知道的后果：那个进程里的旧会话会结束（跟"在同一目录新建"完全一样），以及 bridge 只接受
+根目录内（或已跑着 pi）的目录，免得一个写错的路径把 pi 停在 `/`。
 
 ### 排队
 
@@ -179,6 +184,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 | `EINK_LOG_UA` | viewer | 关 | `1` 时把每个（对端，User-Agent）组合记一次到 `server.log`；`ua_seen.log` 只记被门禁拒绝的 UA |
 | `PI_SESSION_FILE` | viewer | 空 | 最后兜底，只在没有活 bridge、也没有 `bridge.json` 指认会话时用 |
 | `EINK_TRUST_HOURS` | viewer | `0` | `N` 表示网络确认在 N 小时后过期，`0` = 直到网络变化 |
+| `EINK_PROJECT_ROOTS` | 两者 | `~/Documents/Program` | `＋新会话` 允许开在哪：列出的就是这些根目录的一级子目录（冒号分隔多个）；已经在跑 pi 的目录总是允许 |
 | `EINK_LANG` | viewer | `zh` | 默认界面语言；`en` 让页面说英文，设备仍可在页脚或 `/lang?l=` 覆盖 |
 
 `~/.pi/eink/` 下的状态文件，全部被 git 忽略：

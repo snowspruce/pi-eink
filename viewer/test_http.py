@@ -517,16 +517,16 @@ class QueuePage(unittest.TestCase):
         mock.patch.object(server, "bridge_port_for", lambda _sid: self.bridge_port).start()
         mock.patch.object(server, "live_bridges", lambda: {}).start()
 
-    def test_the_new_session_page_offers_a_project_with_a_new_bridge(self):
-        sid = "aaaabbbb-1111-2222-3333-444455556666"
-        live = {sid: {"port": self.bridge_port, "pid": os.getpid(), "cwd": "/tmp/demo",
-                      "updatedAt": "2026-01-01T00:00:00Z"}}
-        with mock.patch.object(server, "live_bridges", lambda: live):
+    def test_the_new_session_page_offers_directories(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]):
             status, data = request(self.viewer.port, "/new?s=" + self.SID)
         self.assertEqual(status, 200)
         body = data.decode("utf-8")
-        self.assertIn('/act/new?s=' + sid, body)
-        self.assertIn("/tmp/demo", body)
+        self.assertIn('/act/new?s=' + self.SID, body)
+        self.assertIn('name="dir" value="%s"' % (root / "alpha"), body)
 
     def test_the_page_lists_the_queue_with_per_row_controls(self):
         status, data = request(self.viewer.port, "/queue?s=" + self.SID)

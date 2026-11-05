@@ -142,11 +142,17 @@ own (HTTP 409, `eink-bridge.ts:394`), because `pending.json` is shared by every 
 
 ### Starting a session
 
-`+ New session` opens `/new`, which lists **projects** rather than sessions. That list is
-not a directory browser: `ctx.newSession()` inherits the working directory of the pi process
-it runs in, and no extension API can set one, so a new session can only start in a directory
-that already runs pi. Directories where nothing runs are not offered - the alternative would
-be a button that cannot work. Starting pi somewhere new is still a terminal job.
+`+ New session` opens `/new`, which asks **which directory**: the sub-directories of
+`EINK_PROJECT_ROOTS` (default `~/Documents/Program`) plus any directory that already runs
+pi, recently-touched first. The session is started by the pi process showing the page, and
+that process **moves** to the chosen directory.
+
+`ctx.newSession()` has no cwd option - it inherits the process directory - so the bridge
+writes a header-only session file whose `cwd` names the target and calls
+`ctx.switchSession()` on it: the runtime takes the cwd from the session header and rebuilds
+around it. Two consequences worth knowing: the old session in that process ends (exactly
+like `+ New session` in the same directory), and the bridge refuses a directory outside the
+roots so a mistyped path cannot park pi in `/`.
 
 ### The queue
 

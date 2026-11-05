@@ -62,6 +62,12 @@ VIEW_FILE = Path.home() / ".pi/eink/view.json"
 STATE_FILE = Path.home() / ".pi/eink/bridge.json"
 BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid, cwd, sessionFile, updatedAt}
 HISTORY_FILE = Path.home() / ".pi/eink/history.json"  # sessionId -> commands sent from the box
+# Where "+ new session" may start one: the sub-directories listed here, plus any
+# directory that already runs pi. Mirrors the bridge's EINK_PROJECT_ROOTS gate - the
+# bridge refuses a dir outside it, so the page must not offer one.
+PROJECT_ROOTS = [p.strip() for p in
+                 os.environ.get("EINK_PROJECT_ROOTS", str(Path.home() / "Documents" / "Program")).split(":")
+                 if p.strip()]
 COOKIE = "pieink"
 LANG_COOKIE = "pielang"
 # Page furniture only (~35 strings). Conversation content is never translated.
@@ -109,6 +115,9 @@ STRINGS = {
     "new_session_none": ("\u6ca1\u6709\u8fd0\u884c\u4e2d\u7684 pi \u4f1a\u8bdd\uff1a\u65b0\u4f1a\u8bdd\u53ea\u80fd\u5efa\u5728\u5df2\u7ecf\u8dd1\u7740 pi \u7684\u76ee\u5f55\u91cc",
                          "No running pi session: a new session can only start in a directory that already runs pi"),
     "new_session_running": ("%d \u4e2a\u4f1a\u8bdd\u5728\u8fd0\u884c", "%d sessions running"),
+    "new_session_hidden": ("\u8fd8\u6709 %d \u4e2a\u76ee\u5f55\u672a\u5217\u51fa\uff08\u8fd9\u91cc\u53ea\u5217\u6700\u8fd1\u52a8\u8fc7\u7684\uff09",
+                            "%d more directories not listed (recently touched first)"),
+    "new_session_live": ("pi \u5728\u8fd9\u91cc\u8dd1\u7740", "pi is running here"),
     "new_session_old_bridge": ("\u8be5\u9879\u76ee\u7684 bridge \u662f\u65e7\u7248\uff0c\u5728\u90a3\u4e2a\u4f1a\u8bdd\u91cc /reload \u540e\u624d\u80fd\u5f00\u65b0\u4f1a\u8bdd",
                                 "that project's bridge is an older build - /reload there first"),
     "new_session_failed": ("\u65b0\u5efa\u4f1a\u8bdd\u672a\u51fa\u73b0\uff08bridge \u6ca1\u4e0a\u62a5\uff09",
@@ -562,55 +571,84 @@ def sessions_html(lang: str = "", sid: str = "") -> str:
     return "".join(rows) or '<div class="body">%s</div>' % esc(tr("no_sessions", lang))
 
 
-def new_session_html(sid: str = "", lang: str = "") -> str:
-    """Choose the PROJECT a new session starts in.
+def project_choices(limit: int = 40) -> tuple:
+    """([(dir, has_live_pi)], hidden_count) for the directories a new session may start in.
 
-    A pi session cannot be born anywhere: `ctx.newSession()` inherits the working
-    directory of the process it runs in, and no extension API can set one (the session
-    header's cwd comes from the process, and there is no cwd option). So the honest list
-    is "projects that already have a running pi", one row per directory; the session is
-    created inside that project's own process. Directories nobody runs pi in are not
-    offered - a button that cannot work is worse than no button.
+    Two sources: directories that already run pi (a session there is simply started in
+    that project), then the immediate sub-directories of every EINK_PROJECT_ROOTS entry -
+    `~/Documents/Program/<project>` in the default setup. Nothing deeper: a Kindle has no
+    path keyboard worth using, and the bridge refuses anything outside these anyway.
+
+    Recently-touched first, capped: this machine has 90 project directories, and 90 rows
+    of scrolling on a 511px screen is not a chooser, it is a wall. The cap is reported,
+    never silent.
     """
     live = live_bridges()
-    projects = {}
-    for live_sid, info in live.items():
-        cwd = str(info.get("cwd") or "")
-        if not cwd:
+    live_dirs = {str(i.get("cwd") or "") for i in live.values() if i.get("cwd")}
+    seen, out = set(), []
+    for cwd in sorted(live_dirs):
+        seen.add(cwd)
+        out.append((cwd, True))
+    rest = []
+    for root in PROJECT_ROOTS:
+        try:
+            entries = list(Path(root).expanduser().iterdir())
+        except Exception:
             continue
-        kept = projects.get(cwd)
-        if kept is None or str(info.get("updatedAt") or "") > str(live_bridges()[kept].get("updatedAt") or ""):
-            projects[cwd] = live_sid
-    if not projects:
-        return '<div class="body dim">%s</div>' % esc(tr("new_session_none", lang))
+        for entry in entries:
+            try:
+                if not entry.is_dir() or entry.name.startswith("."):
+                    continue
+                stamp = entry.stat().st_mtime
+            except Exception:
+                continue
+            if str(entry) in seen:
+                continue
+            seen.add(str(entry))
+            rest.append((stamp, str(entry)))
+    rest.sort(reverse=True)
+    for _stamp, path in rest:
+        out.append((path, path in live_dirs))
+    hidden = max(0, len(out) - limit)
+    return out[:limit], hidden
+
+
+def new_session_html(sid: str = "", lang: str = "") -> str:
+    """Choose the DIRECTORY a new session starts in.
+
+    The session is created by the pi process that is showing this page, and it moves to
+    the chosen directory: `ctx.newSession()` has no cwd option, so the bridge writes a
+    session file whose header names that cwd and switches to it. That is why the page
+    offers directories, not sessions.
+    """
+    # The session that will move is the one this page was opened from; with no id the
+    # one the viewer renders (POST routing falls back to the same place).
+    target = sid or rendered_session_id()
+    cap = agent_state(bridge_port_for(target)) if target else None
     rows = []
-    for cwd, live_sid in sorted(projects.items(),
-                                key=lambda kv: live[kv[1]].get("updatedAt", ""), reverse=True):
-        count = sum(1 for i in live.values() if str(i.get("cwd") or "") == cwd)
-        extra = (" \u00b7 %s" % esc(tr("new_session_running", lang, count))) if count > 1 else ""
-        # The session is created by that process's own extension, so a bridge from
-        # before the feature cannot do it. Probe the sessions in this directory newest
-        # first and take the first one that CAN do it - picking the newest unconditionally
-        # would mark a project "old bridge" just because its newest session predates the
-        # reload while a sibling does not. One loopback probe per session, and only until
-        # one answers.
-        same = sorted((s for s, i in live.items() if str(i.get("cwd") or "") == cwd),
-                      key=lambda s: str(live[s].get("updatedAt") or ""), reverse=True)
-        state = None
-        for candidate in same:
-            state = agent_state(bridge_port_for(candidate))
-            if state is not None and "queued" in state:
-                live_sid = candidate
-                break
-        if state is not None and "queued" in state:
+    choices, hidden = project_choices()
+    for path, live in choices:
+        label = "\uff0b " + (Path(path).name or path)
+        note = (" \u00b7 %s" % esc(tr("new_session_live", lang))) if live else ""
+        if cap is not None and "queued" in cap:
             action = ('<form method="POST" action="/act/new?s=%s">'
+                      '<input type="hidden" name="dir" value="%s">'
                       '<button class="btn" type="submit">%s</button></form>'
-                      % (quote(str(live_sid), safe=""), esc("\uff0b " + (short_path(cwd) or cwd))))
+                      % (quote(target, safe=""), esc(path), esc(label)))
         else:
-            action = ('<div class="body dim">%s \u00b7 %s</div>'
-                      % (esc(short_path(cwd) or cwd), esc(tr("new_session_old_bridge", lang))))
+            action = '<div class="body dim">%s</div>' % esc(label)
         rows.append('<div class="sess">%s<div class="mono dim">%s%s</div></div>'
-                    % (action, esc(cwd), extra))
+                    % (action, esc(short_path(path) or path), note))
+    if cap is None or "queued" not in cap:
+        # the session that would move cannot start one: say why instead of rendering
+        # buttons that can only answer "unknown action" (or 502, with no session at all)
+        head = '<div class="body dim">%s</div>' % esc(
+            tr("new_session_old_bridge" if target else "new_session_none", lang))
+        return head + "".join(rows)
+    if not rows:
+        return '<div class="body dim">%s</div>' % esc(tr("new_session_none", lang))
+    if hidden:
+        rows.append('<div class="body dim">%s</div>' % esc(tr("new_session_hidden", lang, hidden)))
     return "".join(rows)
 
 

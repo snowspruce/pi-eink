@@ -12,6 +12,7 @@ import pathlib
 import re
 import shutil
 import sys
+import tempfile
 import time
 import types
 import unittest
@@ -397,66 +398,47 @@ class SessionPicker(unittest.TestCase):
         self.assertEqual(html.count('href="/new'), 1)
         self.assertNotIn("/act/new", html)
 
-    def test_the_new_session_page_lists_one_row_per_project(self):
-        """A session inherits the cwd of the process it runs in, so the choice is a
-        project - two sessions in the same directory are one choice, not two."""
-        live = {
-            "old-in-demo": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/demo",
-                            "updatedAt": "2026-01-01T00:00:00Z"},
-            "new-in-demo": {"port": 2, "pid": os.getpid(), "cwd": "/tmp/demo",
-                            "updatedAt": "2026-01-02T00:00:00Z"},
-            "other-project": {"port": 3, "pid": os.getpid(), "cwd": "/tmp/other",
-                              "updatedAt": "2026-01-01T12:00:00Z"},
-        }
-        # a bridge that has the feature: /state carries `queued` (the page probes each
-        # project before offering a button - see the old-bridge test below)
-        with mock.patch.object(server, "live_bridges", lambda: live), \
-             mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
-             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "queued": 0}):
-            html = server.new_session_html()
-        self.assertEqual(html.count("/act/new"), 2)
-        # the newest session in a directory is the one whose bridge creates it
-        self.assertIn("/act/new?s=new-in-demo", html)
-        self.assertIn("/act/new?s=other-project", html)
-        self.assertIn("2 个会话在运行", html)
-
-    def test_the_new_session_page_marks_an_old_bridge_instead_of_offering_it(self):
-        """The session is created by that project's own extension: with an older bridge
-        the tap can only fail, so the row says why instead of showing a button."""
-        live = {"demo-session": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/demo",
+    def test_the_new_session_page_lists_directories(self):
+        """The choice is a directory: a session has no cwd of its own, so the page lists
+        the project root's sub-directories plus the directories that already run pi."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        (root / "beta").mkdir()
+        (root / ".hidden").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        live = {"running-here": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/live-project",
                                  "updatedAt": "2026-01-01T00:00:00Z"}}
-        with mock.patch.object(server, "live_bridges", lambda: live), \
+        with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
+             mock.patch.object(server, "live_bridges", lambda: live), \
              mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
-             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "pending": False}):
-            html = server.new_session_html()
-        self.assertNotIn("/act/new", html)
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True, "queued": 0}), \
+             mock.patch.object(server, "rendered_session_id", lambda: "running-here"):
+            html = server.new_session_html("running-here")
+        self.assertIn('/act/new?s=running-here', html)
+        for name in ("alpha", "beta", "/tmp/live-project"):
+            self.assertIn('name="dir" value="%s"' % (str(root / name) if name in ("alpha", "beta") else name), html)
+        self.assertNotIn(".hidden", html)
+        self.assertIn("pi 在这里跑着", html)     # the live one is marked
+
+    def test_a_directory_row_needs_a_capable_bridge(self):
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
+             mock.patch.object(server, "live_bridges", lambda: {}), \
+             mock.patch.object(server, "bridge_port_for", lambda _sid: 1), \
+             mock.patch.object(server, "agent_state", lambda _p=0: {"idle": True}), \
+             mock.patch.object(server, "rendered_session_id", lambda: "some-session"):
+            html = server.new_session_html("some-session")
+        self.assertNotIn("/act/new", html)       # no button that can only 404
         self.assertIn("/reload", html)
-        self.assertIn("/tmp/demo", html)
-
-    def test_a_project_uses_a_session_that_can_actually_do_it(self):
-        """Newest-first is not the same as capability: a session loaded before the last
-        /reload sits next to one that was reloaded, and the project must still work."""
-        live = {
-            "old-but-newest": {"port": 1, "pid": os.getpid(), "cwd": "/tmp/demo",
-                               "updatedAt": "2026-01-02T00:00:00Z"},
-            "reloaded": {"port": 2, "pid": os.getpid(), "cwd": "/tmp/demo",
-                         "updatedAt": "2026-01-01T00:00:00Z"},
-        }
-        def state(port=0):
-            return {"idle": True, "queued": 0} if port == 2 else {"idle": True}
-
-        with mock.patch.object(server, "live_bridges", lambda: live), \
-             mock.patch.object(server, "bridge_port_for",
-                               lambda sid: live[sid]["port"]), \
-             mock.patch.object(server, "agent_state", state):
-            html = server.new_session_html()
-        self.assertIn("/act/new?s=reloaded", html)
-        self.assertNotIn("/act/new?s=old-but-newest", html)
 
     def test_the_new_session_page_explains_an_empty_list(self):
-        with mock.patch.object(server, "live_bridges", lambda: {}):
+        with mock.patch.object(server, "PROJECT_ROOTS", ["/nonexistent-root"]), \
+             mock.patch.object(server, "live_bridges", lambda: {}), \
+             mock.patch.object(server, "rendered_session_id", lambda: ""):
             html = server.new_session_html()
-        self.assertIn("没有运行中的 pi 会话", html)
+        self.assertIn("新会话只能建在", html)
         self.assertNotIn("/act/new", html)
 
     def test_files_without_a_session_header_are_not_listed(self):
