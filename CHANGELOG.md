@@ -33,6 +33,11 @@ All notable changes to this project. The format follows
 
 ### Security
 
+- `~/bin/eink-audit`: asserts the whole posture in one command (token file, viewer bind, **every
+  bridge's bind**, the public entry rejecting credentials-free requests, nginx not injecting or
+  hardcoding the token, `/whois` carrying its HMAC proof, the kiosk being in front). Runs daily
+  under launchd and only writes to `~/.pi/eink/audit.log` when something is wrong.
+
 - `~/bin/eink-rotate-token`: one command to rotate the token, invalidate the server-side OTP
   sessions, restart the viewer, wipe the device's copy and bring the kiosk back up - then
   verify the viewer answers and the public entry accepts the new token. nginx no longer
