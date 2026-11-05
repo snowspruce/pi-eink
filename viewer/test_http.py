@@ -319,7 +319,9 @@ class FullNetwork(unittest.TestCase):
             self.assertEqual(status, 200)
             body = data.decode("utf-8")
             self.assertIn("aaaabbbb-1111-2222-3333-444455556666", body)   # this project only
-            self.assertIn("/act/enter", body)          # can still start one in this project
+            # 新建会话在顶部、不用选目录、而且必须是新窗口（/act/new），不能是"进入现有"
+            self.assertIn("/act/new", body)
+            self.assertNotIn('action="/act/enter', body[:body.index("所有项目") + 400])
             self.assertNotIn("ccccdddd-1111-2222-3333-444455556666", body)
             self.assertIn("/home", body)               # the way to switch projects
 

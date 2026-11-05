@@ -709,16 +709,25 @@ describe("spawnPiWindow", () => {
 	};
 
 	it("runs pi in the directory, quoted for a shell", () => {
+		process.env.PI_SESSION_FILE = "/tmp/parent-session.jsonl";
 		const call = capture("/tmp/plain dir");
+		delete process.env.PI_SESSION_FILE;
 		assert.equal(call.cmd, "osascript");
-		assert.equal(call.argv.at(-1), "cd '/tmp/plain dir' && exec pi");
+		// PI_* stripped: a child that inherits PI_SESSION_FILE tries to open the session
+		// already running here and exits (the empty window the viewer waited 30s for).
+		assert.ok(call.argv.at(-1).includes("-u PI_SESSION_FILE"), call.argv.at(-1));
+		assert.ok(call.argv.at(-1).endsWith(" pi"), call.argv.at(-1));
+		assert.ok(call.argv.at(-1).includes("exec env -u "), call.argv.at(-1));
 		assert.ok(call.argv.join(" ").includes("create window with default profile"));
 	});
 
 	it("survives a directory name that would end the quoting", () => {
 		const dir = "/tmp/x'; rm -rf ~; '";
 		assert.equal(shellQuote(dir), "'/tmp/x'\\''; rm -rf ~; '\\'''");
-		assert.equal(capture(dir).argv.at(-1), "cd " + shellQuote(dir) + " && exec pi");
+		process.env.PI_SESSION_FILE = "/tmp/parent-session.jsonl";
+		const cmd = capture(dir).argv.at(-1);
+		delete process.env.PI_SESSION_FILE;
+		assert.ok(cmd.startsWith("cd " + shellQuote(dir) + " && exec env"), cmd);
 	});
 
 	it("keeps the directory out of the AppleScript source", () => {

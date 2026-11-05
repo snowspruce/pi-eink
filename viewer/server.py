@@ -117,9 +117,9 @@ STRINGS = {
     "new_session_running": ("%d \u4e2a\u4f1a\u8bdd\u5728\u8fd0\u884c", "%d sessions running"),
     "new_session_hidden": ("\u8fd8\u6709 %d \u4e2a\u76ee\u5f55\u672a\u5217\u51fa\uff08\u8fd9\u91cc\u53ea\u5217\u6700\u8fd1\u52a8\u8fc7\u7684\uff09",
                             "%d more directories not listed (recently touched first)"),
-    "new_here_hint": ("\u5728 %s \u91cc\u5f00\u4e00\u4e2a\u65b0\u7a97\u53e3", "a new window in %s"),
-    "new_session_here": ("\uff0b \u5728\u672c\u9879\u76ee\u65b0\u5efa\u4f1a\u8bdd",
-                         "+ New session in this project"),
+    "new_here_hint": ("\u65b0\u7a97\u53e3\u91cc\u6253\u5f00\uff0c\u4e0d\u5f71\u54cd\u5f53\u524d\u4f1a\u8bdd",
+                      "opens in a new window; this session stays as it is"),
+    "new_session_here": ("\uff0b \u65b0\u5efa\u4f1a\u8bdd", "+ New session"),
     "port_label": ("\u7aef\u53e3 %s", "port %s"),
     "running_label": ("\u8fd0\u884c\u4e2d", "running"),
     "all_projects": ("\u6240\u6709\u9879\u76ee", "All projects"),
@@ -626,13 +626,19 @@ def sessions_html(lang: str = "", sid: str = "", cwd: str = "") -> str:
             want = cwd
     new_suffix = ("?s=" + quote(sid, safe="")) if sid else ""
     if want:
-        # 在本项目里开新会话（就是 pi 的 /new）：不属于"删掉"，作用域内更需要它
-        rows.append('<div class="sess"><form method="POST" action="/act/enter%s">'
+        # The button comes first: "new session" is the one action that is not about
+        # picking an existing conversation. No directory to pick either - the directory IS
+        # this page's project. It goes to /act/new (a new window), never /act/enter:
+        # entering would jump to the session already running here and nothing new happens.
+        rows.append('<div class="sess"><form method="POST" action="/act/new%s">'
                     '<input type="hidden" name="dir" value="%s">'
                     '<button class="btn" type="submit">%s</button></form>'
                     '<div class="mono dim">%s</div></div>'
-                    % (new_suffix, esc(cwd), esc(tr("new_session_here", lang)),
-                       esc(tr("new_here_hint", lang, short_path(cwd) or cwd))))
+                    % (new_suffix, esc(want), esc(tr("new_session_here", lang)),
+                       esc(tr("new_here_hint", lang))))
+        rows.append('<div class="sess"><a href="/home"><b>%s</b></a>'
+                    '<div class="mono dim">%s</div></div>'
+                    % (esc(tr("all_projects", lang)), esc(short_path(cwd) or cwd)))
     elif live:
         rows.append('<div class="sess"><a href="/new%s"><b>%s</b></a>'
                     '<div class="mono dim">%s</div></div>'
@@ -3815,19 +3821,13 @@ class Handler(BaseHTTPRequestHandler):
             back_path = ("/?" + urlencode(keep)) if keep else "/"
             # /resume semantics: the sessions of the project this page belongs to.
             here = session_meta(path).get("cwd") if path is not None else ""
-            head = ""
-            if here:
-                head = ('<div class="sess"><a href="/home"><b>%s</b></a>'
-                        '<div class="mono dim">%s</div></div>'
-                        % (esc(tr("all_projects", lang)), esc(short_path(here) or here)))
             page = ("<!DOCTYPE html><html><head>"
                     '<meta name="viewport" content="width=device-width, initial-scale=1">'
                     '<link rel="icon" type="image/png" href="/favicon.png">'
                     "<style>%(css)s</style></head><body>"
                     '<div id="wrap"><div class="body"><a href="%(back_url)s">%(back)s</a></div>'
-                    "%(head)s%(list)s</div></body></html>")
+                    "%(list)s</div></body></html>")
             self._send((page % {"css": css, "list": sessions_html(lang, sid, str(here or "")),
-                                "head": head,
                                 "back_url": esc(back_path),
                                 "back": esc(tr("back_to_session", lang))}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)

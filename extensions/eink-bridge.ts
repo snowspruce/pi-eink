@@ -201,7 +201,16 @@ export function spawnPiWindow(dir: string, app = process.env.EINK_TERMINAL || "i
 		"\tend tell",
 		"end run",
 	].join("\n");
-	const command = "cd " + shellQuote(dir) + " && exec pi";
+	// Strip inherited PI_* variables. A spawned shell inherits this process's environment,
+	// and PI_SESSION_FILE points at the session that is already open here: a fresh pi
+	// started with it attaches to that file (or gives up on it) and exits immediately -
+	// the new window opened and closed, and the viewer waited 30s for a session that
+	// never appeared.
+	const strip = Object.keys(process.env)
+		.filter((k) => k.startsWith("PI_"))
+		.map((k) => " -u " + k)
+		.join("");
+	const command = "cd " + shellQuote(dir) + " && exec env" + strip + " pi";
 	run("osascript", ["-e", script, "--", command], (err, _out, errOut) => {
 		if (err) console.error("[eink] could not open a window in " + app + ":", (errOut || err.message).trim());
 	});
