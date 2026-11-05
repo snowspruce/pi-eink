@@ -600,7 +600,15 @@ public class Kiosk extends Activity {
     @Override
     public boolean onKeyDown(int code, KeyEvent event) {
         if (code == KeyEvent.KEYCODE_BACK) {
-            web.reload();
+            // ◁ is the only nav-bar key that reaches us. From a session it goes back to
+            // the project list (the thing a reader actually wants there); on the list
+            // itself there is nowhere to go, so it re-reads the page.
+            String now = web.getUrl() == null ? "" : web.getUrl();
+            if (!now.endsWith("/home") && !now.contains("/home?")) {
+                goHome();
+            } else {
+                web.reload();
+            }
             return true;
         }
         if (code == KeyEvent.KEYCODE_MENU) {
