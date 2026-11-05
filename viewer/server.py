@@ -1359,7 +1359,11 @@ pre {
 }
 h1, h2, h3, h4 { font-size: 1.05em; margin: 14px 0 6px; }
 ul, ol { margin: 6px 0; padding-left: 26px; }
-li { margin: 2px 0; }
+/* A list item is rendered OUTSIDE .body (which carries word-wrap), so a long token -
+   a path, a key=value, a URL - pushed the li wider than the page: 21 CSS px of overflow
+   and a horizontal scrollbar on every page that had such a bullet. Measured on the
+   Kindle with the /diag beacon (dw 520 vs iw 511), see DEVELOPMENT.md 19. */
+li { margin: 2px 0; word-wrap: break-word; overflow-wrap: break-word; }
 table { border-collapse: collapse; margin: 10px 0; font-size: 0.82em; width: 100%; table-layout: fixed; }
 th, td { border: 1px solid #000; padding: 3px 6px; text-align: left; vertical-align: top; word-wrap: break-word; overflow-wrap: anywhere; }
 th { background: #eee; }
@@ -1586,6 +1590,7 @@ function paint(j) {
     window.scrollTo(0, document.body.scrollHeight);
     STICK = true;   // the synthetic scroll event lands after this paint
   }
+  if (!GEO) { GEO = true; geoBeacon(); }
 }
 var POLL_MS_BUSY = 1200, POLL_MS_IDLE = 3000, POLL_MS = POLL_MS_IDLE;
 // The working indicator is animated here, not on the server: a server-side frame had to
@@ -1624,16 +1629,46 @@ function poll() {
   fetchData(function () { setTimeout(poll, POLL_MS); });
 }
 poll();
-// one-shot geometry beacon so the server side can see the device's real viewport
-(function () {
+// One-shot geometry beacon so the server side can see the device's real viewport.
+// Fired after the FIRST PAINT, not on load: the shell is empty until /data lands, and a
+// beacon taken before that measured an empty document (dw == iw) and hid the very
+// overflow it was added to find.
+var GEO = false;
+function geoBeacon() {
   try {
     var x = new XMLHttpRequest();
+    // sw/dw vs iw: a horizontal scrollbar means some box is wider than the viewport.
+    // `who` names it (tag#id.class + its width), because "the page is 3px too wide" is
+    // otherwise unattributable on a device with no devtools.
+    var de = document.documentElement, iw = de.clientWidth, who = "";
+    try {
+      // Two shapes of overflow: a box wider than the viewport, and a box whose CONTENT
+      // is wider than the box (long unbreakable text inside a pre-wrap block - the box
+      // stays 511 wide, so only scrollWidth gives it away).
+      var all = document.getElementsByTagName("*"), hits = [];
+      for (var n = 0; n < all.length; n++) {
+        var el = all[n], r = el.getBoundingClientRect();
+        var over = Math.max(r.right - iw, el.scrollWidth - el.clientWidth);
+        if (over > 0.5) {
+          var name = el.tagName.toLowerCase() +
+            (el.id ? "#" + el.id : "") +
+            (el.className ? "." + String(el.className).split(" ")[0] : "");
+          var d = 0, up = el;
+          while (up.parentNode) { d++; up = up.parentNode; }
+          hits.push({ o: over, d: d, s: name + ":" + Math.round(over) });
+        }
+      }
+      // deepest first: the ancestors overflow for the same reason, only the innermost
+      // box says which element is actually too wide
+      hits.sort(function (a, b) { return (b.d - a.d) || (b.o - a.o); });
+      who = hits.slice(0, 3).map(function (h) { return h.s; }).join(",");
+    } catch (e) { who = "err"; }
     x.open("GET", "/diag?w=" + window.innerWidth + "&h=" + window.innerHeight +
       "&sw=" + document.body.scrollWidth + "&dpr=" + (window.devicePixelRatio || 1) +
-      "&iw=" + document.documentElement.clientWidth, true);
+      "&iw=" + iw + "&dw=" + de.scrollWidth + "&who=" + encodeURIComponent(who), true);
     x.send(null);
   } catch (e) {}
-})();
+}
 document.addEventListener("submit", function (e) {
   var form = e.target;
   var action = form.getAttribute("action") || "";

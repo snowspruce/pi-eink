@@ -330,6 +330,28 @@ BrowserWebView            0,0-1072,1332     ← 页面拿到全部高度
 
 教训：**"看起来盖住了"和"真的盖住了"是两件事**，只有层级几何能区分。
 
+### 19. 横向滚动条：`<li>` 没继承 word-wrap
+
+症状：页面底部总有一条横向滚动条，滚动条滑块几乎通长（说明只超几像素）。
+
+量法（不需要 devtools，设备就在 adb 上）：`/diag` 的几何 beacon 增加两个字段——
+`dw`（`documentElement.scrollWidth`，和 `iw` 比就知道超没超）和 `who`（把每个元素按
+`rect.right - iw` 与 `scrollWidth - clientWidth` 里较大的那个排序，取**最深**的三个，
+每次页面加载跑一次）。真机读数：`iw=511 dw=520 who=li:21,ol:21,div.msg:21`。
+
+结论：Markdown 列表渲染成 `<ul>/<ol><li>`，是 `.body` 的**兄弟**，而 `word-wrap: break-word`
+只写在 `.body` 上。于是 `li` 里的长 token（路径、`key=value`、URL）不能断行，把 `li` 撑出
+容器 21 设备 px ≈ 9 CSS px，正是那条滚动条。修法是给 `li` 补上 `word-wrap/overflow-wrap`。
+
+两个附带教训：
+
+- **beacon 的时机**：第一版把几何 beacon 放在页面加载时（IIFE），那时 `#content` 还是空的，
+  `dw == iw`，把要找的溢出藏掉了。改到**第一帧 `paint()` 之后**才量。凡是"量布局"的探针，
+  都要等被量的东西存在。
+- **量错对象也会骗人**：`who` 一开始只报"盒比视口宽"的元素，结果一个都没报（盒都是 511 宽），
+  因为溢出的是**行内内容**。加上 `scrollWidth > clientWidth` 才抓到；再加"取最深"才从
+  `div#content` 收敛到 `li`。
+
 ## 三、排查阶梯（设备打不开时按顺序）
 
 ```sh

@@ -26,6 +26,12 @@ All notable changes to this project. The format follows
 
 ### Fixed
 
+- **A horizontal scrollbar that was always there.** Markdown list items render outside
+  `.body`, which is where `word-wrap` lives, so a long token in a bullet (a path, a
+  `key=value`, a URL) pushed the row 9 CSS px past the viewport. `/diag` now also reports
+  `dw` (document scrollWidth) and `who` (the deepest element that overflows, measured after
+  the first paint), which is what named the `<li>` on the device.
+
 - **Queue delivery was inconsistent with what the page said, in four ways found on review:**
   `加一条` while idle replied "queued" but sent immediately; `session_start` ignored its
   reason, so a resumed session auto-ran leftovers from days ago; queued text was delivered
