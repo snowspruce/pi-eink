@@ -646,10 +646,45 @@ HOME_CSS = """
 #home li .dir { font-size: 11px; color: #444; margin-top: 3px; }
 #home li .live { font-size: 11px; color: #000; margin-top: 3px; }
 #home .foot { padding: 12px 10px 4px; font-size: 11px; color: #444; }
+/* 系统导航栏被 kiosk 隐藏了，菜单入口只能放在页面里 */
+#menu {
+  position: fixed; right: 8px; bottom: 8px;
+  min-width: 46px; height: 38px; line-height: 34px; text-align: center;
+  padding: 0 6px;
+  /* 2 CSS px: 这块屏上 1px 会摊成浅灰（DEVELOPMENT 31） */
+  font-size: 14px; background: #fff; color: #000; border: 2px solid #000;
+  text-decoration: none; z-index: 9;
+}
 /* 主页不是会话页：底部的状态行/链接在这里是噪音（而且显示的是上一个会话的数字） */
 #bar { display: none; }
 #wrap { padding: 0 0 8px 0; }
 """
+
+
+# The menu is a page, not a JS dialog: the WebView's javascript interface did not reach
+# this page (no error, no effect), and a page works in any browser. The one item that is
+# not a URL - "desktop" - uses a custom scheme the kiosk app intercepts.
+MENU_BUTTON = '<a id="menu" href="/menu">\u83dc\u5355</a>'
+
+
+def menu_html(lang: str = "", next_url: str = "/home") -> str:
+    rows = [
+        ("\u4e3b\u9875", "/home"),
+        ("\u91cd\u65b0\u52a0\u8f7d", next_url or "/home"),
+        ("\u684c\u9762", "pi-eink://desktop"),
+    ]
+    out = ['<div id="home">',
+           '<div class="brand"><img src="/logo.png" alt="pi"><div class="name">pi</div></div>',
+           "<ul>"]
+    for label, href in rows:
+        out.append('<li><a href="%s">%s</a></li>' % (esc(href), esc(label)))
+    out.append("</ul>")
+    out.append('<form method="POST" action="/menu/open">'
+               '<input name="url" type="text" value="" placeholder="http://\u2026" '
+               'autocapitalize="off" autocorrect="off" spellcheck="false">'
+               '<button type="submit">\u6253\u5f00</button></form>')
+    out.append("</div>")
+    return "".join(out)
 
 
 def home_html(lang: str = "", target: str = "") -> str:
@@ -689,6 +724,7 @@ def home_html(lang: str = "", target: str = "") -> str:
     if hidden:
         out.append('<div class="foot">%s</div>' % esc(tr("new_session_hidden", lang, hidden)))
     out.append("</div>")
+    out.append(MENU_BUTTON)
     return "".join(out)
 
 
@@ -846,7 +882,7 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
 # The queue lives in the session's bridge; these actions read and mutate it.
 QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear", "qrun"}
-BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny", "enter",
+BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny", "enter", "menu/open",
                   "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear",
                   "qrun"}
 
@@ -3146,6 +3182,15 @@ class Handler(BaseHTTPRequestHandler):
                                extra=extra + [("Location", "/?" + urlencode([("s", hit)]))])
                 return
             action = "new"        # idle directory: start one there, then follow it
+        if action == "menu/open":
+            try:
+                want = (parse_qs(body.decode("utf-8", "replace")).get("url") or [""])[0].strip()
+            except Exception:
+                want = ""
+            if not want.startswith(("http://", "https://")):
+                want = "http://" + want if want else "/menu"
+            self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", want)])
+            return
         if action == "readonly":
             state = trust_state()
             state["readonly"] = True
@@ -3582,6 +3627,24 @@ class Handler(BaseHTTPRequestHandler):
                 "note": ('<div id="note">%s</div>' % esc(note_msg)) if note_msg else "",
                 "queue": inner}}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
+            return
+
+        if u.path == "/menu":
+            nxt = (q.get("next") or ["/home"])[0]
+            css = (CSS.replace("__FS__", str(fs)) + HOME_CSS
+                   + "body { margin: 0; }"
+                   + "#home form { padding: 16px 10px 20px; }"
+                   + "#home form input { display: block; width: 100%; font-size: 15px; "
+                     "padding: 9px 10px; border: 2px solid #000; margin: 0 0 10px 0; "
+                     "-webkit-box-sizing: border-box; box-sizing: border-box; "
+                     "background: #fff; color: #000; }"
+                   + "#home form button { display: block; width: 100%; font-size: 16px; "
+                     "padding: 11px; border: 2px solid #000; background: #fff; color: #000; }")
+            page = ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+                    '<meta name="viewport" content="width=device-width, initial-scale=1">'
+                    "<style>%s</style></head><body>%s</body></html>"
+                    % (css, menu_html(lang, nxt)))
+            self._send(page.encode("utf-8"), "text/html; charset=utf-8", extra=extra)
             return
 
         if u.path == "/home":

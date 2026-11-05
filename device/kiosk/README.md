@@ -82,6 +82,31 @@ APK 约 12 KB，装在 `/data`（不是系统应用），`adb uninstall ink.eink
 192.168.3.x 而 Mac 在 192.168.2.x），直接改用公网入口，而不是给一张白屏。日志里能看到
 `LAN origin … does not answer, using the public entry`。
 
+## 导航栏：整条隐藏
+
+逐个点导航栏按钮、用 logcat 确认按键事件是否到达 App 的实测结果：
+
+| 键 | 实测 |
+|---|---|
+| ⋮ | 我们的菜单（曾用） |
+| ◁ | `KEYCODE_BACK`，唯一到达 App 的键 |
+| ○ | HOME（系统级）→ 停在 pi 主页 |
+| ▢ | 事件不到 App，直接打开 `/system/app/Eink.apk`（ROM 的 Eink 设置），一条"跑出 kiosk"的路 |
+| ‹ › ⟳ | 一个事件都不到 App，对 kiosk 完全无用 |
+
+那三个无用键（以及 ⋮/▢）在 `SystemUI.apk` 的布局里，改它需要 apktool 反编译 + 重签名 + 重启，
+而 GitHub 与镜像在这里都拿不到 jar。于是换了一条完全可控的路：**App 用沉浸式把整条导航栏隐藏**
+（`SYSTEM_UI_FLAG_HIDE_NAVIGATION | IMMERSIVE_STICKY`）。收益：无用键消失、▢ 的逃跑路消失、
+多出约 90px；代价：⋮ 也没了，所以菜单移进页面。
+
+## 菜单是页面，不是弹窗
+
+右下角固定的「菜单」→ `/menu`：主页 / 重新加载 / 桌面 / 输入地址（表单 303 到目标地址）。
+「桌面」用 `pi-eink://desktop` 自定义协议，由 App 的 `shouldOverrideUrlLoading` 拦截后启动梅糖桌面。
+
+做成页面而不是 JS 弹窗，是因为**这台 WebView 的 `addJavascriptInterface` 没打通**（`window.pi`
+不存在，点了毫无反应也不报错）；页面方案在任何浏览器里也都能用。
+
 ## 主页（/home）
 
 `/home` 是设备的主屏：pi 的 logo + 项目列表，别无他物。

@@ -132,6 +132,12 @@ All notable changes to this project. The format follows
 
 ### Changed
 
+- The whole system navigation bar is hidden (immersive). Its three right-hand keys (‹ › ⟳)
+  never delivered an event to the app, ▢ jumps into the ROM's Eink settings, and they live in
+  `SystemUI.apk`'s layout - unpatchable here because apktool cannot be fetched. Hiding the bar
+  removes them all, reclaims ~90px, and the menu moved into the page as `/menu` (主页 /
+  重新加载 / 桌面 / 输入地址), with 桌面 delivered through a `pi-eink://desktop` scheme.
+
 - The device's home screen is `/home`: the pi mark, then the project list - tap a running
   project to enter that session, tap an idle one to start a window there. It is a
   standalone minimal document; rendered through the session shell it inherited the polling
