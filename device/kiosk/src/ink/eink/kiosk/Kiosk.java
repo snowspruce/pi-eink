@@ -159,7 +159,7 @@ public class Kiosk extends Activity {
             remember(url);
         }
         if (url == null) {
-            url = homeUrl();
+            url = reachableHome();
             if (url.length() == 0) {
                 foundThisLaunch = true;
                 discoverOrFallback();
@@ -604,10 +604,72 @@ public class Kiosk extends Activity {
             return true;
         }
         if (code == KeyEvent.KEYCODE_MENU) {
-            showAddressPrompt();
+            showMenu();
             return true;
         }
         return super.onKeyDown(code, event);
+    }
+
+    /** ⋮ opens a list of what a kiosk actually needs; typing an address is one of them. */
+    private void showMenu() {
+        new AlertDialog.Builder(this)
+                .setTitle("pi")
+                .setItems(new String[]{"主页", "重新加载", "输入地址", "桌面"},
+                        new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface d, int which) {
+                                switch (which) {
+                                    case 0:
+                                        goHome();
+                                        break;
+                                    case 1:
+                                        web.reload();
+                                        break;
+                                    case 2:
+                                        showAddressPrompt();
+                                        break;
+                                    default:
+                                        openOtherHome();
+                                        break;
+                                }
+                            }
+                        })
+                .show();
+    }
+
+    /**
+     * The home URL to actually use, checked before loading it.
+     *
+     * A remembered LAN origin survives network changes: the device sat on 192.168.3.x
+     * while the Mac was on 192.168.2.x, and the app kept loading a host that could not
+     * answer - a blank page, no error, nothing to act on. The public entry is one probe
+     * away from certainty, so a LAN origin that does not answer /whois right now is
+     * skipped in favour of it.
+     */
+    private String reachableHome() {
+        String origin = homeUrl();
+        if (origin.length() == 0) {
+            return "";
+        }
+        if (origin.startsWith("https://")) {
+            return origin;                 // public: the TLS hop is the check
+        }
+        android.net.Uri u = android.net.Uri.parse(origin);
+        String host = u.getHost();
+        if (host == null || probe(host) == null) {
+            Log.i(TAG, "LAN origin " + origin + " does not answer, using the public entry");
+            return PUBLIC.replaceAll("/+$", "") + "/home";
+        }
+        return origin + "/home";
+    }
+
+    private void goHome() {
+        String home = reachableHome();
+        if (home.length() > 0) {
+            load(withToken(home));
+        } else {
+            foundThisLaunch = true;
+            discoverOrFallback();
+        }
     }
 
     private void showAddressPrompt() {
@@ -637,22 +699,7 @@ public class Kiosk extends Activity {
                         load(withToken(url));
                     }
                 })
-                .setNeutralButton("主页", new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface d, int which) {
-                        String home = homeUrl();
-                        if (home.length() > 0) {
-                            load(withToken(home));
-                        } else {
-                            discoverOrFallback();
-                        }
-                    }
-                })
-                .setNeutralButton("桌面", new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface d, int which) {
-                        openOtherHome();
-                    }
-                })
-                .setNegativeButton("自动发现", new DialogInterface.OnClickListener() {
+                .setNeutralButton("自动发现", new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface d, int which) {
                         foundThisLaunch = true;
                         discoverOrFallback();
