@@ -36,7 +36,12 @@ const PORT_SPAN = 21;
 const PORT = Number(process.env.EINK_BRIDGE_PORT ?? 0);
 // 0.0.0.0 exposes the bridge on every interface (VPN, docker bridges). Same name
 // and meaning as the viewer's variable; tests bind loopback with it.
-const BIND = process.env.EINK_BIND ?? "0.0.0.0";
+// Loopback by default, and a *separate* variable from the viewer's binding.
+// It used to read EINK_BIND, which the viewer's launchd job sets to 0.0.0.0 - so every
+// session's bridge ended up listening on the LAN, reachable directly and without the
+// viewer's OTP layer (the viewer proxies to it, nothing else needs to).
+export const BIND_ADDRESS = process.env.EINK_BRIDGE_BIND ?? "127.0.0.1";
+const BIND = BIND_ADDRESS;
 const VIEWER_PORT = Number(process.env.EINK_PORT ?? 8000);
 const TOKEN_FILE = join(homedir(), ".pi/eink/token");
 const COOKIE = "pieink";

@@ -41,8 +41,9 @@ async function load() {
 	writeFileSync(join(EINK, "uas"), "kindle build/\n");
 	process.env.HOME = HOME;
 	// 0.0.0.0: a request from this machine's LAN address is not loopback, which is
-	// the only way to exercise the UA gate without a second host
-	process.env.EINK_BIND = "0.0.0.0";
+	// the only way to exercise the UA gate without a second host. The bridge reads its
+	// own variable - EINK_BIND belongs to the viewer.
+	process.env.EINK_BRIDGE_BIND = "0.0.0.0";
 	// the suite's fixtures live in a mkdtemp dir; project roots are what /act/new checks
 	process.env.EINK_PROJECT_ROOTS = tmpdir();
 	mod = await import("../extensions/eink-bridge.ts");
@@ -674,6 +675,22 @@ describe("port collision", () => {
 		const now = reg["test-session"].port;
 		assert.notEqual(now, firstPort);
 		assert.ok(now >= 8010 && now < 8010 + 40, `unexpected bridge port ${now}`);
+	});
+});
+
+describe("bridge binding", () => {
+	// The bridge has no second factor of its own (the OTP gate is in the viewer), so it
+	// must not be reachable from the LAN. It used to read EINK_BIND - the viewer's
+	// variable, set to 0.0.0.0 by its launchd job - which put every session's bridge on
+	// every interface. Asserted in a child process so the parent's env cannot hide it.
+	it("is loopback even when the viewer's EINK_BIND says otherwise", async () => {
+		const { execFileSync } = await import("node:child_process");
+		const file = new URL("../extensions/eink-bridge.ts", import.meta.url).pathname;
+		const code = `import(${JSON.stringify(file)}).then(m => process.stdout.write(m.BIND_ADDRESS))`;
+		const out = execFileSync(process.execPath,
+			["--experimental-strip-types", "-e", code],
+			{ env: { HOME: HOME, EINK_BIND: "0.0.0.0", PATH: process.env.PATH }, encoding: "utf8" });
+		assert.equal(out.trim(), "127.0.0.1");
 	});
 });
 
