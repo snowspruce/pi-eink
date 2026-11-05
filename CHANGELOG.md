@@ -140,7 +140,11 @@ All notable changes to this project. The format follows
   during a run are not shown on the queue page. The page says so when pi reports pending
   messages of its own.
 
-### Fixed
+### Changed
+
+- The kiosk app has the pi logo as its launcher icon (`pi.dev/logo-auto.svg`, trimmed and
+  padded so it fills the launcher tile like the other apps). The build now compiles
+  resources with `aapt2`; it skipped that step while there were none.
 
 - **Tapping a session in the picker showed the running conversation again.** Session ids
   were resolved by guessing from the file name (`id[-8:] in name`), which is wrong for

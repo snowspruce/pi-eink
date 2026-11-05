@@ -28,7 +28,13 @@ rm -rf out && mkdir -p out/classes out/dex
 javac -nowarn -source 8 -target 8 -bootclasspath "$AJ" -d out/classes \
   src/ink/eink/kiosk/Kiosk.java 2>&1 | grep -vE "warning|bootstrap" || true
 
-"$BT/aapt2" link -o out/base.apk --manifest AndroidManifest.xml -I "$AJ" \
+# 资源（启动图标）先编译成 flat 包，再链接进 APK
+RES=""
+if [ -d res ]; then
+  "$BT/aapt2" compile --dir res -o out/res.zip
+  RES="out/res.zip"
+fi
+"$BT/aapt2" link -o out/base.apk --manifest AndroidManifest.xml -I "$AJ" $RES \
   --min-sdk-version 19 --target-sdk-version 19 --version-code "${VERSION_CODE:-10}" --version-name "${VERSION_NAME:-1.0}"
 "$BT/d8" --min-api 19 --lib "$AJ" --output out/dex/ $(find out/classes -name '*.class')
 

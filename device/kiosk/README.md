@@ -31,6 +31,14 @@
 代价：顶部 44px 系统状态栏（时间/电量）。全屏可以省掉它，但键盘就会盖住输入框——这一条是
 Android 的行为，改不了。
 
+## 图标
+
+启动图标就是 pi 的官方 logo（`https://pi.dev/logo-auto.svg`），`res/mipmap-*/ic_launcher.png`
+五档密度。原 SVG 留白多，直接渲染会比其他 App 的图标小一圈，所以生成时先 `-trim` 去掉空白、
+再补 6% 边距、再缩放到各密度。
+
+`build.sh` 里多了一步 `aapt2 compile --dir res`——没有资源时它跳过，所以之前的构建不需要。
+
 ## 构建与安装
 
 ```sh
