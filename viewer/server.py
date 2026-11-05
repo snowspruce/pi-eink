@@ -2339,8 +2339,11 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
         queued = int(queued or 0)
     except Exception:
         queued = 0
+    # Always there when the bridge supports the queue: hiding it while the agent was
+    # idle and nothing was queued made the page undiscoverable exactly when the reader
+    # wants to look at it (after a run), and a footer is not a place to be clever.
     queue_link = ""
-    if caps == "full" and sid and state is not None and "queued" in state and (queued > 0 or busy):
+    if caps == "full" and sid and state is not None and "queued" in state:
         queue_link = '<a href="/queue%s">%s</a> \u00b7 ' % (suffix, esc(tr("queue", lang, queued)))
     # target language is the other one: the label doubles as the switch
     lang_link = '<a href="/lang?l=%s%s">%s</a>' % (

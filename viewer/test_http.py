@@ -557,6 +557,16 @@ class QueuePage(unittest.TestCase):
         self.assertIn("开始投递", body)
         self.assertIn("不会自己跑", body)
 
+    def test_the_footer_link_is_there_even_when_idle_and_empty(self):
+        # it disappeared while the agent was idle with nothing queued, which is exactly
+        # when a reader goes looking for it
+        FakeBridge.routes["/state"] = json.dumps({"idle": True, "pending": False, "queued": 0}).encode()
+        status, data = request(self.viewer.port, "/data?s=" + self.SID)
+        self.assertEqual(status, 200)
+        foot = json.loads(data)["foot"]
+        self.assertIn("排队中（0）", foot)
+        self.assertIn('href="/queue?s=' + self.SID, foot)
+
     def test_an_armed_queue_has_no_deliver_button(self):
         status, data = request(self.viewer.port, "/queue?s=" + self.SID)
         self.assertEqual(status, 200)

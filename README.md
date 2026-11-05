@@ -150,8 +150,9 @@ event goes to those clients too. So the box keeps **its own** queue
 
 - anything the page sends while the agent is busy (free text, and 继续 / 审查 / 执行) joins
   that queue instead of being handed to pi as a follow-up;
-- the footer shows 排队中（3） and `/queue` lists the messages, with 上移 / 下移 / 改 / 删, a
-  加一条 box and 清空. Each row only carries the buttons that can act on it: no 上移 on the
+- the footer always shows 排队中（N） next to 会话 (it used to hide itself while idle with
+  an empty queue, which is exactly when a reader goes looking for it), and `/queue` lists
+  the messages with 上移 / 下移 / 改 / 删, a 加一条 box and 清空. Each row only carries the buttons that can act on it: no 上移 on the
   first message, no 下移 on the last;
 - one message is delivered per settled run (`agent_settled`), so the queue is a run-after-run
   plan, not a mid-run interruption. A queued `/skill:` or prompt template expands exactly as
