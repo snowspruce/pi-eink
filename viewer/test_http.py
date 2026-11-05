@@ -8,6 +8,7 @@ viewer server against a fake bridge and check the wire behaviour.
 import json
 import os
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -336,6 +337,37 @@ class FullNetwork(unittest.TestCase):
         self.assertIn('href="/?s=aaaabbbb-1111-2222-3333-444455556666"', body)  # running: enter it
         self.assertNotIn("poll(", body)          # no polling loop on a static page
         self.assertNotIn('id="bar"', body)       # no session status bar
+
+    def test_a_running_project_is_marked_on_the_right(self):
+        """The dot marks what is running. It sits in its own right-hand column ("● 在跑"),
+        not glued to the name: a name of any length must not push the state around."""
+        root = pathlib.Path(tempfile.mkdtemp(prefix="eink-projects-"))
+        (root / "alpha").mkdir()
+        (root / "beta").mkdir()
+        self.addCleanup(shutil.rmtree, root, True)
+        live = {"aaaa": {"port": self.bridge_port, "pid": os.getpid(),
+                         "cwd": str(root / "alpha"),
+                         "updatedAt": time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())}}
+        with mock.patch.object(server, "PROJECT_ROOTS", [str(root)]), \
+             mock.patch.object(server, "live_bridges", lambda: live):
+            status, data = request(self.viewer.port, "/home")
+        self.assertEqual(status, 200)
+        body = data.decode("utf-8")
+        rows = re.findall(r"<li>(.*?)</li>", body, re.S)
+        alpha = [r for r in rows if "alpha" in r][0]
+        beta = [r for r in rows if "beta" in r][0]
+        self.assertIn('class="dot"', alpha)
+        self.assertIn("在跑", alpha)
+        self.assertNotIn('class="dot"', beta)
+
+    def test_the_menu_can_open_an_address_without_a_token(self):
+        """Typed addresses arrive without ?k=; the redirect is the last place that can add
+        it, and without it a hand-typed LAN address lands on 403."""
+        seen = {}
+        status, _d = request(self.viewer.port, "/act/openurl", "POST",
+                             "url=" + urllib.parse.quote("http://192.168.1.9:8000/"), out=seen)
+        self.assertEqual(status, 303)
+        self.assertIn("k=" + TOKEN, seen.get("Location", ""))
 
     def test_entering_a_running_project_goes_straight_to_it(self):
         with mock.patch.object(server, "live_session_in", lambda _d: "aaaa-1111"):

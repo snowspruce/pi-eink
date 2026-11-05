@@ -646,10 +646,16 @@ HOME_CSS = """
 #home li .dir { font-size: 11px; color: #444; margin-top: 3px; }
 /* 活着的项目后面一个实心圆点：10px 直径在 511px 宽的屏上刚好，且不靠颜色区分
    （这块屏是灰阶，颜色没有意义）。 */
+#home li .row { display: -webkit-box; display: flex; -webkit-box-align: center;
+                align-items: center; }
+#home li .nm { -webkit-box-flex: 1; flex: 1 1 auto; min-width: 0; }
+#home li .state { -webkit-box-flex: 0; flex: 0 0 auto; font-size: 11px; color: #000;
+                  margin-left: 10px; white-space: nowrap; }
 #home li .dot {
   display: inline-block; width: 10px; height: 10px; border-radius: 5px;
-  background: #000; margin-left: 9px; vertical-align: 1px;
+  background: #000; margin-right: 6px; vertical-align: 0;
 }
+#home { padding-bottom: 56px; }   /* 给固定的「菜单」按钮留位，别压住最后一行 */
 #home li .live { font-size: 11px; color: #000; margin-top: 3px; }
 #home .foot { padding: 12px 10px 4px; font-size: 11px; color: #444; }
 /* 系统导航栏被 kiosk 隐藏了，菜单入口只能放在页面里 */
@@ -685,7 +691,7 @@ def menu_html(lang: str = "", next_url: str = "/home") -> str:
     for label, href in rows:
         out.append('<li><a href="%s">%s</a></li>' % (esc(href), esc(label)))
     out.append("</ul>")
-    out.append('<form method="POST" action="/menu/open">'
+    out.append('<form method="POST" action="/act/openurl">'
                '<input name="url" type="text" value="" placeholder="http://\u2026" '
                'autocapitalize="off" autocorrect="off" spellcheck="false">'
                '<button type="submit">\u6253\u5f00</button></form>')
@@ -712,9 +718,11 @@ def home_html(lang: str = "", target: str = "") -> str:
            "<ul>"]
     for live, path in rows:
         label = esc(Path(path).name or path)
-        # 运行中的项目名字后面跟一个实心圆点
-        name = label + '<span class="dot"></span>' if live == "live" else label
-        note = ('<div class="live">\u5728\u8fd9\u91cc\u8fd0\u884c\u00b7\u70b9\u5f00\u8fdb\u5165</div>'
+        # 运行状态在右侧单独一列（原设计的"● 在跑"），不挤在名字后面
+        name = ('<span class="row"><span class="nm">%s</span>'
+                '<span class="state"><span class="dot"></span>\u5728\u8dd1</span></span>' % label
+                if live == "live" else '<span class="row"><span class="nm">%s</span></span>' % label)
+        note = ('<div class="live">%s</div>' % esc(short_path(path) or path)
                 if live == "live" else
                 '<div class="dir">%s</div>' % esc(short_path(path) or path))
         if live == "live":
@@ -890,7 +898,7 @@ def ip_allowed(ip: str, host_ip: str) -> tuple:
 READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
 # The queue lives in the session's bridge; these actions read and mutate it.
 QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear", "qrun"}
-BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny", "enter", "menu/open",
+BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny", "enter",
                   "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear",
                   "qrun"}
 
@@ -3190,13 +3198,17 @@ class Handler(BaseHTTPRequestHandler):
                                extra=extra + [("Location", "/?" + urlencode([("s", hit)]))])
                 return
             action = "new"        # idle directory: start one there, then follow it
-        if action == "menu/open":
+        if action == "openurl":
             try:
                 want = (parse_qs(body.decode("utf-8", "replace")).get("url") or [""])[0].strip()
             except Exception:
                 want = ""
             if not want.startswith(("http://", "https://")):
                 want = "http://" + want if want else "/menu"
+            if "k=" not in want and token():
+                # 手输的地址后面浏览器不会再带 token（重定向不受我们控制），所以在服务端补上；
+                # 指向别人的主机也无害，对方只会忽略这个参数。
+                want += ("&" if "?" in want else "?") + "k=" + quote(token(), safe="")
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", want)])
             return
         if action == "readonly":
