@@ -780,3 +780,23 @@ systemctl --user restart pi-eink                              # Linux
 ```
 
 e-ink 注意：宿主睡眠时页面会变黑。第二个 launchd 单元里跑 `caffeinate -s`，接电源时保持唤醒。
+
+## 三十二、会话退出之后怎么接回来
+
+`/act/resume` 的链路，以及为什么它必须借道另一个 bridge：
+
+1. Kindle 上那个会话没有自己的 bridge（进程没了），所以 `bridge_port_for(sid)` 是 0。
+   但"开窗口"这个动作本来是某个 pi 扩展执行的 —— 只能借一个**还活着**的 bridge
+   （`newest_bridge_port()`：`updatedAt` 最新的那个）。
+2. viewer 只传 `file=`，不传目录。`pi --session <file>` 的 cwd 由会话头决定；让页面指定目录
+   等于把一个可写参数交给客户端，而 header 是 pi 自己写的。
+3. bridge 侧 `sessionFileFor()` 先 realpath、再要求 `startsWith(sessions 目录 + sep)`、要求
+   `.jsonl`、要求是普通文件。**只校验后缀是不够的**：测试里种了一个 `/tmp/xxx/evil.jsonl`，
+   头里写着 `cwd: /tmp`，去掉 realpath 校验后它会让 bridge 在任意目录开窗口。
+4. 会话 id 不变（`--session` 继续同一段对话），所以不需要"发现新会话"那一套：
+   `wait_for_bridge(sid)` 轮询 `bridge_port_for(sid)`，最长 30 秒。
+5. 实测（2026-11-06）：靶子 `01a1ac6d`（13.8 小时前退出）→ POST `/act/resume` → 1 秒后
+   注册到 8015 → Kindle 页面出现输入框与「停下/继续」。
+
+顺带修的同源问题：`/reload` 之后注册表条目会被旧实例删掉（同 pid），以及心跳的临时文件
+名固定导致互相覆盖 —— 见 `16076f7`。

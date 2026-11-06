@@ -238,6 +238,46 @@ class FullNetwork(unittest.TestCase):
         self.assertNotIn("msg=", location)      # no stale line above the new page's box
         self.assertEqual(FakeBridge.seen[0][1], "/act/new")
 
+    def test_a_dead_session_can_be_resumed_from_the_box(self):
+        """The Mac side exited; the box could only read. `/act/resume` asks any live
+        bridge to run `pi --session <file>` in a window, then follows that id back."""
+        dead = "ccccdddd-1111-2222-3333-444455556666"
+        live_sid = "aaaabbbb-1111-2222-3333-444455556666"
+        pid = os.getpid()
+        stamp = time.strftime("%Y-%m-%dT%H:%M:%S.000Z", time.gmtime())
+        path = server.SESSIONS / "--tmp--" / (dead + ".jsonl")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"type": "session", "id": dead, "cwd": "/tmp/proj"}) + "\n")
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        live = {live_sid: {"pid": pid, "port": self.bridge_port, "cwd": "/tmp/elsewhere",
+                           "updatedAt": stamp}}
+        FakeBridge.reply_body = json.dumps({"ok": True, "msg": "opening"}).encode()
+
+        def appear():
+            time.sleep(0.3)
+            live[dead] = {"pid": pid, "port": self.bridge_port, "cwd": "/tmp/proj",
+                          "updatedAt": stamp}
+
+        threading.Thread(target=appear, daemon=True).start()
+        with mock.patch.object(server, "live_bridges", lambda: live), \
+             mock.patch.object(server, "bridge_port_for",
+                               lambda sid: self.bridge_port if sid in live else 0), \
+             mock.patch.object(server, "session_index", lambda: {dead: path}):
+            seen = {}
+            status, _d = request(self.viewer.port, "/act/resume?s=" + dead, "POST", out=seen)
+        self.assertEqual(status, 303)
+        self.assertEqual(FakeBridge.seen[0][1], "/act/resume")
+        # the file names the conversation; the bridge reads the cwd out of its header
+        self.assertIn("file=", FakeBridge.seen[0][2])
+        self.assertIn("s=" + dead, seen.get("Location", ""))
+
+    def test_resume_refuses_a_session_with_no_file(self):
+        with mock.patch.object(server, "session_index", lambda: {}):
+            status, data = request(self.viewer.port, "/act/resume?s=nope", "POST",
+                                   accept="application/json")
+        self.assertEqual(status, 404, data[:200])
+        self.assertEqual(FakeBridge.seen, [])
+
     def test_an_unchanged_poll_ships_no_transcript(self):
         """The fragment is 14-26 KB; every poll used to carry it even when nothing had
         changed (1.4 MB/min through a 250ms/lossy tunnel, measured in nginx access.log).

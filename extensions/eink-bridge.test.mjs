@@ -223,6 +223,56 @@ describe("eink bridge", () => {
 		assert.ok(spawned[0].at(-1).includes(dir), spawned[0].at(-1));
 	});
 
+	it("resumes a dead session with pi --session, in that session's own directory", async () => {
+		// The Mac side exited: the box could read the transcript and nothing else. The
+		// bridge opens a window that continues THAT conversation - `pi --session <file>`,
+		// not a fresh session in the same directory.
+		const dir = mkdtempSync(join(tmpdir(), "eink-resume-"));
+		const sid = "ccccdddd-1111-2222-3333-444455556666";
+		const sessions = join(HOME, ".pi", "agent", "sessions", "proj");
+		mkdirSync(sessions, { recursive: true });
+		const file = join(sessions, sid + '.jsonl');
+		writeFileSync(file, JSON.stringify({ type: "session", id: sid, cwd: dir }) + "\n");
+		const spawned = [];
+		const run = spawnRunner.run;
+		spawnRunner.run = (_cmd, argv, _o, cb) => { spawned.push(argv); if (cb) cb(null, "", ""); };
+		try {
+			const res = await post("/act/resume", "file=" + encodeURIComponent(file));
+			assert.equal(res.status, 200, JSON.stringify(res.json));
+		} finally {
+			spawnRunner.run = run;
+		}
+		assert.equal(spawned.length, 1);
+		const command = spawned[0].at(-1);
+		assert.ok(command.includes("cd " + shellQuote(dir)), command);
+		// quoted, and pointing at that very file
+		assert.ok(command.includes("--session"), command);
+		assert.ok(command.includes(sid + '.jsonl'), command);
+		// inherited PI_* variables are unset, not passed: a fresh shell would otherwise
+		// attach to the session that is already open here
+		assert.ok(command.includes("-u PI_SESSION_FILE"), command);
+	});
+
+	it("refuses anything that is not a session file", async () => {
+		const spawned = [];
+		const run = spawnRunner.run;
+		spawnRunner.run = (_c, argv, _o, cb) => { spawned.push(argv); if (cb) cb(null, "", ""); };
+		try {
+			// a well-formed session file that simply is not in pi's session directory: the
+		// header alone must not be enough to make the bridge run a window anywhere
+		const planted = join(mkdtempSync(join(tmpdir(), "eink-planted-")), "evil.jsonl");
+		writeFileSync(planted, JSON.stringify({ type: "session", id: "x", cwd: "/tmp" }) + "\n");
+		for (const bad of ["/etc/passwd",
+			join(HOME, ".pi", "agent", "sessions", "..", "..", "token"), planted]) {
+				const res = await post("/act/resume", "file=" + encodeURIComponent(bad));
+				assert.equal(res.status, 400, bad);
+			}
+		} finally {
+			spawnRunner.run = run;
+		}
+		assert.equal(spawned.length, 0);
+	});
+
 	it("opens a window even while this session is busy", async () => {
 		// the whole point: the reader keeps their run, the new session is elsewhere
 		const dir = mkdtempSync(join(tmpdir(), "eink-project-"));

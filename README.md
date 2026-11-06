@@ -156,6 +156,21 @@ eink-kiosk                                        # opens the page over the LAN
 It costs the 44px status bar (going fullscreen would save it, but then the keyboard covers the
 input box - that one is Android's behaviour). Details and measurements: `device/kiosk/README.md`.
 
+### Continuing a session that exited
+
+When pi on the Mac exits, that session turns read-only on the box ("bridge inactive"). The
+page then shows `Continue in a new window`: the viewer hands the session file to **any live**
+bridge, which runs `pi --session <file>` in the directory from that session's header - the
+same conversation, not a new one. The id does not change, so the page waits for it to
+register and moves back with the input box and buttons in place.
+
+It needs another pi running on that machine (any project): only a pi extension can open a
+window. With none, the page says "start pi on the Mac first" instead of offering a button
+that cannot work.
+
+`pi --session` only accepts files under `~/.pi/agent/sessions/` (realpath compared); any
+other path is a 400.
+
 ### Starting a session
 
 `+ New session` opens `/new`, which asks **which directory**: the sub-directories of

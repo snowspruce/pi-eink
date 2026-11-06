@@ -164,6 +164,14 @@ STRINGS = {
     "now_readonly": ("\u5df2\u5207\u4e3a\u53ea\u8bfb", "Switched to read-only"),
     "readonly_need_pin": ("\u672c\u7f51\u7edc\u53ea\u8bfb\uff08\u672a\u89e3\u9501\uff09\uff1a\u8f93\u5165 PIN \u624d\u80fd\u6253\u5b57\u6216\u6267\u884c",
                           "Read-only network (locked): enter the PIN to type or run"),
+    "resume_here": ("\u5728\u65b0\u7a97\u53e3\u7ee7\u7eed", "Continue in a new window"),
+    "resume_hint": ("\u7535\u8111\u4e0a\u4f1a\u5f00\u4e00\u4e2a\u7ec8\u7aef\u7a97\u53e3\u63a5\u7740\u8fd9\u4e2a\u4f1a\u8bdd\uff0cKindle \u81ea\u5df1\u8ddf\u8fc7\u53bb",
+                    "opens a terminal window on the Mac and picks this session up; the box follows"),
+    "resume_opening": ("\u6b63\u5728\u6253\u5f00\u2026", "opening\u2026"),
+    "resume_no_file": ("\u627e\u4e0d\u5230\u8fd9\u4e2a\u4f1a\u8bdd\u7684\u6587\u4ef6", "no session file for this"),
+    "resume_no_bridge": ("\u6ca1\u6709\u6b63\u5728\u8fd0\u884c\u7684\u4f1a\u8bdd\u53ef\u4ee5\u8f6c\u8fbe\uff1a\u5148\u5728\u7535\u8111\u4e0a\u5f00\u4e00\u4e2a pi",
+                         "no running session to ask: start pi on the Mac first"),
+    "resume_failed": ("\u7a97\u53e3\u5f00\u4e86\u4f46\u4f1a\u8bdd\u6ca1\u63a5\u4e0a", "the window opened but the session did not come up"),
     "session_no_bridge": ("\u8be5\u4f1a\u8bdd\u672a\u5728\u8fd0\u884c\uff08\u6ca1\u6709\u53ef\u7528\u7684 bridge\uff09", "This session has no bridge"),
     "unknown_action": ("\u672a\u77e5\u52a8\u4f5c", "Unknown action"),
     "bridge_not_running": ("bridge \u672a\u6fc0\u6d3b\uff1a%s", "bridge not running: %s"),
@@ -385,6 +393,39 @@ def wait_for_new_session_in(directory: str, known: set, timeout: float = 30.0) -
                   % (time.strftime("%H:%M:%S"), directory, timeout), flush=True)
             return ""
         time.sleep(0.4)
+
+
+def wait_for_bridge(session_id: str, timeout: float = 30.0) -> bool:
+    """True once that session id is serving again.
+
+    A resumed session keeps its id (`pi --session <file>`), so unlike a new window there
+    is nothing to discover - only to wait for: the window takes seconds to come up.
+    """
+    end = time.time() + timeout
+    while True:
+        if bridge_port_for(session_id):
+            return True
+        if time.time() >= end:
+            print("%s WARN resumed session %s did not register within %.0fs"
+                  % (time.strftime("%H:%M:%S"), session_id[:8], timeout), flush=True)
+            return False
+        time.sleep(0.4)
+
+
+def newest_bridge_port() -> int:
+    """Port of the most recently updated live bridge, 0 when nothing is running.
+
+    Resume has no bridge of its own to ask (the session is dead): any live pi can run the
+    osascript that opens the window, so pick the freshest one.
+    """
+    live = live_bridges()
+    if not live:
+        return 0
+    try:
+        best = max(live.values(), key=lambda info: str(info.get("updatedAt") or ""))
+        return int(best.get("port") or 0)
+    except Exception:
+        return 0
 
 
 SESSION_META_CACHE = {}
@@ -1022,8 +1063,8 @@ READONLY_ACTIONS = {"stop", "status", "unlock", "readonly"}
 # The queue lives in the session's bridge; these actions read and mutate it.
 QUEUE_ACTIONS = {"qadd", "qdel", "qedit", "qmove", "qclear", "qrun"}
 BRIDGE_ACTIONS = {"say", "continue", "review", "execute", "approve", "deny", "enter",
-                  "stop", "status", "new", "qadd", "qdel", "qedit", "qmove", "qclear",
-                  "qrun"}
+                  "stop", "status", "new", "resume", "qadd", "qdel", "qedit", "qmove",
+                  "qclear", "qrun"}
 
 
 def action_allowed(caps: str, action: str) -> bool:
@@ -2954,7 +2995,17 @@ def cookie_refresh(ip: str, current: str = "") -> list:
 def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = "") -> str:
     # relative URLs: the viewer proxies them, so one port covers actions too
     if not live:
-        return '<div class="body dim">%s</div>' % esc(tr("no_bridge_view", lang))
+        hint = '<div class="body dim">%s</div>' % esc(tr("no_bridge_view", lang))
+        # A dead session is not a dead end: `pi --session <file>` picks it up in a new
+        # terminal window on the Mac. Only offered when there is a file to resume and the
+        # reader may act (a read-only network cannot open windows anywhere).
+        if sid and caps == "full" and session_index().get(str(sid)):
+            return ('<form method="POST" action="/act/resume?s=%s">'
+                    '<button class="btn" type="submit">%s</button></form>'
+                    '<div class="body dim">%s</div>'
+                    % (quote(str(sid), safe=""), esc(tr("resume_here", lang)),
+                       esc(tr("resume_hint", lang))))
+        return hint
     suffix = ("?s=" + quote(sid, safe="")) if sid else ""
     if caps != "full":
         buttons = "".join(
@@ -3371,7 +3422,10 @@ class Handler(BaseHTTPRequestHandler):
             if not post_sid:
                 # the page named a session that no longer resolves: refuse instead of
                 # quietly steering whichever one the viewer happens to render
-                back(tr("session_no_bridge", lang), 502)
+                if action == "resume":
+                    back(tr("resume_no_file", lang), 404)
+                else:
+                    back(tr("session_no_bridge", lang), 502)
                 return
         post_sid = post_sid or rendered_session_id()
         if not post_sid:
@@ -3385,6 +3439,25 @@ class Handler(BaseHTTPRequestHandler):
                     post_sid = live_sid
                     break
         port_target = bridge_port_for(post_sid) if post_sid else 0
+        resumed = False
+        if action == "resume":
+            # The session is not running, so there is no bridge of its own to ask. Any live
+            # pi can open the window; the file is what names the conversation.
+            path = session_index().get(str(post_sid or ""))
+            cwd = str(session_meta(path).get("cwd") or "") if path else ""
+            if not path or not cwd:
+                back(tr("resume_no_file", lang), 404)
+                return
+            if port_target:
+                self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [
+                    ("Location", "/?" + urlencode([("s", str(post_sid))]))])
+                return
+            port_target = newest_bridge_port()
+            if not port_target:
+                back(tr("resume_no_bridge", lang), 502)
+                return
+            resumed = True
+            body = urlencode([("file", str(path))]).encode()
         if not port_target:
             # Never fall back to BRIDGE_PORT: that is a different process, or nothing
             back(tr("session_no_bridge", lang), 502)
@@ -3474,6 +3547,15 @@ class Handler(BaseHTTPRequestHandler):
                 payload["quiet"] = True     # nothing to report: the page is moving
             else:
                 payload["msg"] = str(payload.get("msg") or "") + " " + tr("new_session_failed", lang)
+
+        if resumed and status < 400:
+            # the resumed session keeps its id, so the page can simply move to it
+            if wait_for_bridge(str(post_sid)):
+                payload["sid"] = str(post_sid)
+                payload["msg"] = ""
+                payload["quiet"] = True
+            else:
+                payload["msg"] = str(payload.get("msg") or "") + " " + tr("resume_failed", lang)
 
         if not js_client:
             what = u.path.rsplit("/", 1)[-1]

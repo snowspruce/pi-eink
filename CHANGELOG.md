@@ -8,6 +8,12 @@ All notable changes to this project. The format follows
 
 ### Added
 
+- **A session that exited on the Mac can be continued from the box.** It used to be
+  readable and nothing else. `/act/resume` hands the session file to any live bridge, which
+  runs `pi --session <file>` in a new window, in the directory that session's header records;
+  the box waits for the same id to register and follows it. The bridge realpath-checks the
+  file against `~/.pi/agent/sessions/`, so a planted `.jsonl` elsewhere is a 400.
+
 - **The queue is visible and editable from the page.** While the agent is busy, what the box
   sends waits in the bridge's own queue (`~/.pi/eink/queue.json`, survives `/reload`); the
   footer shows `排队中（3）` and `/queue` lists the messages with 上移 / 下移 / 改 / 删, a 加一条

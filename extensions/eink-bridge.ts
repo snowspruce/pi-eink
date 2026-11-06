@@ -24,7 +24,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { BlockList, isIPv4, isIPv6 } from "node:net";
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync, unlinkSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, writeFileSync, unlinkSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import { execFile } from "node:child_process";
@@ -190,7 +190,7 @@ export function shellQuote(s: string): string {
 export const spawnRunner: { run: typeof execFile } = { run: execFile };
 
 export function spawnPiWindow(dir: string, app = process.env.EINK_TERMINAL || "iTerm",
-	run: typeof execFile = spawnRunner.run): void {
+	run: typeof execFile = spawnRunner.run, args: string[] = []): void {
 	const script = [
 		"on run argv",
 		"\tset cmd to item 1 of argv",
@@ -210,10 +210,50 @@ export function spawnPiWindow(dir: string, app = process.env.EINK_TERMINAL || "i
 		.filter((k) => k.startsWith("PI_"))
 		.map((k) => " -u " + k)
 		.join("");
-	const command = "cd " + shellQuote(dir) + " && exec env" + strip + " pi";
+	const command = "cd " + shellQuote(dir) + " && exec env" + strip + " pi"
+		+ args.map((a) => " " + shellQuote(a)).join("");
 	run("osascript", ["-e", script, "--", command], (err, _out, errOut) => {
 		if (err) console.error("[eink] could not open a window in " + app + ":", (errOut || err.message).trim());
 	});
+}
+
+/** A session file, if `file` really is one: the page may only resume what pi itself wrote.
+ *
+ *  The path arrives in a request body, so it is resolved and then checked against the
+ *  session directory - `../../etc/passwd` and symlinks out of it are simply not sessions.
+ */
+export function sessionFileFor(file: string, root = join(homedir(), ".pi", "agent", "sessions")): string {
+	let resolved: string;
+	try {
+		resolved = realpathSync(file);
+	} catch {
+		return "";
+	}
+	let allowed: string;
+	try {
+		allowed = realpathSync(root);
+	} catch {
+		return "";
+	}
+	if (!resolved.startsWith(allowed + sep) || !resolved.endsWith(".jsonl")) return "";
+	try {
+		if (!statSync(resolved).isFile()) return "";
+	} catch {
+		return "";
+	}
+	return resolved;
+}
+
+/** cwd from the session header: the window must open where that conversation lived. */
+export function sessionCwdOf(file: string): string {
+	try {
+		const first = readFileSync(file, "utf8").split("\n", 1)[0];
+		const row = JSON.parse(first) as { type?: string; cwd?: string };
+		if (row?.type !== "session" || typeof row.cwd !== "string") return "";
+		return row.cwd;
+	} catch {
+		return "";
+	}
 }
 
 export function mayStartSessionIn(dir: string, roots: string[] = [], known: string[] = []): boolean {
@@ -384,6 +424,9 @@ const TEXT: Record<string, [string, string]> = {
 	nothing_running: ["当前没有运行", "Nothing is running"],
 	empty_input: ["没有输入内容", "Nothing to send"],
 	new_spawning: ["正在新窗口里开会话：%s", "Opening a new window in %s"],
+	resume_spawning: ["正在新窗口里接着这个会话", "Picking this session up in a new window"],
+	resume_no_file: ["不是会话文件", "not a session file"],
+	resume_no_dir: ["会话头里没有目录", "the session header has no cwd"],
 	new_no_dir: ["没有指定目录", "No directory given"],
 	new_dir_refused: ["不能在这个目录开会话：%s（要项目根目录下、或已经跑着 pi 的目录）",
 		"Cannot start a session there: %s (must be under a project root or already running pi)"],
@@ -677,6 +720,29 @@ export default function einkBridge(pi: ExtensionAPI) {
 					spawnPiWindow(dir);
 				} catch (err) {
 					console.error("[eink] spawn failed:", (err as Error).message);
+				}
+				return;
+			}
+			if (action === "resume") {
+				// A dead session keeps its file. `pi --session <file>` opens that very
+				// conversation in a new window, so the reader can keep going after the Mac
+				// side exited - which used to be the one thing the box could not do.
+				const wanted = (new URLSearchParams(body).get("file") ?? "").trim();
+				const file = sessionFileFor(wanted);
+				if (!file) {
+					reply(res, "resume", tt(lang, "resume_no_file"), req, 400);
+					return;
+				}
+				const dir = sessionCwdOf(file);
+				if (!dir) {
+					reply(res, "resume", tt(lang, "resume_no_dir"), req, 400);
+					return;
+				}
+				reply(res, "resume", tt(lang, "resume_spawning"), req);
+				try {
+					spawnPiWindow(dir, undefined, undefined, ["--session", file]);
+				} catch (err) {
+					console.error("[eink] resume spawn failed:", (err as Error).message);
 				}
 				return;
 			}
