@@ -982,7 +982,9 @@ export default function einkBridge(pi: ExtensionAPI) {
 	// tell the user instead of leaving them wondering why the Kindle page is dead.
 	const listen = (attempt = 0, offset = 0): Promise<boolean> =>
 		new Promise((resolve, reject) => {
-			const targetPort = PORT || preferredPort() + offset;
+			// An explicit EINK_BRIDGE_PORT is a preference, not a pin: if it is taken the
+			// bridge still walks forward instead of disabling itself for the session.
+			const targetPort = (PORT || preferredPort()) + offset;
 			const srv = createServer(requestHandler);
 			srv.on("error", (err: NodeJS.ErrnoException) => {
 				if (err.code !== "EADDRINUSE") {
@@ -1030,17 +1032,33 @@ export default function einkBridge(pi: ExtensionAPI) {
 		}
 	};
 
-	const writeRegistry = (mutate: (reg: Record<string, unknown>) => void) => {
-		const reg = readRegistry();
-		mutate(reg);
-		try {
-			// write + rename: concurrent heartbeats from several sessions would
-			// otherwise overwrite each other's entries
-			const tmp = REGISTRY_FILE + ".tmp";
-			writeFileSync(tmp, JSON.stringify(reg, null, 2));
-			renameSync(tmp, REGISTRY_FILE);
-		} catch {
-			// registry is best effort; the viewer falls back to no bridges
+	/** Delete only entries this very extension instance published.
+	 *
+	 *  `/reload` replaces the extension *inside the same process*, so the old
+	 *  instance's shutdown ran with the same pid as the new instance and wiped the
+	 *  entry the new one had just written. The reader then saw "this session is not
+	 *  running" for up to a minute, on a session that was answering.
+	 */
+	const INSTANCE = `${process.pid.toString(36)}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+
+	const writeRegistry = (mutate: (reg: Record<string, unknown>) => void, own?: string) => {
+		// The temp name must be per process: with one shared "bridges.json.tmp" two
+		// heartbeats could interleave and one of them would lose its entry - the
+		// registry is how the page decides "running" vs "read-only view".
+		const tmp = `${REGISTRY_FILE}.${process.pid}.tmp`;
+		for (let attempt = 0; attempt < 3; attempt += 1) {
+			const reg = readRegistry();
+			mutate(reg);
+			try {
+				writeFileSync(tmp, JSON.stringify(reg, null, 2));
+				renameSync(tmp, REGISTRY_FILE);
+			} catch {
+				continue; // registry is best effort; the viewer falls back to no bridges
+			}
+			if (!own) return;
+			// Another session's heartbeat may have written a snapshot taken before ours
+			// landed, dropping our key. Merge again rather than staying invisible.
+			if (readRegistry()[own]) return;
 		}
 	};
 
@@ -1063,6 +1081,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 			pid: process.pid,
 			cwd: ctx.cwd ?? null,
 			updatedAt: new Date().toISOString(),
+			instance: INSTANCE,
 		};
 		try {
 			writeFileSync(STATE_FILE, JSON.stringify(payload, null, 2));
@@ -1071,7 +1090,7 @@ export default function einkBridge(pi: ExtensionAPI) {
 		}
 		writeRegistry((reg) => {
 			reg[payload.sessionId] = payload;
-		});
+		}, payload.sessionId);
 	};
 
 	pi.registerCommand("eink:reload", {
@@ -1157,8 +1176,11 @@ export default function einkBridge(pi: ExtensionAPI) {
 		}
 		writeRegistry((reg) => {
 			for (const [key, value] of Object.entries(reg)) {
-				const entry = value as { pid?: number };
-				if (entry?.pid === process.pid) delete reg[key];
+				const entry = value as { pid?: number; instance?: string };
+				// An entry without an instance predates this field: fall back to pid.
+				if (entry?.instance === INSTANCE || (!entry?.instance && entry?.pid === process.pid)) {
+					delete reg[key];
+				}
 			}
 		});
 		if (server) {

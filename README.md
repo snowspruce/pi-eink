@@ -218,7 +218,7 @@ starts `pi`: the bridge is an in-process extension and never sees the unit's env
 | `EINK_PROJECT_ROOTS` | both | `~/Documents/Program` | where `+ New session` may start one: the sub-directories listed, colon-separated; a directory that already runs pi is always allowed |
 | `EINK_TERMINAL` | bridge | `iTerm` | macOS app that gets the new window (`iTerm`, `Terminal`, …) |
 | `EINK_BIND` | both | `0.0.0.0` | interface to listen on; set the LAN address on a box that also has VPN or docker interfaces |
-| `EINK_BRIDGE_PORT` | both | unset | force one bridge port instead of the per-session hash |
+| `EINK_BRIDGE_PORT` | both | unset | prefer one bridge port instead of the per-session hash (still walks if taken) |
 | `EINK_ALLOW_IPS` | both | unset | fallback peer allowlist when `allow_ips` is missing (comma separated, IP or CIDR) |
 | `EINK_ALLOW_UA` | both | `Kindle Build/` | fallback User-Agent allowlist |
 | `EINK_UA_STRICT` | viewer | off | `1` also enforces the UA check for loopback |

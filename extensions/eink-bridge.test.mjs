@@ -14,6 +14,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const HOME = mkdtempSync(join(tmpdir(), "pi-eink-test-"));
+let TEST_BASE = 8030;
 const EINK = join(HOME, ".pi/eink");
 // random per run: a fixed weak token plus a LAN-bound port made the bridge
 // reachable by anyone on the same network while the tests ran
@@ -46,6 +47,23 @@ async function load() {
 	process.env.EINK_BRIDGE_BIND = "0.0.0.0";
 	// the suite's fixtures live in a mkdtemp dir; project roots are what /act/new checks
 	process.env.EINK_PROJECT_ROOTS = tmpdir();
+	// The suite used to inherit the hashed port (8010 + hash % 21). On a machine where
+	// several pi sessions are already bridged, that port is taken by a real bridge: the
+	// test then talked to somebody else's server and 39 assertions failed with 403.
+	// Find a port nobody holds and pin it, so the suite does not depend on the desktop.
+	const net = await import("node:net");
+	for (let candidate = 8030; candidate < 8070; candidate += 1) {
+		const free = await new Promise((resolve) => {
+			const probe = net.createServer();
+			probe.once("error", () => resolve(false));
+			probe.listen(candidate, "0.0.0.0", () => probe.close(() => resolve(true)));
+		});
+		if (free) {
+			process.env.EINK_BRIDGE_PORT = String(candidate);
+			TEST_BASE = candidate;
+			break;
+		}
+	}
 	mod = await import("../extensions/eink-bridge.ts");
 	spawnPiWindow = mod.spawnPiWindow;
 	shellQuote = mod.shellQuote;
@@ -112,7 +130,7 @@ describe("eink bridge", () => {
 		mod.default(pi);
 		await handlers.session_start({}, ctx);
 		const reg = JSON.parse(readFileSync(join(EINK, "bridges.json"), "utf8"));
-		port = Object.values(reg)[0].port;
+		port = reg["test-session"].port;
 	});
 
 	after(async () => {
@@ -123,8 +141,8 @@ describe("eink bridge", () => {
 	it("registers this session in the bridge registry", () => {
 		const reg = JSON.parse(readFileSync(join(EINK, "bridges.json"), "utf8"));
 		assert.deepEqual(Object.keys(reg), ["test-session"]);
-		// hashed off the session id, inside the 8010 + PORT_SPAN window
-		assert.ok(reg["test-session"].port >= 8010 && reg["test-session"].port < 8010 + 40,
+		// the pinned port from load(), or the next free one after it
+		assert.ok(reg["test-session"].port >= TEST_BASE && reg["test-session"].port < TEST_BASE + 40,
 			`unexpected bridge port ${reg["test-session"].port}`);
 		assert.equal(reg["test-session"].pid, process.pid);
 	});
@@ -674,7 +692,7 @@ describe("port collision", () => {
 		const reg = JSON.parse(readFileSync(join(EINK, "bridges.json"), "utf8"));
 		const now = reg["test-session"].port;
 		assert.notEqual(now, firstPort);
-		assert.ok(now >= 8010 && now < 8010 + 40, `unexpected bridge port ${now}`);
+		assert.ok(now >= TEST_BASE && now < TEST_BASE + 40, `unexpected bridge port ${now}`);
 	});
 });
 
@@ -845,5 +863,38 @@ describe("ipAllowed", () => {
 		} finally {
 			delete process.env.EINK_ALLOW_SAME_SUBNET;
 		}
+	});
+});
+
+describe("bridge registry ownership", () => {
+	// /reload replaces the extension inside the same process, so the outgoing instance
+	// shuts down with the same pid the incoming one is publishing under. Deleting by pid
+	// therefore wiped the fresh entry, and the reader saw "this session is not running"
+	// on a session that was answering.
+	before(async () => {
+		await load();
+		mod.default(pi);
+		await handlers.session_start({}, ctx);
+	});
+
+	it("leaves an entry that a newer instance published", async () => {
+		const file = join(EINK, "bridges.json");
+		const reg = JSON.parse(readFileSync(file, "utf8"));
+		reg["test-session"] = { ...reg["test-session"], instance: "a-newer-instance" };
+		writeFileSync(file, JSON.stringify(reg));
+		await handlers.session_shutdown({});
+		const after = JSON.parse(readFileSync(file, "utf8"));
+		assert.equal(after["test-session"]?.instance, "a-newer-instance");
+	});
+
+	it("still removes its own entry", async () => {
+		await handlers.session_start({}, ctx);
+		const file = join(EINK, "bridges.json");
+		const reg = JSON.parse(readFileSync(file, "utf8"));
+		const mine = reg["test-session"]?.instance;
+		assert.ok(mine && mine !== "a-newer-instance", "expected a fresh instance token");
+		await handlers.session_shutdown({});
+		const after = JSON.parse(readFileSync(file, "utf8"));
+		assert.equal(after["test-session"], undefined);
 	});
 });

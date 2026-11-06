@@ -197,7 +197,7 @@ viewer 的变量写进服务单元。bridge 的变量必须在启动 `pi` 的那
 |---|---|---|---|
 | `EINK_PORT` | 两者 | `8000` | viewer 端口；bridge 也用它重定向自己的 `/` |
 | `EINK_BIND` | 两者 | `0.0.0.0` | 监听网卡；同时有 VPN 或 docker 网卡的机器要钉到局域网地址 |
-| `EINK_BRIDGE_PORT` | 两者 | 空 | 强制指定一个 bridge 端口，不用按会话哈希 |
+| `EINK_BRIDGE_PORT` | 两者 | 空 | 首选一个 bridge 端口，不用按会话哈希（被占用时仍向后找） |
 | `EINK_ALLOW_IPS` | 两者 | 空 | `allow_ips` 缺失时的对端兜底白名单（逗号分隔，IP 或 CIDR） |
 | `EINK_ALLOW_UA` | 两者 | `Kindle Build/` | User-Agent 兜底白名单 |
 | `EINK_UA_STRICT` | viewer | 关 | `1` 时对 loopback 也执行 UA 检查 |
