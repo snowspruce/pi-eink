@@ -6,7 +6,15 @@ All notable changes to this project. The format follows
 
 ## [Unreleased]
 
-### Added
+### Fixed
+
+- **A read-only session page looked broken.** The "continue" button and its sentence were
+  dropped straight into `#acts`, a one-line button strip (`nowrap`, `line-height: 1`,
+  `overflow: hidden`), so the 23 px sentence sat on top of a 12 px button with no leading.
+  They now have their own box. A transcript shorter than the screen also left `#bar`
+  floating mid-screen; `fitToScreen()` tops the log up - by measuring the footer's
+  `offsetTop`, because `<html>`/`<body>` `scrollHeight` both come back clamped to the
+  viewport in this WebView (625 px with 347 px of content).
 
 - **A session that exited on the Mac can be continued from the box.** It used to be
   readable and nothing else. `/act/resume` hands the session file to any live bridge, which

@@ -800,3 +800,17 @@ e-ink 注意：宿主睡眠时页面会变黑。第二个 launchd 单元里跑 `
 
 顺带修的同源问题：`/reload` 之后注册表条目会被旧实例删掉（同 pid），以及心跳的临时文件
 名固定导致互相覆盖 —— 见 `16076f7`。
+
+## 三十三、短页面与只读页的两个排版坑
+
+1. **`#acts` 是一行按钮条**（`white-space: nowrap; line-height: 1; overflow: hidden`），
+   它是为「停下/继续/输入框」那一行写的。把一句完整的话直接丢进去，就会继承这三条：
+   行距 1 让 23px 的字叠在一起，`nowrap` 让句子不换行，`overflow: hidden` 再把它裁掉。
+   只读页的「在新窗口继续」现在有自己的 `.resume` / `.rhint` 盒子，字号 12px、行距 1.45。
+2. **页脚 `#bar` 在文档流里**（当初为了躲 WebView 顶部偏移，见 §31 相关记录），所以内容
+   短于一屏时它会浮在中间。用 CSS 补不回来：`100vh` 在这个 WebView 里报得比可视区域小，
+   `calc(100vh - …)` 直接没效果。最后的做法是 `fitToScreen()`——量页脚的 `offsetTop`，
+   差多少就给 `#content` 补多少 `min-height`。
+   顺带一个实测：`document.documentElement.scrollHeight` 和 `document.body.scrollHeight`
+   **都被夹到视口高度**（内容 347px 时两者都报 625），所以"文档到底多高"只能从最后一个
+   元素的 `offsetTop + offsetHeight` 读。

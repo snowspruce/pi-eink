@@ -1767,6 +1767,9 @@ body {
 /* separated by space, not a character: links must not run into the numbers */
 #bar #foottxt { margin-left: 10px; }
 #wrap { padding: 16px 12px 6px 12px; }   /* clears #top: 18px line + 10px offset + 6px */
+/* #bar is in flow (see above), so a short transcript left it floating mid-screen with a
+   blank half below. fitToScreen() below tops the log up to a full viewport - a CSS
+   min-height would need 100vh, and this WebView reports it smaller than the screen. */
 .msg { margin: 0 0 26px 0; }
 .role {
   font-size: 11px; letter-spacing: 1px; text-transform: uppercase;
@@ -1819,6 +1822,13 @@ hr { border: none; border-top: 2px solid #000; margin: 16px 0; }
   white-space: nowrap; overflow: hidden;
 }
 #acts form { display: inline-block; vertical-align: top; margin: 0 6px 0 0; line-height: 1; }
+/* A dead session's "continue" is the only thing on this row, and it carries a sentence.
+   #acts itself is a one-line button strip (nowrap, line-height 1, overflow hidden); text
+   dropped straight into it inherited all three and looked broken. */
+#acts .resume { white-space: normal; }
+#acts .resume form { margin: 0 0 8px 0; }
+#acts .resume .btn { font-size: 15px; min-height: 34px; padding: 4px 14px; }
+#acts .rhint { font-size: 12px; line-height: 1.45; margin: 0; white-space: normal; }
 #more { display: none; }
 #acts #more.open { display: inline; }
 #acts #morebtn { min-width: 0; width: auto; padding: 1px 8px; }
@@ -2003,7 +2013,26 @@ function showBox() {
   if (!box) { return; }
   try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {}
 }
+/* A dead session's transcript can be shorter than the screen. #bar is in flow (a fixed
+   bar cannot be trusted in this WebView), so the page would end mid-screen with a blank
+   half under the footer. Measure, then top the log up by exactly what is missing.
+   vh/calc is not an option: this engine reports 100vh smaller than the visible area. */
+function fitToScreen() {
+  var c = document.getElementById("content");
+  if (!c) { return; }
+  c.style.minHeight = "0px";
+  // scrollHeight of <html> and <body> both came back clamped to the viewport (625 px
+  // with 347 px of content), so measure the last thing on the page instead: the footer
+  // is a sibling of #wrap, its offsetTop is where the document really ends.
+  var bar = document.getElementById("bar");
+  if (!bar) { return; }
+  var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  var end = bar.offsetTop + bar.offsetHeight;
+  var missing = vh - end;
+  if (missing > 0) { c.style.minHeight = (c.offsetHeight + missing) + "px"; }
+}
 window.addEventListener("resize", function () { setTimeout(showBox, 120); }, false);
+window.addEventListener("resize", function () { setTimeout(fitToScreen, 160); }, false);
 document.addEventListener("focus", function (e) {
   var el = e.target;
   if (el && el.tagName && el.tagName.toUpperCase() === "TEXTAREA") { setTimeout(showBox, 350); }
@@ -2050,6 +2079,7 @@ function paint(j) {
     window.scrollTo(0, document.body.scrollHeight);
     STICK = true;   // the synthetic scroll event lands after this paint
   }
+  fitToScreen();
   if (!GEO) { GEO = true; geoBeacon(); }
 }
 var POLL_MS_BUSY = 1200, POLL_MS_IDLE = 3000, POLL_MS = POLL_MS_IDLE;
@@ -3000,9 +3030,10 @@ def acts_html(live: bool = True, sid: str = "", caps: str = "full", lang: str = 
         # terminal window on the Mac. Only offered when there is a file to resume and the
         # reader may act (a read-only network cannot open windows anywhere).
         if sid and caps == "full" and session_index().get(str(sid)):
-            return ('<form method="POST" action="/act/resume?s=%s">'
+            return ('<div class="resume">'
+                    '<form method="POST" action="/act/resume?s=%s">'
                     '<button class="btn" type="submit">%s</button></form>'
-                    '<div class="body dim">%s</div>'
+                    '<div class="rhint dim">%s</div></div>'
                     % (quote(str(sid), safe=""), esc(tr("resume_here", lang)),
                        esc(tr("resume_hint", lang))))
         return hint
