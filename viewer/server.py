@@ -123,6 +123,14 @@ STRINGS = {
     "new_session_here": ("\uff0b \u65b0\u5efa\u4f1a\u8bdd", "+ New session"),
     "port_label": ("\u7aef\u53e3 %s", "port %s"),
     "running_label": ("\u8fd0\u884c\u4e2d", "running"),
+    "run_chip": ("\u5728\u8dd1", "live"),
+    "menu_title": ("\u83dc\u5355", "Menu"),
+    "menu_home": ("\u4e3b\u9875", "Home"),
+    "menu_reload": ("\u91cd\u65b0\u52a0\u8f7d", "Reload"),
+    "menu_font_up": ("\u5b57\u53f7 A\uff0b", "Font A+"),
+    "menu_font_down": ("\u5b57\u53f7 A\uff0d", "Font A\u2212"),
+    "menu_desktop": ("\u684c\u9762", "Desktop"),
+    "menu_open": ("\u6253\u5f00", "Open"),
     "all_projects": ("\u6240\u6709\u9879\u76ee", "All projects"),
     "new_session_live": ("pi \u5728\u8fd9\u91cc\u8dd1\u7740", "pi is running here"),
     "new_session_old_bridge": ("\u8fd9\u4e2a\u9875\u9762\u7684 bridge \u662f\u65e7\u7248\uff0c\u5728\u8be5\u4f1a\u8bdd\u91cc /reload \u540e\u624d\u80fd\u5f00\u65b0\u7a97\u53e3",
@@ -837,17 +845,22 @@ HOME_CSS = """
 # The menu is a page, not a JS dialog: the WebView's javascript interface did not reach
 # this page (no error, no effect), and a page works in any browser. The one item that is
 # not a URL - "desktop" - uses a custom scheme the kiosk app intercepts.
-MENU_BUTTON = '<a id="menu" href="/menu">\u83dc\u5355</a>'
+def menu_button(lang: str = "") -> str:
+    """The corner link to /menu. It used to carry a literal 菜单 and stayed Chinese
+    on an English page (the fixed button is the one label a reader cannot miss)."""
+    return '<a id="menu" href="/menu">%s</a>' % esc(tr("menu_title", lang))
+
+
 
 
 def menu_html(lang: str = "", next_url: str = "/home") -> str:
     rows = [
-        ("\u4e3b\u9875", "/home"),
-        ("\u91cd\u65b0\u52a0\u8f7d", next_url or "/home"),
+        (tr("menu_home", lang), "/home"),
+        (tr("menu_reload", lang), next_url or "/home"),
         # 字号：页脚那两个 9px 的 A-/A+ 在触屏上点不中，菜单里给整行
-        ("\u5b57\u53f7 A\uff0b", "/fs?d=2&next=/menu"),
-        ("\u5b57\u53f7 A\uff0d", "/fs?d=-2&next=/menu"),
-        ("\u684c\u9762", "pi-eink://desktop"),
+        (tr("menu_font_up", lang), "/fs?d=2&next=/menu"),
+        (tr("menu_font_down", lang), "/fs?d=-2&next=/menu"),
+        (tr("menu_desktop", lang), "pi-eink://desktop"),
     ]
     out = ['<div id="home">',
            '<div class="brand"><img src="/logo.png" alt="pi"><div class="name">pi</div></div>',
@@ -858,7 +871,7 @@ def menu_html(lang: str = "", next_url: str = "/home") -> str:
     out.append('<form method="POST" action="/act/openurl">'
                '<input name="url" type="text" value="" placeholder="http://\u2026" '
                'autocapitalize="off" autocorrect="off" spellcheck="false">'
-               '<button type="submit">\u6253\u5f00</button></form>')
+               '<button type="submit">%s</button></form>' % esc(tr("menu_open", lang)))
     out.append("</div>")
     return "".join(out)
 
@@ -884,7 +897,8 @@ def home_html(lang: str = "", target: str = "") -> str:
         label = esc(Path(path).name or path)
         # 运行状态在右侧单独一列（原设计的"● 在跑"），不挤在名字后面
         name = ('<span class="row"><span class="nm">%s</span>'
-                '<span class="state"><span class="dot"></span>\u5728\u8dd1</span></span>' % label
+                '<span class="state"><span class="dot"></span>%s</span></span>'
+                % (label, esc(tr("run_chip", lang)))
                 if live == "live" else '<span class="row"><span class="nm">%s</span></span>' % label)
         note = ('<div class="live">%s</div>' % esc(short_path(path) or path)
                 if live == "live" else
@@ -904,7 +918,7 @@ def home_html(lang: str = "", target: str = "") -> str:
     if hidden:
         out.append('<div class="foot">%s</div>' % esc(tr("new_session_hidden", lang, hidden)))
     out.append("</div>")
-    out.append(MENU_BUTTON)
+    out.append(menu_button(lang))
     return "".join(out)
 
 

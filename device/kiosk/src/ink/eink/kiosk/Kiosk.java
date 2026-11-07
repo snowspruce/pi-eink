@@ -652,11 +652,38 @@ public class Kiosk extends Activity {
         return super.onKeyDown(code, event);
     }
 
+    /** True when the page the reader is looking at is English.
+     *
+     *  The menu is a native dialog, so it does not follow the page by itself: with the
+     *  reader on "EN" the items stayed Chinese. The viewer's `pielang` cookie is the
+     *  same switch the page obeys.
+     */
+    private boolean pageIsEnglish() {
+        try {
+            String have = CookieManager.getInstance().getCookie(web.getUrl() == null ? "" : web.getUrl());
+            if (have == null) {
+                return false;
+            }
+            for (String part : have.split(";")) {
+                part = part.trim();
+                if (part.equals("pielang=en")) {
+                    return true;
+                }
+            }
+        } catch (Exception ignored) {
+            // no cookie store: Chinese, the default
+        }
+        return false;
+    }
+
     /** ⋮ opens a list of what a kiosk actually needs; typing an address is one of them. */
     private void showMenu() {
+        String[] labels = pageIsEnglish()
+                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address", "Desktop"}
+                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址", "桌面"};
         new AlertDialog.Builder(this)
                 .setTitle("pi")
-                .setItems(new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址", "桌面"},
+                .setItems(labels,
                         new DialogInterface.OnClickListener() {
                             public void onClick(DialogInterface d, int which) {
                                 switch (which) {

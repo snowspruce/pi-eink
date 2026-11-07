@@ -930,6 +930,25 @@ class Language(unittest.TestCase):
              mock.patch.object(server, "bridge_alive", lambda: False):
             return request(self.viewer.port, "/?s=" + self.SID, lang=lang)
 
+    def test_the_standalone_pages_are_translated_too(self):
+        """`/home` and `/menu` are their own documents, not the session shell: their
+        labels were literals (\u4e3b\u9875, \u5728\u8dd1, \u6253\u5f00), so switching to
+        English left the menu and the corner button in Chinese."""
+        import re
+        for path in ("/menu", "/home"):
+            status, data = request(self.viewer.port, path, lang="en")
+            self.assertEqual(status, 200, path)
+            body = data.decode("utf-8")
+            # the source comments in the inlined CSS are Chinese, so only the markup
+            # counts: what the reader actually sees
+            visible = re.sub(r"<style.*?</style>|<script.*?</script>", " ", body, flags=re.S)
+            # project *names* may be Chinese (a directory called 花加); page furniture
+            # may not. /menu has no project names at all.
+            if path == "/menu":
+                self.assertEqual(re.findall(r"[\u4e00-\u9fff]", visible), [], visible[:400])
+            self.assertNotIn("\u5728\u8dd1", body, path)      # 在跑
+            self.assertNotIn(">\u83dc\u5355<", body, path)    # 菜单
+
     def test_chinese_is_the_default(self):
         status, data = self._page()
         self.assertEqual(status, 200)
