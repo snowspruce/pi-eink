@@ -4118,7 +4118,21 @@ def discovery_loop(port: int = DISCOVERY_PORT, tcp_port: int = PORT):
 def main():
     load_fails()
     threading.Thread(target=discovery_loop, daemon=True).start()
-    srv = ThreadingHTTPServer((BIND, PORT), Handler)
+    # A restart can fail to bind for a while: the previous instance left sockets in
+    # CLOSE_WAIT, and launchd's KeepAlive then restarts in a tight loop - during which the
+    # device sees "connection refused" and shows the retry page. Retry here instead, so a
+    # restart is a few seconds of waiting rather than a storm of dying processes.
+    srv = None
+    for attempt in range(20):
+        try:
+            srv = ThreadingHTTPServer((BIND, PORT), Handler)
+            break
+        except OSError as exc:
+            if attempt == 0:
+                print("port %d busy (%s), waiting for the old instance to let go" % (PORT, exc), flush=True)
+            time.sleep(1)
+    if srv is None:
+        raise SystemExit("could not bind %s:%d after 20s" % (BIND, PORT))
     print("listening on http://%s:%d/ (file: %s, rev: %s, session: %s)"
           % (BIND, PORT, Path(__file__).resolve(), git_head(), newest_session()), flush=True)
     srv.serve_forever()

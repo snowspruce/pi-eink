@@ -856,3 +856,23 @@ e-ink 注意：宿主睡眠时页面会变黑。第二个 launchd 单元里跑 `
 顺带一条产品侧的教训：**这些失败在屏幕上必须能区分**。现在 kiosk 分三种页面 ——
 `连接中 <host>`（7 秒还没画完）、`连不上 <host> <原因>`（引擎放弃，20 秒→1 分→5 分退避重试）、
 `证书不是这台机器的`（有人中间劫持，带"打开登录页"按钮）。
+
+## 十二、那次原生崩溃到底崩在哪（tombstone 说话）
+
+11:22 那次 `Fatal signal 11` 的墓碑还在设备上（`/data/tombstones/tombstone_05`，需要 root 读）：
+
+```
+signal 11 (SIGSEGV), code 1 (SEGV_MAPERR), fault addr 5e52e000
+backtrace:
+  #00 libskia.so          SkCanvas::drawRect(SkRect const&, SkPaint const&)+109
+  #01 libskia.so          SkPicturePlayback::draw(SkCanvas&, SkDrawPictureCallback*)+966
+  #02 libwebviewchromium.so  …
+```
+
+所以是 **WebView 的软件光栅（Skia）在回放这一页的绘制指令时崩的**，不是我们的 JS、也不是内存耗尽
+（当时设备 396MB 总内存、220MB 空闲，kiosk PSS 只有 15.5MB）。
+
+复现尝试 12 次（6 次冷启动 + 6 次不复位进程、主页↔那个 3.7MB 会话来回切）：**一次都没崩**，
+pid 全程不变。结论：这是这颗 ROM 里 Chromium 30 的偶发原生 bug，与"数据量"没有稳定关系，
+不去猜、也不为它改渲染。若再出现，取证路径是固定的：`su -c 'cat /data/tombstones/tombstone_NN'`
+（`adb logcat -b crash` 在这台设备上不存在，`/dev/log/crash` 没有）。
