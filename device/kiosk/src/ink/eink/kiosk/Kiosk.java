@@ -187,11 +187,20 @@ public class Kiosk extends Activity {
                         ? "" : String.valueOf(cert.getIssuedBy().getOName());
                 String cn = cert == null || cert.getIssuedTo() == null
                         ? "" : String.valueOf(cert.getIssuedTo().getCName());
+                boolean ourHost = isOurHost(url);
                 boolean ours = issuer.toLowerCase().contains("let's encrypt")
                         || issuer.toLowerCase().contains("lets encrypt");
                 boolean hostMatches = cn.length() > 0 && url.contains(cn);
                 Log.i(TAG, "ssl " + error.getPrimaryError() + " issuer=" + issuer
                         + " cn=" + cn + " url=" + url);
+                if (!ourHost) {
+                    // Someone else's page (a hotel/cafe login form). Our token is never
+                    // sent there, and refusing made logging in impossible: the portal's
+                    // own https page hit this same branch and the reader was stuck.
+                    Log.i(TAG, "ssl tolerated for foreign host " + url);
+                    handler.proceed();
+                    return;
+                }
                 if (ours && hostMatches) {
                     handler.proceed();
                 } else {
@@ -358,6 +367,9 @@ public class Kiosk extends Activity {
     private static final String[] SHARED_COOKIES = {"pieink_otp", "piefs", "pielang"};
 
     private void plantOtpCookie(String url) {
+        if (!isOurHost(url)) {
+            return;
+        }
         try {
             CookieManager cm = CookieManager.getInstance();
             String have = cm.getCookie(url);
@@ -412,6 +424,9 @@ public class Kiosk extends Activity {
      * place the very first load pops a password dialog the device cannot answer.
      */
     private void plantTokenCookie(String url) {
+        if (!isOurHost(url)) {
+            return;                       // never hand the token to a foreign origin
+        }
         String secret = token();
         if (secret.length() < 16) {
             return;
@@ -477,6 +492,30 @@ public class Kiosk extends Activity {
      *  built from both. Type or push the tokenised address once and it survives every
      *  change of network. */
     /** scheme://host[:port] of whatever we last loaded - the base for the home URL. */
+    /** True only for the addresses this app is allowed to trust with the token.
+     *
+     *  A captive portal's page is a foreign site: it must not become "home", must not
+     *  receive the token cookie, and its certificate must not be judged by our rule -
+     *  otherwise the reader can never finish logging in (the portal's own https page
+     *  gets refused, and the portal's origin replaces ours as "home").
+     */
+    private boolean isOurHost(String url) {
+        try {
+            android.net.Uri u = android.net.Uri.parse(url == null ? "" : url);
+            String host = u.getHost();
+            if (host == null || host.length() == 0) {
+                return false;
+            }
+            if (host.equals(android.net.Uri.parse(PUBLIC).getHost())) {
+                return true;
+            }
+            android.net.Uri origin = android.net.Uri.parse(prefs.getString("origin", ""));
+            return host.equals(origin.getHost());
+        } catch (Exception ignored) {
+            return false;
+        }
+    }
+
     private void learnOrigin(String url) {
         if (url == null) {
             return;
@@ -484,6 +523,12 @@ public class Kiosk extends Activity {
         try {
             android.net.Uri u = android.net.Uri.parse(url);
             if (u.getScheme() == null || u.getHost() == null) {
+                return;
+            }
+            // A page someone else served must not become home: the portal login page did
+            // exactly that once, and ⋮ → Home then opened the cafe's page.
+            boolean publicHost = u.getHost().equals(android.net.Uri.parse(PUBLIC).getHost());
+            if (!publicHost && url.indexOf("k=") < 0) {
                 return;
             }
             String origin = u.getScheme() + "://" + u.getHost()
