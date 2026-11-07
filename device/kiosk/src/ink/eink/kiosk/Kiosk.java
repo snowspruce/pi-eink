@@ -399,7 +399,7 @@ public class Kiosk extends Activity {
         painted = false;
         web.postDelayed(new Runnable() {
             public void run() {
-                if (!painted && !isFinishing()) {
+                if (!painted && !isFinishing() && hasWindowFocus()) {
                     showMessage("连接中", host, "还没通。等它自己超时后会显示原因；"
                             + "也可以按 ⋮ → Address 换一个地址。");
                 }
@@ -754,7 +754,15 @@ public class Kiosk extends Activity {
                 + "<p><b>" + esc(title) + "</b></p>"
                 + "<p style=\"word-break:break-all;font-size:20px\">" + esc(where) + "</p>"
                 + "<p style=\"font-size:20px\">" + esc(detail) + "</p></body></html>";
-        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+        try {
+            // Cancel whatever is still in flight first: feeding loadData to a WebView that
+            // is mid-load crashed this Chromium 30 once (Fatal signal 11 in a WebView
+            // thread, right after a 42 KB page was requested).
+            web.stopLoading();
+            web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+        } catch (Exception ignored) {
+            // the notice is cosmetic: never let it take the reader's page down
+        }
     }
 
     /** Minimal HTML escape: the store URL and the engine's message are text, not markup. */

@@ -15,6 +15,13 @@ Cost and context sit in the status line, the conversation below it, then 停下 
 message list in place, so the screen does not flicker. 1.2 s polling while the agent is
 busy, 3 s when idle.
 
+![the home screen, in English](docs/kindle-home-en.png)
+
+Page furniture is bilingual: `EN` in the footer switches, Chinese is the default, and the
+conversation itself is never translated. The home screen is the device's landing page - every
+project, `live` marking the ones with a pi already running; tapping a row enters that session,
+or opens a new terminal window on the Mac when nothing runs there.
+
 While the agent works, what you type does not disappear into pi's queue: it waits in the
 box's own queue, the footer grows a 排队中（3） link, and `/queue` lists the messages with
 上移 / 下移 / 改 / 删 (see [The queue](#the-queue)).
