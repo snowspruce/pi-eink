@@ -147,7 +147,9 @@ public class Kiosk extends Activity {
                 if (cut > 0) {
                     shown = shown.substring(0, cut);
                 }
-                showMessage("连不上", shown, desc + "。每 20 秒自己重试一次；也可以按 ⋮ → Address 手输地址。");
+                showMessage(tr("连不上", "Cannot reach it"), shown,
+                        desc + tr("。每 20 秒自己重试一次；也可以按 ⋮ → Address 手输地址。",
+                                  ". Retrying every 20 s; or use ⋮ → Address."));
                 web.postDelayed(new Runnable() {
                     public void run() {
                         if (!isFinishing()) {
@@ -400,8 +402,10 @@ public class Kiosk extends Activity {
         web.postDelayed(new Runnable() {
             public void run() {
                 if (!painted && !isFinishing() && hasWindowFocus()) {
-                    showMessage("连接中", host, "还没通。等它自己超时后会显示原因；"
-                            + "也可以按 ⋮ → Address 换一个地址。");
+                    showMessage(tr("连接中", "Connecting"), host,
+                            tr("还没通。等它自己超时后会显示原因；也可以按 ⋮ → Address 换一个地址。",
+                               "No answer yet. It will print the reason when it gives up; "
+                               + "or use ⋮ → Address with another address."));
                 }
             }
         }, 7000);
@@ -517,9 +521,12 @@ public class Kiosk extends Activity {
                         if (found != null) {
                             load(withToken(found.replaceAll("/+$", "") + "/home"));
                         } else {
-                            showMessage("没找到这台电脑",
-                                    "（在这个网络里搜了广播和本机 /24）",
-                                    "确认 Kindle 和电脑连的是同一个 Wi-Fi；也可以按 ⋮ → Address 直接输地址。");
+                            showMessage(tr("没找到这台电脑", "No computer found"),
+                                    tr("（在这个网络里搜了广播和本机 /24）",
+                                       "(searched this network: broadcast and the local /24)"),
+                                    tr("确认 Kindle 和电脑连的是同一个 Wi-Fi；也可以按 ⋮ → Address 直接输地址。",
+                                       "Check that the Kindle and the Mac are on the same Wi-Fi; "
+                                       + "or type the address with ⋮ → Address."));
                         }
                     }
                 });
@@ -728,6 +735,12 @@ public class Kiosk extends Activity {
         return super.onKeyDown(code, event);
     }
 
+    /** The app's own chrome follows the page: an English page must not pop a Chinese
+     *  dialog ("连不上" under "Stop / Continue" reads like a bug). */
+    private String tr(String zh, String en) {
+        return pageIsEnglish() ? en : zh;
+    }
+
     /** True when the page the reader is looking at is English.
      *
      *  The menu is a native dialog, so it does not follow the page by itself: with the
@@ -899,9 +912,9 @@ public class Kiosk extends Activity {
         input.setSelection(0, input.getText().length());
 
         new AlertDialog.Builder(this)
-                .setTitle("地址（⋮ 打开）")
+                .setTitle(tr("地址（⋮ 打开）", "Address (⋮)"))
                 .setView(input)
-                .setPositiveButton("打开", new DialogInterface.OnClickListener() {
+                .setPositiveButton(tr("打开", "Open"), new DialogInterface.OnClickListener() {
                     public void onClick(DialogInterface d, int which) {
                         String url = input.getText().toString().trim();
                         if (url.length() == 0) {
@@ -919,7 +932,7 @@ public class Kiosk extends Activity {
                                 discoverAndOpen();
                             }
                         })
-                .setNegativeButton("取消", null)
+                .setNegativeButton(tr("取消", "Cancel"), null)
                 .show();
     }
 

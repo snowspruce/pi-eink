@@ -175,7 +175,6 @@ STRINGS = {
     "resume_here": ("\u5728\u65b0\u7a97\u53e3\u7ee7\u7eed", "Continue in a new window"),
     "resume_hint": ("\u7535\u8111\u4e0a\u4f1a\u5f00\u4e00\u4e2a\u7ec8\u7aef\u7a97\u53e3\u63a5\u7740\u8fd9\u4e2a\u4f1a\u8bdd\uff0cKindle \u81ea\u5df1\u8ddf\u8fc7\u53bb",
                     "opens a terminal window on the Mac and picks this session up; the box follows"),
-    "resume_opening": ("\u6b63\u5728\u6253\u5f00\u2026", "opening\u2026"),
     "resume_no_file": ("\u627e\u4e0d\u5230\u8fd9\u4e2a\u4f1a\u8bdd\u7684\u6587\u4ef6", "no session file for this"),
     "resume_no_bridge": ("\u6ca1\u6709\u6b63\u5728\u8fd0\u884c\u7684\u4f1a\u8bdd\u53ef\u4ee5\u8f6c\u8fbe\uff1a\u5148\u5728\u7535\u8111\u4e0a\u5f00\u4e00\u4e2a pi",
                          "no running session to ask: start pi on the Mac first"),
