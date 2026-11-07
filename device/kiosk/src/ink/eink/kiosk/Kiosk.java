@@ -111,6 +111,13 @@ public class Kiosk extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 painted = true;
+                // Reset the retry ladder only for a real network page. The "connecting /
+                // cannot reach" notice is itself a page (loadDataWithBaseURL, url null or
+                // about:blank) and it finishes right after every failure: resetting there
+                // pinned the retry at 20 s forever, which is what the first test showed.
+                if (url != null && url.startsWith("http")) {
+                    retryStep = 0;
+                }
                 harvestOtpCookie(url);
             }
 
@@ -145,7 +152,7 @@ public class Kiosk extends Activity {
              * its own - the link comes back (a tunnel restarts, a VPS returns) without anyone
              * touching the Kindle.
              */
-            private void showOffline(String url, String desc) {
+            private void showOffline(final String url, String desc) {
                 // Never print the token: `k=` is the master credential, and this page sits
                 // on an e-ink screen in the room. Only scheme+host are useful to the reader.
                 String shown = url == null ? "" : url;
@@ -156,13 +163,19 @@ public class Kiosk extends Activity {
                 showMessage(tr("连不上", "Cannot reach it"), shown,
                         desc + tr("。每 20 秒自己重试一次；也可以按 ⋮ → Address 手输地址。",
                                   ". Retrying every 20 s; or use ⋮ → Address."));
+                // Retry the address that failed, not this placeholder: reload() would
+                // reload the message page and nothing would ever come back. Back off
+                // 20 s -> 1 min -> 5 min so a dead network does not wake the radio
+                // every 20 seconds forever; onPageFinished resets the ladder.
+                final long wait = RETRY_MS[Math.min(retryStep, RETRY_MS.length - 1)];
+                retryStep += 1;
                 web.postDelayed(new Runnable() {
                     public void run() {
-                        if (!isFinishing()) {
-                            web.reload();
+                        if (!isFinishing() && url != null && url.length() > 0) {
+                            load(url);
                         }
                     }
-                }, 20000);
+                }, wait);
             }
 
             /**
@@ -446,6 +459,10 @@ public class Kiosk extends Activity {
     /** Set once a page has actually finished: a hung connect must not look like a hang. */
     private boolean painted = true;
 
+    /** Retry ladder for a page that could not be reached: 20 s, 1 min, then every 5 min. */
+    private static final long[] RETRY_MS = {20000, 60000, 300000};
+    private int retryStep = 0;
+
     /**
      * A blackholed route answers nothing for 30-60 s, and an e-ink screen shows white for
      * all of it. Rather than wait for the engine to give up, say what is being tried.
@@ -516,6 +533,29 @@ public class Kiosk extends Activity {
         }
     }
 
+    /** True for addresses that may legitimately become "home": the public entry, loopback
+     *  and RFC1918. A cafe's login page, a captive portal IP or a test address is none of
+     *  those - it must not overwrite the remembered origin even when the URL carries a
+     *  token (withToken adds that itself, so its presence proves nothing). */
+    private static boolean mayBecomeHome(String host) {
+        if (host == null || host.length() == 0) {
+            return false;
+        }
+        if (host.equals(android.net.Uri.parse(PUBLIC).getHost())) {
+            return true;
+        }
+        if (host.equals("localhost") || host.equals("127.0.0.1")) {
+            return true;
+        }
+        if (host.matches("192\\.168\\.\\d{1,3}\\.\\d{1,3}") || host.matches("10\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}")) {
+            return true;
+        }
+        if (host.matches("172\\.(1[6-9]|2\\d|3[01])\\.\\d{1,3}\\.\\d{1,3}")) {
+            return true;
+        }
+        return false;
+    }
+
     private void learnOrigin(String url) {
         if (url == null) {
             return;
@@ -527,8 +567,7 @@ public class Kiosk extends Activity {
             }
             // A page someone else served must not become home: the portal login page did
             // exactly that once, and ⋮ → Home then opened the cafe's page.
-            boolean publicHost = u.getHost().equals(android.net.Uri.parse(PUBLIC).getHost());
-            if (!publicHost && url.indexOf("k=") < 0) {
+            if (!mayBecomeHome(u.getHost())) {
                 return;
             }
             String origin = u.getScheme() + "://" + u.getHost()
@@ -578,10 +617,26 @@ public class Kiosk extends Activity {
         if (url == null || url.length() == 0 || url.indexOf("k=") >= 0 || token().length() == 0) {
             return url;
         }
+        // Only hand the token to our own addresses. Appending it to whatever was typed put
+        // the master credential in the URL of a cafe's login page (and from there into its
+        // logs); the first join of a *new* origin still works, because that address is
+        // typed with ?k= or learned from a tokenised URL.
+        boolean firstJoin = prefs.getString("origin", "").length() == 0;
+        if (!firstJoin && !isOurHost(url)) {
+            return url;
+        }
         return url + (url.indexOf('?') >= 0 ? "&" : "?") + "k=" + token();
     }
 
     private void remember(String url) {
+        try {
+            android.net.Uri u = android.net.Uri.parse(url == null ? "" : url);
+            if (!mayBecomeHome(u.getHost())) {
+                return;
+            }
+        } catch (Exception ignored) {
+            return;
+        }
         learnToken(url);
         if (url == null || url.length() == 0) {
             return;
@@ -879,10 +934,8 @@ public class Kiosk extends Activity {
     /** ⋮ opens a list of what a kiosk actually needs; typing an address is one of them. */
     private void showMenu() {
         String[] labels = pageIsEnglish()
-                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address",
-                        "This network", "Desktop"}
-                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址",
-                        "局域网直连", "桌面"};
+                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address", "Desktop"}
+                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址", "桌面"};
         new AlertDialog.Builder(this)
                 .setTitle("pi")
                 .setItems(labels,
@@ -903,10 +956,6 @@ public class Kiosk extends Activity {
                                         break;
                                     case 4:
                                         showAddressPrompt();
-                                        break;
-                                    case 5:
-                                        // LAN is a deliberate choice, never the default
-                                        discoverAndOpen();
                                         break;
                                     default:
                                         openOtherHome();
