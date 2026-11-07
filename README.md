@@ -157,8 +157,13 @@ WebView shell in `device/kiosk`:
 ```sh
 ANDROID_SDK=… JAVA_HOME=… device/kiosk/build.sh   # a 12 KB APK
 adb install -r device/kiosk/out/kiosk.apk
-eink-kiosk                                        # opens the page over the LAN
+eink-kiosk                                        # opens the public entry
+eink-kiosk --lan                                  # same Wi-Fi: the LAN address instead
 ```
+
+The public entry is the default - on the device too, where `⋮` -> `This network` is the only
+thing that searches the LAN. A remembered LAN address is used only while it answers `/whois`;
+otherwise the app falls back to the public one.
 
 It costs the 44px status bar (going fullscreen would save it, but then the keyboard covers the
 input box - that one is Android's behaviour). Details and measurements: `device/kiosk/README.md`.

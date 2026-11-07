@@ -208,16 +208,16 @@ public class Kiosk extends Activity {
         if (url == null) {
             url = reachableHome();
             if (url.length() == 0) {
-                foundThisLaunch = true;
-                discoverOrFallback();
-                return;
+                // Default is the public entry. LAN is opt-in (⋮ -> This network, or a
+                // typed/pushed LAN address), because a LAN address that happens to be
+                // remembered from another network is a blank screen, and hunting the
+                // local /24 on every start made the device depend on one Wi-Fi.
+                url = PUBLIC.replaceAll("/+$", "") + "/home";
             }
             url = withToken(url);
         }
         if (url == null || url.length() == 0) {
-            foundThisLaunch = true;
-            discoverOrFallback();
-            return;
+            url = withToken(PUBLIC.replaceAll("/+$", "") + "/home");
         }
         load(withToken(url));
     }
@@ -504,15 +504,23 @@ public class Kiosk extends Activity {
     }
 
     /** Ask the LAN who serves the page; fall back to the public address. */
-    private void discoverOrFallback() {
+    /** LAN on request only (⋮ -> This network). Nothing here runs at startup: the default
+     *  entry is the public one, and a search that quietly overrides it is exactly the
+     *  "which address am I on" confusion this reader does not need. */
+    private void discoverAndOpen() {
         new Thread(new Runnable() {
             public void run() {
                 final String found = discover();
                 runOnUiThread(new Runnable() {
                     public void run() {
                         Log.i(TAG, "discovery " + (found != null ? "found " + found : "found nothing"));
-                        String base = found != null ? found : PUBLIC;
-                        load(withToken(base.replaceAll("/+$", "") + "/home"));
+                        if (found != null) {
+                            load(withToken(found.replaceAll("/+$", "") + "/home"));
+                        } else {
+                            showMessage("没找到这台电脑",
+                                    "（在这个网络里搜了广播和本机 /24）",
+                                    "确认 Kindle 和电脑连的是同一个 Wi-Fi；也可以按 ⋮ → Address 直接输地址。");
+                        }
                     }
                 });
             }
@@ -776,8 +784,10 @@ public class Kiosk extends Activity {
     /** ⋮ opens a list of what a kiosk actually needs; typing an address is one of them. */
     private void showMenu() {
         String[] labels = pageIsEnglish()
-                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address", "Desktop"}
-                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址", "桌面"};
+                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address",
+                        "This network", "Desktop"}
+                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址",
+                        "局域网直连", "桌面"};
         new AlertDialog.Builder(this)
                 .setTitle("pi")
                 .setItems(labels,
@@ -798,6 +808,10 @@ public class Kiosk extends Activity {
                                         break;
                                     case 4:
                                         showAddressPrompt();
+                                        break;
+                                    case 5:
+                                        // LAN is a deliberate choice, never the default
+                                        discoverAndOpen();
                                         break;
                                     default:
                                         openOtherHome();
@@ -869,12 +883,7 @@ public class Kiosk extends Activity {
 
     private void goHome() {
         String home = reachableHome();
-        if (home.length() > 0) {
-            load(withToken(home));
-        } else {
-            foundThisLaunch = true;
-            discoverOrFallback();
-        }
+        load(withToken(home.length() > 0 ? home : PUBLIC.replaceAll("/+$", "") + "/home"));
     }
 
     private void showAddressPrompt() {
@@ -904,12 +913,12 @@ public class Kiosk extends Activity {
                         load(withToken(url));
                     }
                 })
-                .setNeutralButton("自动发现", new DialogInterface.OnClickListener() {
-                    public void onClick(DialogInterface d, int which) {
-                        foundThisLaunch = true;
-                        discoverOrFallback();
-                    }
-                })
+                .setNeutralButton(pageIsEnglish() ? "This network" : "自动发现",
+                        new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface d, int which) {
+                                discoverAndOpen();
+                            }
+                        })
                 .setNegativeButton("取消", null)
                 .show();
     }

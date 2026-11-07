@@ -142,8 +142,12 @@ Kindle 那台（CracKDroid / Android 4.4.2）自带的 AOSP Browser 有两个和
 ```sh
 ANDROID_SDK=… JAVA_HOME=… device/kiosk/build.sh   # 12 KB 的 APK
 adb install -r device/kiosk/out/kiosk.apk
-eink-kiosk                                        # 走 LAN 直连打开页面
+eink-kiosk                                        # 走公网入口
+eink-kiosk --lan                                  # 同一个 Wi-Fi 时走 LAN 直连
 ```
+
+默认是公网入口，设备上也一样：只有 `⋮` → `局域网直连` 才会去搜局域网。记住的 LAN 地址只在它
+还能答 `/whois` 时用，答不上就自动回公网——换网络不会变成打不开。
 
 代价是顶部 44px 系统状态栏（全屏能省掉它，但键盘就会盖住输入框——Android 的固定行为）。
 ### 设备的主屏是 `/home`
