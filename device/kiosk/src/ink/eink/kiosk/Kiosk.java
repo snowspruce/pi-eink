@@ -103,6 +103,12 @@ public class Kiosk extends Activity {
             }
 
             @Override
+            public void onPageStarted(WebView view, String url, android.graphics.Bitmap favicon) {
+                painted = false;
+                noticeIfHanging(url);
+            }
+
+            @Override
             public void onPageFinished(WebView view, String url) {
                 painted = true;
                 harvestOtpCookie(url);
@@ -297,13 +303,45 @@ public class Kiosk extends Activity {
 
     /** Visible stop instead of a silent blank page when a certificate is not ours. */
     private void showSslWarning(final String issuer, final String cn, final String url) {
+        // A hotel/airport/cafe hotspot answers TLS with its own certificate (Aruba, Cisco,
+        // Fortinet...) until the reader logs in. Refusing is the whole point - proceeding
+        // would hand the token to whoever runs the hotspot - but "certificate untrusted"
+        // alone left the reader on a white page with nothing to do. Name the likely cause
+        // and offer the one action that fixes it: open the portal over plain http.
+        String host = "";
+        try {
+            android.net.Uri u = android.net.Uri.parse(url == null ? "" : url);
+            host = u.getHost() == null ? "" : u.getHost();
+        } catch (Exception ignored) {
+            host = "";
+        }
+        final String portal = host.length() == 0 ? "" : "http://" + host + "/";
         runOnUiThread(new Runnable() {
             public void run() {
                 new AlertDialog.Builder(Kiosk.this)
-                        .setTitle("证书不可信，已停止加载")
-                        .setMessage("签发者: " + issuer + "\n证书名: " + cn + "\n地址: " + url
-                                + "\n\n不是这台机器的证书，token 不会交出去。")
-                        .setPositiveButton("知道了", null)
+                        .setTitle(tr("证书不是这台机器的，已停止加载", "Not this machine's certificate"))
+                        .setMessage(tr(
+                                "签发者: ", "Issuer: ") + issuer + "\n"
+                                + tr("证书名: ", "Subject: ") + cn + "\n"
+                                + tr("地址: ", "Address: ") + (portal.length() > 0 ? portal : url) + "\n\n"
+                                + tr("多半是这个网络（酒店/机场/咖啡）的登录页在中间拦截。"
+                                     + "token 不会交给它。",
+                                     "Most likely this network's login page is intercepting TLS. "
+                                     + "The token is not handed over.")
+                                + (portal.length() > 0
+                                   ? tr("\n\n先在这个网络上登录，再回来重试。", "\n\nLog in to this network first, then retry.")
+                                   : ""))
+                        .setPositiveButton(tr("打开登录页", "Open login page"),
+                                portal.length() == 0 ? null : new DialogInterface.OnClickListener() {
+                                    public void onClick(DialogInterface d, int which) {
+                                        // plain http, no token: the portal answers it
+                                        showMessage(tr("打开登录页", "Opening the login page"), portal,
+                                                tr("如果出现登录页，登录完按 ⋮ → Home 回来。",
+                                                   "If a login page appears, sign in and use ⋮ → Home."));
+                                        web.loadUrl(portal);
+                                    }
+                                })
+                        .setNegativeButton(tr("知道了", "OK"), null)
                         .show();
             }
         });
@@ -397,12 +435,20 @@ public class Kiosk extends Activity {
      * A blackholed route answers nothing for 30-60 s, and an e-ink screen shows white for
      * all of it. Rather than wait for the engine to give up, say what is being tried.
      */
-    private void noticeIfHanging(final String host) {
-        painted = false;
+    private void noticeIfHanging(String url) {
+        String host = url == null ? "" : url;
+        try {
+            android.net.Uri u = android.net.Uri.parse(url);
+            host = (u.getScheme() == null ? "" : u.getScheme() + "://") + u.getHost()
+                    + (u.getPort() > 0 ? ":" + u.getPort() : "");
+        } catch (Exception ignored) {
+            // keep the raw string: it is only a label
+        }
+        final String label = host;
         web.postDelayed(new Runnable() {
             public void run() {
                 if (!painted && !isFinishing() && hasWindowFocus()) {
-                    showMessage(tr("连接中", "Connecting"), host,
+                    showMessage(tr("连接中", "Connecting"), label,
                             tr("还没通。等它自己超时后会显示原因；也可以按 ⋮ → Address 换一个地址。",
                                "No answer yet. It will print the reason when it gives up; "
                                + "or use ⋮ → Address with another address."));
@@ -421,15 +467,6 @@ public class Kiosk extends Activity {
             setContentView(web);
         }
         web.loadUrl(url);
-        String host = url;
-        try {
-            android.net.Uri u = android.net.Uri.parse(url);
-            host = (u.getScheme() == null ? "" : u.getScheme() + "://") + u.getHost()
-                    + (u.getPort() > 0 ? ":" + u.getPort() : "");
-        } catch (Exception ignored) {
-            // keep the raw string: it is only a label
-        }
-        noticeIfHanging(host);
     }
 
     /** The viewer's token, learned from any URL that carried one.
