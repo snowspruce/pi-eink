@@ -467,6 +467,14 @@ public class Kiosk extends Activity {
      * A blackholed route answers nothing for 30-60 s, and an e-ink screen shows white for
      * all of it. Rather than wait for the engine to give up, say what is being tried.
      */
+    /** Shown only after a load has clearly stalled - and it must never be terminal.
+     *
+     *  `loadDataWithBaseURL` REPLACES the in-flight load, so showing this too eagerly
+     *  turns a slow-but-fine page into a permanent "Connecting" (measured: a 7 s
+     *  threshold fired on this link, the real page was killed, nothing retried). Two
+     *  changes: wait long enough that a working link is never interrupted, and schedule
+     *  the same retry ladder so the notice can always recover.
+     */
     private void noticeIfHanging(String url) {
         String host = url == null ? "" : url;
         try {
@@ -477,16 +485,28 @@ public class Kiosk extends Activity {
             // keep the raw string: it is only a label
         }
         final String label = host;
+        final String target = url;
         web.postDelayed(new Runnable() {
             public void run() {
                 if (!painted && !isFinishing() && hasWindowFocus()) {
+                    final long wait = RETRY_MS[Math.min(retryStep, RETRY_MS.length - 1)];
+                    retryStep += 1;
                     showMessage(tr("连接中", "Connecting"), label,
-                            tr("还没通。等它自己超时后会显示原因；也可以按 ⋮ → Address 换一个地址。",
-                               "No answer yet. It will print the reason when it gives up; "
-                               + "or use ⋮ → Address with another address."));
+                            tr("还没通。每 ", "No answer yet. Retrying in ")
+                            + (wait / 1000) + tr(" 秒自己再试一次；也可以按 ⋮ → Address 换地址。",
+                                                 " s; or use ⋮ → Address with another address."));
+                    if (target != null && target.length() > 0) {
+                        web.postDelayed(new Runnable() {
+                            public void run() {
+                                if (!isFinishing()) {
+                                    load(target);
+                                }
+                            }
+                        }, wait);
+                    }
                 }
             }
-        }, 7000);
+        }, 20000);
     }
 
     private void load(String url) {
