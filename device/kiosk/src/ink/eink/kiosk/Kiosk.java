@@ -104,6 +104,7 @@ public class Kiosk extends Activity {
 
             @Override
             public void onPageFinished(WebView view, String url) {
+                painted = true;
                 harvestOtpCookie(url);
             }
 
@@ -115,15 +116,45 @@ public class Kiosk extends Activity {
                 // blank and nothing said why). Any failure on a non-public address now
                 // falls back to the public entry instead of showing nothing.
                 if (foundThisLaunch) {
+                    // Both paths are down (the VPS itself was unreachable once: ping,
+                    // 443 and 2222 all timed out from the Mac). A blank white page says
+                    // nothing, so say what failed and keep retrying quietly.
+                    showOffline(url, desc);
                     return;
                 }
                 if (url != null && url.startsWith("https://")) {
-                    return;         // already on the public path
+                    foundThisLaunch = true;
+                    showOffline(url, desc);
+                    return;         // already on the public path: nothing left to try
                 }
                 foundThisLaunch = true;
                 String pub = PUBLIC.replaceAll("/+$", "") + "/home";
                 Log.i(TAG, "falling back to " + pub);
                 load(withToken(pub));
+            }
+
+            /**
+             * Nothing answered. The device is a reader, not a browser: a blank page is the
+             * worst possible answer. Name the target and what the engine said, and retry on
+             * its own - the link comes back (a tunnel restarts, a VPS returns) without anyone
+             * touching the Kindle.
+             */
+            private void showOffline(String url, String desc) {
+                // Never print the token: `k=` is the master credential, and this page sits
+                // on an e-ink screen in the room. Only scheme+host are useful to the reader.
+                String shown = url == null ? "" : url;
+                int cut = shown.indexOf('?');
+                if (cut > 0) {
+                    shown = shown.substring(0, cut);
+                }
+                showMessage("连不上", shown, desc + "。每 20 秒自己重试一次；也可以按 ⋮ → Address 手输地址。");
+                web.postDelayed(new Runnable() {
+                    public void run() {
+                        if (!isFinishing()) {
+                            web.reload();
+                        }
+                    }
+                }, 20000);
             }
 
             /**
@@ -357,6 +388,25 @@ public class Kiosk extends Activity {
         }
     }
 
+    /** Set once a page has actually finished: a hung connect must not look like a hang. */
+    private boolean painted = true;
+
+    /**
+     * A blackholed route answers nothing for 30-60 s, and an e-ink screen shows white for
+     * all of it. Rather than wait for the engine to give up, say what is being tried.
+     */
+    private void noticeIfHanging(final String host) {
+        painted = false;
+        web.postDelayed(new Runnable() {
+            public void run() {
+                if (!painted && !isFinishing()) {
+                    showMessage("连接中", host, "还没通。等它自己超时后会显示原因；"
+                            + "也可以按 ⋮ → Address 换一个地址。");
+                }
+            }
+        }, 7000);
+    }
+
     private void load(String url) {
         Log.i(TAG, "load " + url);
         remember(url);
@@ -367,6 +417,15 @@ public class Kiosk extends Activity {
             setContentView(web);
         }
         web.loadUrl(url);
+        String host = url;
+        try {
+            android.net.Uri u = android.net.Uri.parse(url);
+            host = (u.getScheme() == null ? "" : u.getScheme() + "://") + u.getHost()
+                    + (u.getPort() > 0 ? ":" + u.getPort() : "");
+        } catch (Exception ignored) {
+            // keep the raw string: it is only a label
+        }
+        noticeIfHanging(host);
     }
 
     /** The viewer's token, learned from any URL that carried one.
@@ -606,6 +665,14 @@ public class Kiosk extends Activity {
                     String[] parts = text.split("\\s+");
                     String port = parts.length > 1 ? parts[1] : "8000";
                     String host = in.getAddress().getHostAddress();
+                    // A broadcast answers across subnets - the AP forwards it, the HTTP
+                    // return path does not exist. Trusting the reply alone loaded
+                    // http://192.168.2.222:8000 from a device on 192.168.3.x and showed a
+                    // blank page. Prove it answers /whois before believing it.
+                    if (probe(host) == null) {
+                        Log.i(TAG, "broadcast from " + host + " does not answer, ignoring");
+                        continue;
+                    }
                     return "http://" + host + ":" + port + "/";
                 }
             }
@@ -675,6 +742,27 @@ public class Kiosk extends Activity {
             // no cookie store: Chinese, the default
         }
         return false;
+    }
+
+    /** One page, three lines: what failed, where, and what the reader can do. Never the
+     *  token - `k=` is the master credential and this is a screen in a room. */
+    private void showMessage(String title, String where, String detail) {
+        painted = true;           // this page *is* the answer; do not cover it later
+        String html = "<html><head><meta name=\"viewport\" "
+                + "content=\"width=device-width, initial-scale=1\"></head>"
+                + "<body style=\"font-family:sans-serif;font-size:26px;line-height:1.4;padding:24px\">"
+                + "<p><b>" + esc(title) + "</b></p>"
+                + "<p style=\"word-break:break-all;font-size:20px\">" + esc(where) + "</p>"
+                + "<p style=\"font-size:20px\">" + esc(detail) + "</p></body></html>";
+        web.loadDataWithBaseURL(null, html, "text/html", "utf-8", null);
+    }
+
+    /** Minimal HTML escape: the store URL and the engine's message are text, not markup. */
+    private static String esc(String s) {
+        if (s == null) {
+            return "";
+        }
+        return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;");
     }
 
     /** ⋮ opens a list of what a kiosk actually needs; typing an address is one of them. */
