@@ -814,3 +814,18 @@ e-ink 注意：宿主睡眠时页面会变黑。第二个 launchd 单元里跑 `
    顺带一个实测：`document.documentElement.scrollHeight` 和 `document.body.scrollHeight`
    **都被夹到视口高度**（内容 347px 时两者都报 625），所以"文档到底多高"只能从最后一个
    元素的 `offsetTop + offsetHeight` 读。
+
+## 三十四、adb 掉线时先分清是哪一层
+
+`eink-heal` 原来只有一句「adb 看不到设备（USB 掉了或设备休眠）」，把三件完全不同的事混在
+一起：线掉了、设备睡了、adb server 卡住。2026-11-07 的一次掉线里，设备没重启（uptime
+1天19小时、adbd 是开机时那个 pid）、Mac 没睡（pmset 那段时间只有断言活动，AC 供电）、
+页面也没断（kiosk 的 window id 前后相同），但 adb 有 8 分钟看不到设备 —— 日志无法回答
+"是哪一层断了"。
+
+现在：
+- 掉线时先看 `ioreg -p IOUSB` 里有没有 Kindle（USB 层在不在）。
+- USB 在 → 重启 adb server 再试一次（不动设备上的任何东西）。
+- 日志分两句：USB 上也没有设备（线/口/供电/睡眠，物理问题，脚本动不了）／ adb 不通但
+  USB 里有设备（adbd 或 host 的 server 卡住）。
+两条分支都用伪造的 `adb`（和伪造的 `ioreg`）跑过，不是只写在代码里。
