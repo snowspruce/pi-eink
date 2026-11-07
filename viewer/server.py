@@ -2170,7 +2170,21 @@ function geoBeacon() {
       hits.sort(function (a, b) { return (b.d - a.d) || (b.o - a.o); });
       who = hits.slice(0, 3).map(function (h) { return h.s; }).join(",");
     } catch (e) { who = "err"; }
+    // The band between the input row and the status line: 26 CSS px on a fresh page is
+    // more than #wrap's 6px padding + #bar's 1px border, and the only way to find what
+    // owns the rest is to have the device say where each box actually ends.
+    var gap = -1, actsH = -1, resH = -1;
+    try {
+      var actsEl = document.getElementById("acts"), barEl = document.getElementById("bar");
+      if (actsEl && barEl) {
+        actsH = Math.round(actsEl.getBoundingClientRect().bottom);
+        gap = Math.round(barEl.getBoundingClientRect().top - actsEl.getBoundingClientRect().bottom);
+      }
+      var resEl = document.getElementById("result");
+      resH = resEl ? Math.round(resEl.getBoundingClientRect().height) : 0;
+    } catch (e) { gap = -2; }
     x.open("GET", "/diag?w=" + window.innerWidth + "&h=" + window.innerHeight +
+      "&gap=" + gap + "&acts=" + actsH + "&res=" + resH +
       "&sw=" + document.body.scrollWidth + "&dpr=" + (window.devicePixelRatio || 1) +
       "&iw=" + iw + "&dw=" + de.scrollWidth + "&who=" + encodeURIComponent(who), true);
     x.send(null);
