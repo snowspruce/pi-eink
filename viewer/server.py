@@ -1898,7 +1898,11 @@ a.btn { display: inline-block; text-decoration: none; font-size: 11px;
   border: 2px solid #000; padding: 4px 8px; margin: 0 0 6px 0; background: #fff; color: #000;
 }
 #note { font-size: 20px; font-weight: bold; padding: 6px 0 0; }
+/* The outcome line is created on demand and cleared after 5 s. Clearing it used to leave
+   the box behind: 20px min-height + 6px padding = 26 CSS px of blank under the input, a
+   whole text line on this screen, for the rest of the page's life. */
 #result { padding: 3px 8px; font-size: 14px; font-weight: bold; color: #000; min-height: 20px; }
+#result:empty { display: none; }
 
 """
 
@@ -2323,8 +2327,9 @@ function showResult(msg) {
   if (resultTimer) { clearTimeout(resultTimer); resultTimer = null; }
   if (msg !== "…") {
     resultTimer = setTimeout(function () {
+      // remove it, do not merely empty it: an empty box still takes its min-height
       var node = document.getElementById("result");
-      if (node) { node.textContent = ""; }
+      if (node && node.parentNode) { node.parentNode.removeChild(node); }
       resultTimer = null;
     }, 5000);
   }

@@ -39,6 +39,24 @@ def clean(folder: str) -> None:
     shutil.rmtree(server.SESSIONS / folder, ignore_errors=True)
 
 
+class ResultLine(unittest.TestCase):
+    """The outcome line under the input box must not leave its box behind.
+
+    It is created on demand ("sent", "failed"), then cleared after 5 s. Clearing used to
+    set textContent = "" and keep the element: 20px min-height + 6px padding = 26 CSS px
+    of blank under the input, a whole text line on a 511px e-ink screen, for the rest of
+    the page's life. Measured on the device: input bottom border at y=1266, footer top
+    border at y=1321 (dpr 2.1) = 26 CSS px.
+    """
+
+    def test_the_empty_outcome_box_collapses(self):
+        self.assertIn("#result:empty", server.CSS)
+        self.assertIn("display: none", server.CSS.split("#result:empty")[1].split("}")[0])
+        # and the 5 s cleanup removes the node instead of emptying it
+        self.assertIn("removeChild(node)", server.SHELL)
+        self.assertNotIn('node.textContent = ""', server.SHELL)
+
+
 class BridgeNote(unittest.TestCase):
     """The status line must describe the session the page shows, not the bridge that
     registered last (bridge.json) - two parallel pi sessions made it lie."""
