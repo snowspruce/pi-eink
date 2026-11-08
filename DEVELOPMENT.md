@@ -982,3 +982,34 @@ launchd 每次拉起都立刻退出 → `eink-link` 重启多少次都是 `code=
 
 **为什么会丢**：`adb install -r` 重装 APK 会清掉这个 app 的 preferred-activity 记录。今天为了
 调试装了十几次，所以它在中午就丢了。设一次「始终」即可；以后重装后如果又弹，就是同一个原因。
+
+## 十七、热点"门户说已登录、但什么也通不了"
+
+2026-11-08 星巴克（Aruba + exands 门户）卡了整整一小时，症状组合很能骗人：
+
+```
+WiFi 已连接，IP 172.17.2.144，RSSI -51
+http://172.17.0.2/status   → 显示"已登录，剩余 1h26m"（网关页能打开）
+系统浏览器打开任何外网      → 找不到网页 / ERR_TIMED_OUT
+我们的页面（浏览器里也是）  → 空白；kiosk 报 ERR_NAME_NOT_RESOLVED / ERR_TIMED_OUT
+shell 里 ping www.baidu.com → **通**（180.101.49.44，20.8ms）
+```
+
+判读：**门户的会话记录是"已授权"，但 AP 没有给这台设备做 NAT/转发**。所以"门户说登录了"
+不能当成"能上网"的证据 —— 唯一可信的判据是 `ping` 外网或真的打开一个页面。
+
+按这个顺序试，前两步无效，第三步成了：
+
+1. **门户注销再登录**：`http://172.17.0.2/logout` → 点 `log in`（状态页确实换了新会话，
+   但仍不通）
+2. **忘记网络再重新加入**：WLAN → 长按 SSID → 取消保存网络 → 点回该 SSID
+   （重新 DHCP；`wpa_supplicant.conf` 不要手改，框架会覆盖）
+3. **重启设备** ← 这一步之后 WebView 才恢复
+
+第 3 步的必要性说明还有一层：**WebView 会缓存失败**。网络恢复后，`ping` 与网关页都正常，
+但 kiosk 和系统浏览器仍在报 `ERR_NAME_NOT_RESOLVED` —— 那是 Chromium 内部的 DNS/连接缓存，
+只有换进程（重启）才清掉。所以"网络好了但页面还白"时，别再怀疑服务器，先重启。
+
+顺带记两个我这轮踩坏又修回来的东西：`ndc resolver setifdns` 会让这台设备的 netd 崩
+（日志 `SocketClient write error (Broken pipe)`），`net.dns1` 手设的值还会盖住 DHCP 的 DNS；
+正确的恢复是把属性清空并重连 WiFi。
