@@ -945,3 +945,25 @@ dumpsys window windows | grep mCurrentFocus
 修法：`am force-stop com.etang.mt_launcher` + 重新 start —— 图标立刻回来，后续按键也正常。
 `eink-heal` 现在会认这种情况（前台是 `AtchDlg`/`Application Error` 且属于 launcher 就重启它），
 否则这个状态不会自愈：它既不崩也不会自己退出。
+
+## 十五、隧道"重启无效"：VPS 上有个僵尸占着 9443
+
+2026-11-08 现场：Kindle 卡在 `Connecting`，Mac 上 `curl https://eink.blueberry.cafe/home` 也超时。
+查下来：
+
+```
+launchctl list | grep tunnel        → 没有 pid（隧道根本没起来）
+~/Library/Logs/pi-eink-tunnel.log   → 反复 "remote port forwarding failed for listen port 9443"
+VPS: ss -ltnp | grep 9443           → 127.0.0.1:9443 被一个 sshd-session 占着（不是当前这条连接）
+```
+
+ssh 连接异常断开时，远端转发的那颗套接字会留在 VPS 上，新的 `-R 9443:…` 于是永远 bind 失败 →
+launchd 每次拉起都立刻退出 → `eink-link` 重启多少次都是 `code=000`。**kill 掉那个 sshd-session
+立刻恢复**（公网 403 / 0.3s）。
+
+`eink-link` 现在在重启隧道之前多一步：`ssh … sudo -n fuser -k 9443/tcp`，并把"VPS 上剩余的
+9443 监听数"写进日志 —— 这样这类"重启无效"能自愈，日志里也能看出是不是又撞上了。
+
+顺带一条判据陷阱（第二次踩）：`curl https://43.155.140.105/` 用裸 IP 访问会报
+`SSL_ERROR_SYSCALL`，因为 stream 的 SNI 表把未知 SNI 打去 `127.0.0.1:1`（故意拒绝）。
+**裸 IP 探测不能用来判断 443 是否正常**，必须带 SNI（用域名）。
