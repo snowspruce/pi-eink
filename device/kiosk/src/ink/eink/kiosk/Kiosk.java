@@ -111,6 +111,7 @@ public class Kiosk extends Activity {
             @Override
             public void onPageFinished(WebView view, String url) {
                 painted = true;
+                quickRetried = false;
                 // Reset the retry ladder only for a real network page. The "connecting /
                 // cannot reach" notice is itself a page (loadDataWithBaseURL, url null or
                 // about:blank) and it finishes right after every failure: resetting there
@@ -146,6 +147,12 @@ public class Kiosk extends Activity {
                     return;
                 }
                 foundThisLaunch = true;
+                if (!quickRetried && url != null && url.startsWith("http")) {
+                    quickRetried = true;
+                    Log.i(TAG, "first attempt failed, retrying immediately: " + desc);
+                    load(url);
+                    return;
+                }
                 showOffline(url, desc);
             }
 
@@ -506,6 +513,9 @@ public class Kiosk extends Activity {
     /** Retry ladder for a page that could not be reached: 20 s, 1 min, then every 5 min. */
     private static final long[] RETRY_MS = {20000, 60000, 300000};
     private int retryStep = 0;
+    /** One immediate retry per page: a flaky AP fails the first attempt often, and a
+     *  straight reload usually succeeds - much better than waiting 20 s for the ladder. */
+    private boolean quickRetried = false;
 
     /**
      * A blackholed route answers nothing for 30-60 s, and an e-ink screen shows white for
