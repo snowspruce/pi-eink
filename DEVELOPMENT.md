@@ -925,3 +925,23 @@ Kindle 那套屏保服务（没有 `lab126` 包、没有 `/mnt/us`）。按住�
 顺带两条实测结论：
 - **睡着时面板保持上一帧**是不可能的 —— 这个 ROM 会自己画待机图，所以"睡下前先画 /idle"没用；
 - 因此 idle 屏（5 分钟无触摸）+ 待机图是**两条独立的路**，都要有。
+
+## 十四、两个症状，一个原因：桌面卡死
+
+2026-11-08 现场：桌面（梅糖 launcher）上的 pi-eink 图标不见了，`⋮ → Home` 也没反应。
+
+两条其实是一件事 —— **launcher 卡死了，ANR 对话框盖在最上层**：
+
+```
+dumpsys window windows | grep mCurrentFocus
+  mCurrentFocus=Window{… u0 AtchDlg:com.etang.mt_launcher/…launcher.MainActivity}
+```
+
+- 图标不见：launcher 的应用列表是它自己缓存的，卡住之后不再更新（我们的 LAUNCHER intent
+  filter 一直在：`dumpsys package ink.eink.kiosk` 里 MAIN/LAUNCHER 都在）
+- `⋮ → Home` 没反应：kiosk 根本不在前台，那些按键被 ANR 对话框吃了；后来在 kiosk 前台点
+  `⋮ → Home` 是好的（日志 `load …/home?k=…`，页面就是项目列表）
+
+修法：`am force-stop com.etang.mt_launcher` + 重新 start —— 图标立刻回来，后续按键也正常。
+`eink-heal` 现在会认这种情况（前台是 `AtchDlg`/`Application Error` 且属于 launcher 就重启它），
+否则这个状态不会自愈：它既不崩也不会自己退出。
