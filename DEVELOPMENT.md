@@ -882,3 +882,28 @@ backtrace:
 pid 全程不变。结论：这是这颗 ROM 里 Chromium 30 的偶发原生 bug，与"数据量"没有稳定关系，
 不去猜、也不为它改渲染。若再出现，取证路径是固定的：`su -c 'cat /data/tombstones/tombstone_NN'`
 （`adb logcat -b crash` 在这台设备上不存在，`/dev/log/crash` 没有）。
+
+## 十三、待机（"锁屏"）画面是 ROM 自己的机制，不是 Android 的
+
+这台设备**没有** Keyguard（`mShowingLockscreen` 一直是 false，唤醒直接进 kiosk），也没有
+Kindle 那套屏保服务（没有 `lab126` 包、没有 `/mnt/us`）。按住电源睡下的那张图来自别处：
+
+```
+/system/bin/sleepanimation        ← 二进制里硬编码 /data/firmware/wallpaper/1.png（这条路没生效）
+/system/app/Eink.apk（Eink 设置） ← 显示 → 壁纸 → 安装：只有它写的那份才被用上
+/data/firmware/wallpaper/image*.png  ← 实际生效的待机图片
+```
+
+正确做法（不要手写文件，走它自己的门）：
+
+1. 把 PNG/JPG 放进 `/sdcard/wallpaper/`（≤10 张，**目录里别留 .bak**，它会把所有文件都搬过去）
+2. Eink 设置 → 显示 → 壁纸 → 安装
+3. 校验：`/data/firmware/wallpaper/image1.png` 的大小/哈希与你放进去的一致
+
+我们那张图由 `device/screensaver/render.swift` 渲染（CoreGraphics，1072×1448 灰阶，和 viewer 的
+`/idle` 页面同一套几何）：极简边框 + 四角刻度 + `PI / EINK … TERMINAL` + 点阵 + pi 标记
+（实黑 / 45° 网纹 / 描边三块，因为这块面板没有彩色）+ 底部双线。
+
+顺带两条实测结论：
+- **睡着时面板保持上一帧**是不可能的 —— 这个 ROM 会自己画待机图，所以"睡下前先画 /idle"没用；
+- 因此 idle 屏（5 分钟无触摸）+ 待机图是**两条独立的路**，都要有。
