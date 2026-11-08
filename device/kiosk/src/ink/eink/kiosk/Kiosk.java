@@ -117,6 +117,11 @@ public class Kiosk extends Activity {
                 // pinned the retry at 20 s forever, which is what the first test showed.
                 if (url != null && url.startsWith("http")) {
                     retryStep = 0;
+                    // the URL *after* the viewer's redirects: /?s=<sid>, not /?k=...
+                    if (url.indexOf("/idle") < 0) {
+                        lastRealUrl = url;
+                        armIdleTimer();      // a page settled: start counting from here
+                    }
                 }
                 harvestOtpCookie(url);
             }
@@ -242,11 +247,16 @@ public class Kiosk extends Activity {
                     if (base.length() > 0) {
                         load(withToken(base.substring(0, base.length() - "/home".length()) + "/idle"));
                     }
-                } else if (android.content.Intent.ACTION_SCREEN_ON.equals(intent.getAction())
-                        && beforeIdle != null && beforeIdle.length() > 0) {
-                    String back = beforeIdle;
-                    beforeIdle = null;
-                    load(back);
+                } else if (android.content.Intent.ACTION_SCREEN_ON.equals(intent.getAction())) {
+                    String now = web.getUrl() == null ? "" : web.getUrl();
+                    if (now.indexOf("/idle") >= 0) {
+                        String back = beforeIdle != null && beforeIdle.length() > 0
+                                ? beforeIdle : lastRealUrl;
+                        beforeIdle = null;
+                        if (back != null && back.length() > 0 && back.indexOf("/idle") < 0) {
+                            load(back);
+                        }
+                    }
                 }
             }
         };
@@ -275,6 +285,7 @@ public class Kiosk extends Activity {
             url = withToken(PUBLIC.replaceAll("/+$", "") + "/home");
         }
         load(withToken(url));
+        armIdleTimer();          // nothing touched yet: the count starts now
     }
 
     private static final String TAG = "kiosk";
@@ -286,6 +297,8 @@ public class Kiosk extends Activity {
      *  conversation back on SCREEN_ON. */
     private android.content.BroadcastReceiver screenReceiver;
     private String beforeIdle;
+    /** Last URL that was not the idle screen: what SCREEN_ON and any touch return to. */
+    private String lastRealUrl;
 
     /** Basic auth for the public entry (nginx on the Mac asks for it). The stock browser
      *  had cached credentials; this app does not, and without this a remote session is a
@@ -544,6 +557,9 @@ public class Kiosk extends Activity {
 
     private void load(String url) {
         Log.i(TAG, "load " + url);
+        if (url != null && url.indexOf("/idle") < 0) {
+            lastRealUrl = url;
+        }
         remember(url);
         learnOrigin(url);
         plantTokenCookie(url);
@@ -987,8 +1003,10 @@ public class Kiosk extends Activity {
     /** ⋮ opens a list of what a kiosk actually needs; typing an address is one of them. */
     private void showMenu() {
         String[] labels = pageIsEnglish()
-                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address", "Desktop"}
-                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址", "桌面"};
+                ? new String[]{"Home", "Reload", "Font A+", "Font A\u2212", "Address",
+                        "Idle screen", "Desktop"}
+                : new String[]{"主页", "重新加载", "字号 A＋", "字号 A－", "输入地址",
+                        "屏保画面", "桌面"};
         new AlertDialog.Builder(this)
                 .setTitle("pi")
                 .setItems(labels,
@@ -1009,6 +1027,9 @@ public class Kiosk extends Activity {
                                         break;
                                     case 4:
                                         showAddressPrompt();
+                                        break;
+                                    case 5:
+                                        showIdle();
                                         break;
                                     default:
                                         openOtherHome();
@@ -1076,6 +1097,54 @@ public class Kiosk extends Activity {
             back = "&next=" + android.net.Uri.encode(here);
         }
         load(withToken(base + "/fs?d=" + step + (sid != null ? "&s=" + sid : "") + back));
+    }
+
+    /** Idle screen after a spell without touch.
+     *
+     *  Sleeping keeps whatever frame was drawn last (the panel does not repaint once the
+     *  display is off), so the only way the reader sees the idle page while asleep is to
+     *  have it on screen *before* pressing power. Five minutes without a touch is a long
+     *  read; any touch comes straight back.
+     */
+    private static final long IDLE_AFTER_MS = 5 * 60 * 1000;
+    private final android.os.Handler idleHandler = new android.os.Handler();
+    private final Runnable idleTask = new Runnable() {
+        public void run() {
+            String now = web.getUrl() == null ? "" : web.getUrl();
+            if (now.indexOf("/idle") < 0) {
+                showIdle();
+            }
+        }
+    };
+
+    private void armIdleTimer() {
+        idleHandler.removeCallbacks(idleTask);
+        idleHandler.postDelayed(idleTask, IDLE_AFTER_MS);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(android.view.MotionEvent ev) {
+        if (ev != null && ev.getAction() == android.view.MotionEvent.ACTION_DOWN) {
+            String now = web.getUrl() == null ? "" : web.getUrl();
+            if (now.indexOf("/idle") >= 0) {
+                String back = lastRealUrl;
+                if (back != null && back.length() > 0) {
+                    load(back);
+                }
+            }
+            armIdleTimer();
+        }
+        return super.dispatchTouchEvent(ev);
+    }
+
+    private void showIdle() {
+        // no URL here: it carries ?k=<token> and logcat is readable on the host
+        Log.i(TAG, "idle timer fired");
+        String home = homeUrl();
+        String base = home.length() > 0
+                ? home.substring(0, home.length() - "/home".length())
+                : PUBLIC.replaceAll("/+$", "");
+        load(withToken(base + "/idle"));
     }
 
     private void goHome() {
