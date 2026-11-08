@@ -230,6 +230,31 @@ public class Kiosk extends Activity {
             }
         });
 
+        screenReceiver = new android.content.BroadcastReceiver() {
+            @Override
+            public void onReceive(android.content.Context c, android.content.Intent intent) {
+                if (android.content.Intent.ACTION_SCREEN_OFF.equals(intent.getAction())) {
+                    String now = web.getUrl() == null ? "" : web.getUrl();
+                    if (now.indexOf("/idle") < 0) {
+                        beforeIdle = now;
+                    }
+                    String base = homeUrl();
+                    if (base.length() > 0) {
+                        load(withToken(base.substring(0, base.length() - "/home".length()) + "/idle"));
+                    }
+                } else if (android.content.Intent.ACTION_SCREEN_ON.equals(intent.getAction())
+                        && beforeIdle != null && beforeIdle.length() > 0) {
+                    String back = beforeIdle;
+                    beforeIdle = null;
+                    load(back);
+                }
+            }
+        };
+        android.content.IntentFilter f = new android.content.IntentFilter();
+        f.addAction(android.content.Intent.ACTION_SCREEN_OFF);
+        f.addAction(android.content.Intent.ACTION_SCREEN_ON);
+        registerReceiver(screenReceiver, f);
+
         String url = null;
         if (getIntent() != null && getIntent().getDataString() != null) {
             url = getIntent().getDataString();
@@ -253,6 +278,14 @@ public class Kiosk extends Activity {
     }
 
     private static final String TAG = "kiosk";
+
+    /** The frame the panel keeps while the device sleeps.
+     *
+     *  This ROM has no keyguard and no Kindle screensaver service, and e-ink keeps whatever
+     *  was drawn last - so the app paints the idle screen on SCREEN_OFF and puts the
+     *  conversation back on SCREEN_ON. */
+    private android.content.BroadcastReceiver screenReceiver;
+    private String beforeIdle;
 
     /** Basic auth for the public entry (nginx on the Mac asks for it). The stock browser
      *  had cached credentials; this app does not, and without this a remote session is a

@@ -921,6 +921,87 @@ def home_html(lang: str = "", target: str = "") -> str:
     return "".join(out)
 
 
+IDLE_CSS = """
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; background: #fff; color: #000; }
+body { font-family: "Courier New", Courier, monospace; }
+#idle { position: fixed; top: 16px; left: 16px; right: 16px; bottom: 16px;
+        border: 2px solid #000; padding: 20px 18px;
+        display: -webkit-box; display: -webkit-flex; display: flex;
+        -webkit-box-orient: vertical; -webkit-flex-direction: column; flex-direction: column; }
+.tick { position: absolute; width: 26px; height: 26px; }
+.tick i { position: absolute; background: #000; }
+.tick .h { width: 26px; height: 2px; } .tick .v { width: 2px; height: 26px; }
+.tl { top: -2px; left: -2px; } .tl .h { top: 0; left: 0; } .tl .v { top: 0; left: 0; }
+.tr { top: -2px; right: -2px; } .tr .h { top: 0; right: 0; } .tr .v { top: 0; right: 0; }
+.bl { bottom: -2px; left: -2px; } .bl .h { bottom: 0; left: 0; } .bl .v { bottom: 0; left: 0; }
+.br { bottom: -2px; right: -2px; } .br .h { bottom: 0; right: 0; } .br .v { bottom: 0; right: 0; }
+.head { font-size: 14px; letter-spacing: 3px; text-transform: uppercase;
+        display: -webkit-box; display: -webkit-flex; display: flex;
+        -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; }
+.rule { height: 2px; background: #000; margin-top: 10px; }
+.rule.thin { height: 1px; background: #888; margin-top: 6px; }
+.grow { -webkit-box-flex: 1; -webkit-flex: 1 1 auto; flex: 1 1 auto; }
+/* the mark, rebuilt from pi.dev/logo-auto.svg on a 470-unit grid.
+   Three parts, three treatments - no colour on this panel: solid, hatch, outline. */
+.mark { position: relative; width: 260px; height: 260px; margin: 0 auto; }
+.mark div { position: absolute; }
+.solid { background: #000; }
+.hatch { background-image: repeating-linear-gradient(45deg, #000 0, #000 2px, #fff 2px, #fff 7px); }
+.outline { background: #fff; border: 2px solid #000; }
+.mark .a { left: 0; top: 0; width: 74.9%; height: 24.9%; }
+.mark .b { left: 50%; top: 24.9%; width: 24.9%; height: 25.1%; }
+.mark .c { left: 0; top: 24.9%; width: 24.9%; height: 25.1%; }
+.mark .d { left: 24.9%; top: 50%; width: 25.1%; height: 24.9%; }
+.mark .e { left: 0; top: 74.9%; width: 24.9%; height: 25.1%; }
+.mark .f { left: 74.9%; top: 50%; width: 25.1%; height: 50%; }
+.word { text-align: center; font-size: 19px; letter-spacing: 0.06em; margin-top: 14px;
+        text-indent: 0.06em; color: #222; }
+/* measurement ticks either side of the mark: enough machinery to read as a terminal
+   without turning the empty half of the screen into decoration */
+.marks { position: relative; height: 0; }
+.marks i { position: absolute; top: 130px; width: 2px; height: 14px; background: #000; }
+.marks .l { left: 0; } .marks .r { right: 0; }
+.foot .cols { font-size: 12px; letter-spacing: 1px; margin-top: 8px; color: #333;
+        display: -webkit-box; display: -webkit-flex; display: flex;
+        -webkit-box-pack: justify; -webkit-justify-content: space-between; justify-content: space-between; }
+.dots { position: absolute; right: 20px; top: 58px; width: 58px; height: 58px;
+        background-image: radial-gradient(#000 1px, transparent 1px);
+        background-size: 11px 11px; }
+"""
+
+
+def idle_page() -> str:
+    """What the panel keeps while the device sleeps.
+
+    There is no keyguard on this ROM and no Kindle screensaver service: waking goes straight
+    to the kiosk. On e-ink the last frame drawn *is* the lock screen, so the app paints this
+    when the screen turns off. Mono by necessity (16 grey levels): the three parts of the
+    mark are told apart by fill, hatch and outline rather than by colour.
+    """
+    parts = [("a", "solid"), ("b", "solid"), ("c", "hatch"), ("d", "hatch"),
+             ("e", "hatch"), ("f", "outline")]
+    mark = "".join('<div class="%s %s"></div>' % (cls, name) for cls, name in parts)
+    return ("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            "<style>%s</style></head><body>"
+            '<div id="idle">'
+            '<span class="tick tl"><i class="h"></i><i class="v"></i></span>'
+            '<span class="tick tr"><i class="h"></i><i class="v"></i></span>'
+            '<span class="tick bl"><i class="h"></i><i class="v"></i></span>'
+            '<span class="tick br"><i class="h"></i><i class="v"></i></span>'
+            '<div class="head"><span>pi / eink</span><span>terminal</span></div>'
+            '<div class="rule"></div><div class="rule thin"></div>'
+            '<div class="dots"></div>'
+            '<div class="grow"></div>'
+            '<div class="marks"><i class="l"></i><i class="r"></i></div>'
+            '<div class="mark">%s</div><div class="word">pi</div>'
+            '<div class="grow"></div>'
+            '<div class="foot"><div class="rule thin"></div><div class="rule"></div>'
+            '<div class="cols"><span>511x690</span><span>e-ink</span><span>idle</span></div>'
+            "</div></div></body></html>") % (IDLE_CSS, mark)
+
+
 def home_page(lang: str = "", target: str = "", fs: float = 1.0) -> str:
     """The home screen as a standalone document: no poll, no status bar, no JS.
 
@@ -3965,6 +4046,10 @@ class Handler(BaseHTTPRequestHandler):
                 "note": ('<div id="note">%s</div>' % esc(note_msg)) if note_msg else "",
                 "queue": inner}}).encode("utf-8"),
                        "text/html; charset=utf-8", extra=extra)
+            return
+
+        if u.path == "/idle":
+            self._send(idle_page().encode("utf-8"), "text/html; charset=utf-8", extra=extra)
             return
 
         if u.path == "/menu":
