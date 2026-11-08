@@ -859,6 +859,24 @@ e-ink 注意：宿主睡眠时页面会变黑。第二个 launchd 单元里跑 `
 并且提示页本身也挂在退避阶梯上（提示 → 20 秒后重试那个地址）。实测：正常加载不再被截断；
 一个必然失败的地址在 75 秒内请求 2 次（0s、40s），不会变成死页。
 
+**门户这一套在真机上门走通了一次**（2026-11-08，星巴克 · Aruba/exands）：证书弹窗里点
+「Open login page」→ 载入 `http://eink.blueberry.cafe/` 被门户劫持 → 星巴克登录页直接在 kiosk
+里展开 → 点「连接上网！」→ 跳 `https://www.starbucks.com.cn/…`。日志同时给出两条关键证据：
+
+```
+ssl 3 issuer=Sectigo Limited cn=www.starbucks.com.cn …   ← 门户自己的页，证书不是我们的
+ssl tolerated for foreign host https://www.starbucks.com.cn/…   ← 放行（没有 token 会外泄）
+```
+
+登录完成后同一个域名立刻回到我们自己的证书：
+
+```
+ssl 3 issuer=Let's Encrypt cn=eink.blueberry.cafe …
+```
+
+也就是说：**别人的主机放行、我们自己的主机严格**这条规则是对的，而且让"在 kiosk 里过门户"
+这件事第一次真的成立（之前被自己的严格校验挡死，只能绕去原厂浏览器）。
+
 顺带一条产品侧的教训：**这些失败在屏幕上必须能区分**。现在 kiosk 分三种页面 ——
 `连接中 <host>`（7 秒还没画完）、`连不上 <host> <原因>`（引擎放弃，20 秒→1 分→5 分退避重试）、
 `证书不是这台机器的`（有人中间劫持，带"打开登录页"按钮）。
