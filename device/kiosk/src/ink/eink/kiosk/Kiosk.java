@@ -1113,7 +1113,10 @@ public class Kiosk extends Activity {
     private final Runnable idleTask = new Runnable() {
         public void run() {
             String now = web.getUrl() == null ? "" : web.getUrl();
-            if (now.indexOf("/idle") < 0) {
+            // Never on the project list: that page IS the resting state, and swapping it
+            // for the screensaver is what made "主页变成了睡眠桌面". Only a conversation
+            // (a long read, nobody touching the device) turns into the screensaver.
+            if (now.indexOf("/idle") < 0 && now.indexOf("/home") < 0) {
                 showIdle();
             }
         }
