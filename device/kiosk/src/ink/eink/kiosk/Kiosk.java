@@ -532,7 +532,11 @@ public class Kiosk extends Activity {
         final String target = url;
         web.postDelayed(new Runnable() {
             public void run() {
-                if (!painted && !isFinishing() && hasWindowFocus()) {
+                // Only when NOTHING arrived. A congested AP (a cafe, this one: >20 s for a
+                // 4 KB page) delivers slowly but correctly, and replacing that in-flight
+                // load with this notice is what turned "slow" into "failed".
+                boolean nothingYet = web.getProgress() <= 5;
+                if (!painted && nothingYet && !isFinishing() && hasWindowFocus()) {
                     final long wait = RETRY_MS[Math.min(retryStep, RETRY_MS.length - 1)];
                     retryStep += 1;
                     showMessage(tr("连接中", "Connecting"), label,
@@ -550,7 +554,7 @@ public class Kiosk extends Activity {
                     }
                 }
             }
-        }, 20000);
+        }, 45000);
     }
 
     private void load(String url) {
