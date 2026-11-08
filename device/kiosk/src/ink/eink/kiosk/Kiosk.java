@@ -130,25 +130,23 @@ public class Kiosk extends Activity {
             public void onReceivedError(WebView view, int code, String desc, String url) {
                 Log.i(TAG, "error " + code + " " + desc + " " + url);
                 // A LAN address stops working the moment the networks differ (this device
-                // and the Mac ended up on 192.168.3.x and 192.168.2.x once: the page was
-                // blank and nothing said why). Any failure on a non-public address now
-                // falls back to the public entry instead of showing nothing.
-                if (foundThisLaunch) {
-                    // Both paths are down (the VPS itself was unreachable once: ping,
-                    // 443 and 2222 all timed out from the Mac). A blank white page says
-                    // nothing, so say what failed and keep retrying quietly.
-                    showOffline(url, desc);
+                // and the Mac ended up on 192.168.3.x and 192.168.2.x once). Fall back to
+                // the public entry ONLY for the remembered
+                // LAN origin. Any other address that fails is somebody else's page - most
+                // often a captive portal's login form, which must stay on screen or the
+                // reader can never log in (it used to be replaced by our public page).
+                String origin = prefs.getString("origin", "");
+                boolean lanOrigin = origin.length() > 0 && !origin.startsWith("https://")
+                        && url != null && url.startsWith(origin);
+                if (!foundThisLaunch && lanOrigin) {
+                    foundThisLaunch = true;
+                    String pub = PUBLIC.replaceAll("/+$", "") + "/home";
+                    Log.i(TAG, "LAN origin failed, falling back to " + pub);
+                    load(withToken(pub));
                     return;
                 }
-                if (url != null && url.startsWith("https://")) {
-                    foundThisLaunch = true;
-                    showOffline(url, desc);
-                    return;         // already on the public path: nothing left to try
-                }
                 foundThisLaunch = true;
-                String pub = PUBLIC.replaceAll("/+$", "") + "/home";
-                Log.i(TAG, "falling back to " + pub);
-                load(withToken(pub));
+                showOffline(url, desc);
             }
 
             /**
