@@ -473,6 +473,17 @@ class FullNetwork(unittest.TestCase):
         self.assertEqual(status, 303)
         self.assertIn("k=" + TOKEN, seen.get("Location", ""))
 
+    def test_a_foreign_address_does_not_get_the_token(self):
+        """`/act/openurl` appended the master token to whatever was typed - including a
+        portal login page or a typo'd host, i.e. it handed the credential to a stranger.
+        Only our own host and private/LAN addresses may receive it now."""
+        seen = {}
+        status, _d = request(self.viewer.port, "/act/openurl", "POST",
+                             "url=" + urllib.parse.quote("http://example.com/login"), out=seen)
+        self.assertEqual(status, 303)
+        self.assertNotIn("k=", seen.get("Location", ""))
+        self.assertEqual(seen.get("Location"), "http://example.com/login")
+
     def test_entering_a_running_project_goes_straight_to_it(self):
         with mock.patch.object(server, "live_session_in", lambda _d: "aaaa-1111"):
             seen = {}

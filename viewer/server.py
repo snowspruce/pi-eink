@@ -28,7 +28,7 @@ import zlib
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import parse_qs, quote, urlencode, urlparse
+from urllib.parse import parse_qs, quote, urlencode, urlparse, urlsplit
 
 PORT = int(os.environ.get("EINK_PORT", "8000"))
 # Bind one interface when the box has more (utun, docker bridges): 0.0.0.0 exposes
@@ -1394,6 +1394,32 @@ def _diag_seen() -> set:
         except Exception:
             pass
     return _DIAG_SEEN
+
+
+def _token_ok_for(url: str, request_host: str) -> bool:
+    """May the token be appended to this hand-typed address?
+
+    Two cases only: the host this very page was served from (the reader re-typing the
+    entry they are already on), and a private/loopback address (the LAN entry, which the
+    reader types while reading the public page). Everything else - a portal login page, a
+    typo, a host someone talked them into - gets no token: it is the master credential,
+    and appending it to a stranger's URL hands it to them.
+    """
+    try:
+        target = (urlsplit(url).hostname or "").lower()
+    except Exception:
+        return False
+    if not target:
+        return False
+    if target == (request_host or "").split(":")[0].lower():
+        return True
+    if target in ("localhost", "127.0.0.1", "::1"):
+        return True
+    if re.match(r"^10\.", target) or re.match(r"^192\.168\.", target):
+        return True
+    if re.match(r"^172\.(1[6-9]|2\d|3[01])\.", target):
+        return True
+    return False
 
 
 def log_visit(ip: str, caps: str, path: str, status: int, ua: str = "") -> None:
@@ -2994,9 +3020,13 @@ def render(path: Path, limit: int, show_thinking: bool, show_tools: bool, port: 
 ACTIONS = ["stop", "continue", "review", "execute", "status"]   # labels live in STRINGS
 
 
-def cookie_value(value: str = "", ttl: int = COOKIE_MAX_AGE) -> str:
-    return "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (
-        COOKIE, value or token(), ttl)
+def cookie_value(value: str = "", ttl: int = COOKIE_MAX_AGE, secure: bool = False) -> str:
+    """The token cookie. `secure` is set when the TLS terminator says the request arrived
+    over https (X-Forwarded-Proto): without it, a cookie handed out on the public entry
+    would also be sent over plain http if anything ever served that origin without TLS.
+    It stays off for the LAN http origin, where a Secure cookie would simply be dropped."""
+    return "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax%s" % (
+        COOKIE, value or token(), ttl, "; Secure" if secure else "")
 
 
 def pin_session_value() -> str:
@@ -3290,6 +3320,12 @@ class Handler(BaseHTTPRequestHandler):
         if touched:
             save_fails()
 
+    def _https(self) -> bool:
+        return (self.headers.get("X-Forwarded-Proto") or "").lower() == "https"
+
+    def _ck(self, value: str = "", ttl: int = COOKIE_MAX_AGE) -> tuple:
+        return ("Set-Cookie", cookie_value(value, ttl, secure=self._https()))
+
     def _send(self, body: bytes, ctype: str, code: int = 200, extra=(), cache: str = "no-store"):
         # One access line per page view (log_visit filters out the poll). Deliberately here:
         # every route ends in _send, so nothing can answer without being recorded.
@@ -3371,7 +3407,7 @@ class Handler(BaseHTTPRequestHandler):
             # and redirects to "/" there is no token in the URL to carry. With the cookie
             # set, the proxy lets the rest of the page through on the token alone.
             if not (have and have == want):
-                extra.append(("Set-Cookie", cookie_value()))
+                extra.append(self._ck())
             return True, extra, ""
         if have and have == want:
             self._clear_fails(ip)
@@ -3379,7 +3415,7 @@ class Handler(BaseHTTPRequestHandler):
         if given == want:
             self._clear_fails(ip)
             _COOKIE_REFRESH[ip] = time.time()
-            extra.append(("Set-Cookie", cookie_value()))
+            extra.append(self._ck())
             return True, extra, ""
         if have and pin_session_ok(have):
             # a pin login holds a session secret, not the token: it stays
@@ -3400,7 +3436,7 @@ class Handler(BaseHTTPRequestHandler):
         if not blocked and not NO_PIN and given and given == pin():
             self._clear_fails(ip)
             _COOKIE_REFRESH[ip] = time.time()
-            extra.append(("Set-Cookie", cookie_value(pin_session_value())))
+            extra.append(self._ck(pin_session_value()))
             return True, extra, ""
         if presented:
             self._note_fail(ip, guess=bool(given))
@@ -3449,8 +3485,9 @@ class Handler(BaseHTTPRequestHandler):
             sid = (form.get("s") or [""])[0]
             if totp_verify(code):
                 self._clear_fails(peer_ip(self))
-                cookie = "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax" % (
-                    OTP_COOKIE, otp_session_value(), COOKIE_MAX_AGE)
+                cookie = "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Lax%s" % (
+                    OTP_COOKIE, otp_session_value(), COOKIE_MAX_AGE,
+                    "; Secure" if self._https() else "")
                 loc = "/" + (("?s=" + quote(sid, safe="")) if sid else "")
                 self._send(b"", "text/html; charset=utf-8", 303,
                            extra=[("Set-Cookie", cookie), ("Location", loc)])
@@ -3561,9 +3598,11 @@ class Handler(BaseHTTPRequestHandler):
                 want = ""
             if not want.startswith(("http://", "https://")):
                 want = "http://" + want if want else "/menu"
-            if "k=" not in want and token():
-                # 手输的地址后面浏览器不会再带 token（重定向不受我们控制），所以在服务端补上；
-                # 指向别人的主机也无害，对方只会忽略这个参数。
+            if "k=" not in want and token() and _token_ok_for(want, self.headers.get("Host") or ""):
+                # A typed address arrives without the token (a redirect is not under our
+                # control), so it is appended here - but ONLY when the target is this very
+                # host. It used to be appended to any URL, which sent the master token to
+                # whatever host the reader typed (a portal page, a typo).
                 want += ("&" if "?" in want else "?") + "k=" + quote(token(), safe="")
             self._send(b"", "text/html; charset=utf-8", 303, extra=extra + [("Location", want)])
             return
