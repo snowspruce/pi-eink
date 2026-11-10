@@ -3447,6 +3447,12 @@ class Handler(BaseHTTPRequestHandler):
         print("%s POST %s ip=%s ua=%s" % (time.strftime("%H:%M:%S"), _diag_clean(u.path, 300),
                                           client_ip(self), _diag_clean(self.headers.get("User-Agent") or "-", 40)),
               flush=True)
+        if u.path == "/healthz":
+            # Before the token gate on purpose: a phone (or eink-link) needs one URL that
+            # proves "this host answers" without holding a credential. Says nothing else.
+            self._send(b"ok\n", "text/plain; charset=utf-8", extra=[])
+            return
+
         ok, extra, reason = self._authorized(q)
         if not ok:
             print("%s DENY %s ip=%s reason=%s" % (time.strftime("%H:%M:%S"), _diag_clean(u.path, 300),
@@ -3818,6 +3824,12 @@ class Handler(BaseHTTPRequestHandler):
                 proof = " " + hmac.new(token().encode(), nonce.encode(), hashlib.sha256).hexdigest()[:32]
             self._send(("PI-EINK %d" % PORT + proof).encode("utf-8"),
                        "text/plain; charset=utf-8")
+            return
+
+        if u.path == "/healthz":
+            # Before the token gate on purpose: a phone (or eink-link) needs one URL that
+            # proves "this host answers" without holding a credential. Says nothing else.
+            self._send(b"ok\n", "text/plain; charset=utf-8", extra=[])
             return
 
         ok, extra, reason = self._authorized(q)

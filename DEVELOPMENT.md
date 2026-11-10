@@ -1013,3 +1013,27 @@ shell 里 ping www.baidu.com → **通**（180.101.49.44，20.8ms）
 顺带记两个我这轮踩坏又修回来的东西：`ndc resolver setifdns` 会让这台设备的 netd 崩
 （日志 `SocketClient write error (Broken pipe)`），`net.dns1` 手设的值还会盖住 DHCP 的 DNS；
 正确的恢复是把属性清空并重连 WiFi。
+
+## 十八、"sync 能开、eink 打不开"= 隧道断了，不是站点坏了
+
+2026-11-08 手机上：`https://sync.blueberry.cafe/healthz` 秒开（`ok`），同一台手机
+`https://eink.blueberry.cafe/?k=…` 却 "Safari 打不开该页面"。
+
+两个域名的区别只有一个：
+
+```
+sync.blueberry.cafe → 127.0.0.1:8444   （VPS 本地后端，与 Mac 无关）
+eink.blueberry.cafe → 127.0.0.1:9443   （ssh -R 隧道 → Mac 的 nginx → viewer）
+```
+
+所以"sync 好、eink 坏"= **隧道断了**。当场证据：隧道 job 没有 pid，日志反复
+`remote port forwarding failed for listen port 9443`，而 VPS 上 9443 被一个僵死的
+sshd-session 占着（`fuser -k 9443/tcp` 之后隧道立刻能起）。
+
+**根治**：launchd 不再直接跑 ssh，而是跑 `~/bin/eink-tunnel-start` —— 先用一次短 ssh
+`fuser -k 9443/tcp` 把僵尸踢掉，再 `exec ssh -R …`。这样每次 launchd 拉起（包括断线重启）
+都自带清理，不再需要人去 VPS 上手工 kill。实测：手动 kill 隧道进程后 12 秒内重启，公网
+`/healthz` 立刻回到 `ok`。
+
+另外给 viewer 加了一个**不需要凭据**的 `/healthz`（在 token 闸门之前，只回 `ok`）：
+手机/`eink-link` 需要一条"这个主机活着吗"的判据，而不该为了测试去分发 token。
