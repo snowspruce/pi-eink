@@ -61,7 +61,8 @@ VIEW_FILE = Path.home() / ".pi/eink/view.json"
 # written by the pi extension: which session and port actually accept actions
 STATE_FILE = Path.home() / ".pi/eink/bridge.json"
 BRIDGES_FILE = Path.home() / ".pi/eink/bridges.json"  # sessionId -> {port, pid, cwd, sessionFile, updatedAt}
-HISTORY_FILE = Path.home() / ".pi/eink/history.json"  # sessionId -> commands sent from the box
+HISTORY_FILE = Path.home() / ".pi/eink/history.json"
+ACCESS_LOG = Path.home() / ".pi/eink/access.log"   # one line per page view, not per poll  # sessionId -> commands sent from the box
 # Where "+ new session" may start one: the sub-directories listed here, plus any
 # directory that already runs pi. Mirrors the bridge's EINK_PROJECT_ROOTS gate - the
 # bridge refuses a dir outside it, so the page must not offer one.
@@ -1393,6 +1394,22 @@ def _diag_seen() -> set:
         except Exception:
             pass
     return _DIAG_SEEN
+
+
+def log_visit(ip: str, caps: str, path: str, status: int, ua: str = "") -> None:
+    """One line per page view: who (UA - the tunnel hides the IP), what, and the verdict.
+
+    `/data` is a poll (1.2-3 s) and `/static`/`/logo.png` are furniture: logging those
+    would bury the answer to "did the phone open it, and when".
+    """
+    if path.startswith(("/data", "/static", "/logo", "/favicon")):
+        return
+    # strip the token from what we write: the log outlives the URL
+    shown = re.sub(r"([?&])k=[^&]*", r"\1k=***", path)[:80]
+    kind = "phone" if "iPhone" in ua or "Android" in ua and "Kindle" not in ua else (
+        "kindle" if "Kindle" in ua else ("curl" if ua.startswith("curl") else "other"))
+    append_bounded(ACCESS_LOG, "%s\t%-6s %-7s %s\t%s\t%s" % (
+        time.strftime("%Y-%m-%d %H:%M:%S"), kind, caps, shown, status, ua[:60]))
 
 
 def log_action(ip: str, caps: str, action: str, status: int, sid: str = "") -> None:
@@ -3274,6 +3291,13 @@ class Handler(BaseHTTPRequestHandler):
             save_fails()
 
     def _send(self, body: bytes, ctype: str, code: int = 200, extra=(), cache: str = "no-store"):
+        # One access line per page view (log_visit filters out the poll). Deliberately here:
+        # every route ends in _send, so nothing can answer without being recorded.
+        try:
+            log_visit(client_ip(self), caps_for(self), self.path or "",
+                      code, self.headers.get("User-Agent") or "")
+        except Exception:
+            pass
         self.send_response(code)
         self.send_header("Content-Type", ctype)
         self.send_header("Content-Length", str(len(body)))
