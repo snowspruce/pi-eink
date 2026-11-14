@@ -2137,13 +2137,35 @@ window.onerror = function (m, src, line) {
 // 140px on a 573px-tall viewport a short flick up still counted as "at the
 // bottom" and the next repaint dragged the reader back down.
 var STICK = true;
+/* How tall the page really is. `documentElement.scrollHeight` and `body.scrollHeight`
+   are BOTH clamped to the viewport by this WebView (measured: 625 with 347px of content),
+   which made atBottom() true at any scroll position - the reader was dragged back to the
+   bottom on every repaint and could never read upwards. The footer is the last thing in
+   the flow, so its offsetTop+offsetHeight is the number we can trust. */
+function pageHeight() {
+  var bar = document.getElementById("bar");
+  if (bar) { return bar.offsetTop + bar.offsetHeight; }
+  var b = document.body;
+  return (b && (b.offsetHeight || b.scrollHeight)) || 0;
+}
 function atBottom() {
-  var y = window.pageYOffset || document.documentElement.scrollTop || 0;
-  var h = document.documentElement.scrollHeight || document.body.scrollHeight;
-  var vh = window.innerHeight || document.documentElement.clientHeight;
+  var y = window.pageYOffset || document.documentElement.scrollTop || document.body.scrollTop || 0;
+  var vh = window.innerHeight || document.documentElement.clientHeight || 0;
+  var h = pageHeight();
+  if (h <= vh + 40) { return true; }      // page fits: there is nothing to scroll up to
   return (y + vh) >= (h - 40);
 }
-window.addEventListener("scroll", function () { STICK = atBottom(); }, false);
+var SCROLL_SENT = false;
+window.addEventListener("scroll", function () {
+  STICK = atBottom();
+  // One beacon per page load when the reader leaves the bottom: the numbers say whether
+  // the page height and the scroll offset this WebView reports are usable at all.
+  if (!STICK && !SCROLL_SENT) {
+    SCROLL_SENT = true;
+    diag("ev=up&y=" + Math.round(window.pageYOffset || document.documentElement.scrollTop || 0) +
+         "&h=" + Math.round(pageHeight()) + "&vh=" + Math.round(window.innerHeight || 0));
+  }
+}, false);
 // The soft keyboard shrinks the viewport, and the box is the last thing on the page:
 // something has to scroll it back into view. That used to be a side effect of every
 // poll repainting (scrollTo at the bottom of paint), which went away when unchanged
