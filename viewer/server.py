@@ -2183,7 +2183,12 @@ function paint(j) {
   POLL_MS = j.busy ? POLL_MS_BUSY : POLL_MS_IDLE;
   if (j.v === V) { return; }        // {"same":true} or an unchanged tick: nothing to paint
   V = j.v;
-  var stick = STICK;   // decided before the DOM grows
+  // Measure instead of trusting the flag: this WebView does not reliably deliver scroll
+  // events, so STICK can still read true after the reader scrolled up - and then every
+  // repaint pulled them back to the bottom ("I scroll up, two seconds later it jumps
+  // down again"). Measured here, before the DOM grows, so following new messages still
+  // works: at the bottom -> we were at the bottom -> keep following.
+  var stick = atBottom();
   var content = document.getElementById("content");
   var items = j.items || [], i, k, wanted = {};
   for (i = 0; i < items.length; i++) { wanted[items[i].k] = 1; }
