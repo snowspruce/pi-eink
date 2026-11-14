@@ -2171,7 +2171,17 @@ window.addEventListener("scroll", function () {
 // poll repainting (scrollTo at the bottom of paint), which went away when unchanged
 // polls stopped shipping the transcript - the box then sat under the keyboard. Do it
 // where it belongs: on the resize the IME causes, and when the box takes focus.
+/* The keyboard shrinks the viewport, so the input box ends up under it: this scrolls it
+   back. ONLY while the keyboard is actually up - iOS Safari resizes the viewport on every
+   address-bar collapse while scrolling, and an unconditional scrollTo(bottom) there meant
+   "scroll up, get yanked back to the bottom". The keyboard takes 120+ px; a toolbar
+   appearing takes ~60. */
+var MAX_VH = window.innerHeight || 0;
+function keyboardUp() {
+  return (window.innerHeight || 0) < MAX_VH - 120;
+}
 function showBox() {
+  if (!keyboardUp()) { return; }
   var box = document.querySelector("#sayform textarea");
   if (!box) { return; }
   try { window.scrollTo(0, document.body.scrollHeight); } catch (e) {}
@@ -2194,7 +2204,11 @@ function fitToScreen() {
   var missing = vh - end;
   if (missing > 0) { c.style.minHeight = (c.offsetHeight + missing) + "px"; }
 }
-window.addEventListener("resize", function () { setTimeout(showBox, 120); }, false);
+window.addEventListener("resize", function () {
+  var vh = window.innerHeight || 0;
+  if (vh > MAX_VH) { MAX_VH = vh; }        // a taller viewport is not a keyboard
+  setTimeout(showBox, 120);
+}, false);
 window.addEventListener("resize", function () { setTimeout(fitToScreen, 160); }, false);
 document.addEventListener("focus", function (e) {
   var el = e.target;
